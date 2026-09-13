@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#18231f">
+  <title>未来学校学生管理系统</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark"><img src="future-school-logo.png" alt=""></span><div><b id="brandName">未来学校学生管理系统</b><small>单机教务管理</small></div></div>
+      <nav id="navList">
+        <button class="nav-item active" data-view="dashboard"><span>⌂</span><b>工作台</b></button>
+        <button class="nav-item" data-view="students"><span>◎</span><b>学生</b></button>
+        <button class="nav-item" data-view="classes"><span>▦</span><b>班级</b></button>
+        <button class="nav-item" data-view="checkin"><span>✓</span><b>签到</b></button>
+        <button class="nav-item" data-view="hours"><span>◷</span><b>课时</b></button>
+        <button class="nav-item" data-view="report"><span>▥</span><b>周报</b></button>
+        <button class="nav-item" data-view="settings"><span>⚙</span><b>设置</b></button>
+        <button class="nav-item nav-more" data-more><span>•••</span><b>更多</b></button>
+      </nav>
+      <div class="offline-badge"><i></i><div><b>离线模式</b><small>数据仅保存在本机</small></div></div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div><p id="todayLabel"></p><h1 id="viewTitle">教务工作台</h1><span id="viewSubtitle">今天也要陪孩子们一起成长</span></div>
+        <div class="topbar-actions">
+          <button class="primary-btn" id="quickAddBtn"><span>＋</span>录入学生</button>
+          <button type="button" class="admin-access-btn" id="adminAccessBtn" onclick="return requestAdminEntry(event)" ontouchend="return requestAdminEntry(event)"><span>⌾</span><b>进入后台</b></button>
+        </div>
+      </header>
+      <section id="content" class="content"></section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <section class="modal" id="modal" role="dialog" aria-modal="true"></section>
+  </div>
+  <div class="toast hidden" id="toast"></div>
+  <script>
+    window.__futureSchoolAppStarted = false;
+    window.__pendingAdminEntry = false;
+    window.__adminEntryTouchAt = 0;
+    window.requestAdminEntry = function (event) {
+      var now = Date.now();
+      if (event && event.type === 'click' && now - window.__adminEntryTouchAt < 700) return false;
+      if (event && event.type === 'touchend') window.__adminEntryTouchAt = now;
+      if (event && event.preventDefault) event.preventDefault();
+      if (typeof window.openAdminLogin === 'function') {
+        try { window.openAdminLogin(); } catch (error) { window.alert('后台登录页面打开失败，请重新启动软件后再试。'); }
+      } else {
+        window.__pendingAdminEntry = true;
+        var label = document.querySelector('#adminAccessBtn b');
+        if (label) label.textContent = '正在打开后台…';
+      }
+      return false;
+    };
+    window.addEventListener('load', function () {
+      window.setTimeout(function () {
+        if (window.__futureSchoolAppStarted) return;
+        var content = document.getElementById('content');
+        if (content) content.innerHTML = '<section style="margin:24px;padding:28px;border:1px solid #ead9c1;border-radius:18px;background:#fffaf1;color:#5d4932"><h2 style="margin:0 0 10px">程序启动失败</h2><p style="line-height:1.8">当前平板的系统网页组件版本过旧或加载异常。请安装“安卓10兼容版”，或者在系统应用中更新 Android System WebView 后重新打开。</p></section>';
+      }, 1800);
+    });
+  </script>
+  <script>
+    (function () {
+      var nativeFace = false;
+      try { nativeFace = !!(window.AndroidBridge && AndroidBridge.hasNativeSFace && AndroidBridge.hasNativeSFace()); } catch (ignore) {}
+      if (!nativeFace) document.write('<script src="ort.wasm.min.js"><\/script>');
+    })();
+  </script>
+  <script src="face-api.min.js"></script>
+  <script src="xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
