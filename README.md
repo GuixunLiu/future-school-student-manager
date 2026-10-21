@@ -4,6 +4,8 @@
 
 当前版本：`4.8.1-checkin-brand`
 
+[开发日志](CHANGELOG.md) · [界面截图](#界面截图)
+
 签到配色补齐：人脸识别中、身份确认、签到成功、摄像头位置设置及人脸录入预览统一使用机构蓝黄配色，替换独立弹窗残留的绿色。仅调整颜色与阴影，保留取景框稳定尺寸、摄像头方位与弹出动画，不更改识别模型、课时和数据保存逻辑。
 
 全新蓝黄班级空间：使用机构 Logo 的蓝色 `#0165B3` 与黄色 `#F4AB04`，改为共享机构页头、全局学生搜索和底部悬浮导航；工作台围绕日期、当天班级和班级学生名单重排；支持切换已到/未到与从选定日期、班级进入补签，未来日期只读预览；未设置排课的班级仍可直接查看。历史名单使用当时的班级归属并排除当天长期不来学生。首页四类统计保留为可点击的轻量概览。
@@ -34,6 +36,50 @@
 - Excel 批量导入、Excel 导出、JSON 完整备份及自动备份
 - 横竖屏平板适配和摄像头位置设置
 
+## 界面截图
+
+以下为当前程序在示例数据下的实际页面渲染，并非设计效果图；不包含真实学生资料。人脸识别、身份确认与签到成功展示的是模拟测试状态，摄像头未拍摄真实人脸。
+
+### 班级工作台
+
+![蓝黄班级空间工作台](docs/screenshots/dashboard.png)
+
+### 签到首页
+
+![签到首页与醒目黄色人脸入口](docs/screenshots/checkin-home.png)
+
+### 学生管理
+
+![按班级分类的学生管理](docs/screenshots/students.png)
+
+### 班级管理
+
+![班级管理](docs/screenshots/classes.png)
+
+### 课时管理
+
+![课时余额与管理](docs/screenshots/hours.png)
+
+### 每周上课报告
+
+![周报与到课率统计](docs/screenshots/weekly-report.png)
+
+### 人脸签到：识别中
+
+![蓝黄配色人脸识别窗口，使用模拟状态](docs/screenshots/face-scanning.png)
+
+### 人脸签到：身份确认
+
+![识别结果确认窗口，使用示例学生](docs/screenshots/face-confirmation.png)
+
+### 签到成功与教室提示
+
+![签到成功与教室提示，使用模拟结果](docs/screenshots/checkin-success.png)
+
+### 竖屏平板
+
+![竖屏平板工作台与底部导航](docs/screenshots/dashboard-portrait.png)
+
 ## 项目结构
 
 - `app/src/main/java`：安卓原生功能、备份和提醒
@@ -41,6 +87,8 @@
 - `app/src/main/assets/class-space.js` 与 `class-space.css`：蓝黄班级空间布局、日期课堂视图与独立展示状态
 - `app/src/main/res`：应用图标、主题和安卓资源
 - `weekly-report-smoke-test.js`：核心业务逻辑测试
+- `CHANGELOG.md`：按版本整理的开发日志
+- `docs/screenshots`：仅包含示例资料的界面截图
 
 ## 构建环境
 

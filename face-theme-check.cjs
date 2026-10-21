@@ -53,7 +53,10 @@ const server=http.createServer((req,res)=>{
         });
         assert.deepEqual(await geometry(),before,label+' '+edge+' geometry must match prior build');
         await page.evaluate(()=>{document.querySelector('#preBrandGeometry').remove();document.querySelector('link[href="class-space.css"]').disabled=false});
-        if(edge==='top'&&label==='landscape')await page.screenshot({path:path.join(__dirname,'../face-theme-scan.png'),animations:'disabled'});
+        if(edge==='top'&&label==='landscape'){
+          await page.evaluate(()=>{document.querySelector('#cameraStatus').textContent='请正对摄像头，保持光线充足';document.querySelector('#recognitionBadge').textContent='正在寻找人脸'});
+          await page.screenshot({path:path.join(__dirname,'../face-theme-scan.png'),animations:'disabled'});
+        }
         await page.evaluate(()=>showFaceConfirmation(state.students[0],.9));
         assert.equal(await page.locator('#faceScanStage').isVisible(),false,'camera hidden after recognition');
         assert.equal(await color('.recognition-success-mark'),'rgb(1, 101, 179)');
