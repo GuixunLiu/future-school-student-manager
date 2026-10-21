@@ -45,7 +45,7 @@ const context = {
   confirm:()=>true
 };
 vm.createContext(context);
-const appSource = fs.readFileSync('app/src/main/assets/class-space.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/app.js','utf8');
+const appSource = fs.readFileSync('app/src/main/assets/pattern-lock.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/class-space.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/lesson-review.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/app.js','utf8');
 assert(!appSource.includes('?.'),'主程序不能包含旧版 Android WebView 无法解析的可选链语法');
 assert(!appSource.includes('??'),'主程序不能包含旧版 Android WebView 无法解析的空值合并语法');
 assert(!appSource.includes('||='),'主程序不能包含旧版 Android WebView 无法解析的逻辑赋值语法');
@@ -104,7 +104,7 @@ vm.runInContext('Object.assign(state.classes[0],{scheduleWeekday:6,scheduleStart
 assert.strictEqual(vm.runInContext('classScheduleLabel(state.classes[0])',context),'每周六 09:00');
 assert.strictEqual(vm.runInContext('classReminderLabel(state.classes[0])',context),'开课 5 分钟后提醒 · 每周六 09:00');
 const reminderPayload = JSON.parse(vm.runInContext('JSON.stringify(reminderSyncPayload())',context));
-assert.deepStrictEqual(reminderPayload.classes[0],{id:11,name:'A班',teacher:'王老师',classroom:'',scheduleWeekday:6,scheduleStart:'09:00',reminderEnabled:true});
+assert.deepStrictEqual(reminderPayload.classes[0],{id:11,name:'A班',teacher:'王老师',classroom:'',scheduleWeekday:6,scheduleStart:'09:00',reminderEnabled:true,extraLessonDates:[],cancelledLessonDates:[]});
 assert.strictEqual(reminderPayload.attendance.length,1);
 assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(parseImportedLongTermStatus("是"))',context)),{valid:true,value:true});
 assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(parseImportedLongTermStatus("长期不来"))',context)),{valid:true,value:true});
@@ -135,8 +135,8 @@ assert(hoursPage.includes('data-hours-alert="15"'));
 assert(hoursPage.includes('查看并导出名单'));
 const report = vm.runInContext('renderReport()',context);
 assert(report.includes('本周 · 8月24日—8月30日'));
-assert(report.includes('已合并该老师全部班级'));
-assert(report.includes('已排除 1 名长期不来学生'));
+assert(report.includes('按班级管理中的任课老师汇总 · 合并所教全部班级'));
+assert(report.includes('长期不来生效后不再计应到'));
 assert(report.includes('1 次有效签到 / 2 次应到'));
 assert(report.includes('周历到课率'));
 assert(report.includes('data-report-student-detail="attended"'));

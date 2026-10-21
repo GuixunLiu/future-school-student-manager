@@ -1,7 +1,7 @@
 const fs=require('fs');
 const vm=require('vm');
 const assert=require('assert/strict');
-const source=fs.readFileSync('app/src/main/assets/class-space.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/app.js','utf8');
+const source=fs.readFileSync('app/src/main/assets/pattern-lock.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/class-space.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/lesson-review.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/app.js','utf8');
 const fixture={
   students:[{id:1,name:'同名学生',studentNo:'26010001',className:'A班',teacher:'王老师',hours:10,createdAt:'2026-01-01'},{id:2,name:'同名学生',studentNo:'26010002',className:'B班',teacher:'李老师',hours:8,createdAt:'2026-01-01'}],
   classes:[{id:11,name:'A班',teacher:'王老师'},{id:12,name:'B班',teacher:'李老师'}],
@@ -116,3 +116,8 @@ run('state.classes=[];state.students=[];invalidatePageCache()');
 assert.equal(json('classSpaceContext("2026-08-30").selected'),null);
 assert(run('renderClassSpaceDashboard()').includes('从第一间课堂开始'));
 console.log('Class-space regressions passed: historical promotion, long-term absence, future admission, class-specific/unique attendance, year-crossing week dates, read-only browsing and empty state.');
+run(`state=emptyState();state.students=[{id:7,name:'旧编号甲',studentNo:'26010001',hours:0},{id:7,name:'旧编号乙',studentNo:'26010002',hours:-1}];saveState();globalThis.duplicateFirst=state.students[0];globalThis.duplicateSecond=state.students[1]`);
+failWrites=true;run('state.students[0].hours=-10');assert.equal(run('saveState()'),false);
+assert.deepEqual(json('state.students.map(s=>({name:s.name,hours:s.hours}))'),[{name:'旧编号甲',hours:0},{name:'旧编号乙',hours:-1}]);
+assert.equal(run('state.students[0]===duplicateFirst&&state.students[1]===duplicateSecond&&state.students[0]!==state.students[1]'),true);failWrites=false;
+console.log('Legacy duplicate-ID rollback preserves distinct archives and negative balances.');

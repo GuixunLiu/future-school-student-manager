@@ -39,7 +39,8 @@ public class ClassReminderReceiver extends BroadcastReceiver {
             if (today == null || !today.matches("\\d{4}-\\d{2}-\\d{2}")) {
                 today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
             }
-            List<String> absentNames = absentStudents(state, course.optString("name"), today);
+            if (ReminderScheduler.dateSet(course.optJSONArray("cancelledLessonDates")).contains(today)) return;
+            List<String> absentNames = absentStudents(state, course, today);
             NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager == null) return;
             int notificationId = ReminderScheduler.requestCode(classId);
@@ -92,7 +93,9 @@ public class ClassReminderReceiver extends BroadcastReceiver {
         return null;
     }
 
-    private List<String> absentStudents(JSONObject state, String className, String date) {
+    private List<String> absentStudents(JSONObject state, JSONObject course, String date) {
+        String className = course.optString("name");
+        boolean partialLesson = ReminderScheduler.dateSet(course.optJSONArray("partialLessonDates")).contains(date);
         Set<String> checkedIds = new HashSet<>();
         JSONArray attendance = state.optJSONArray("attendance");
         if (attendance != null) {
@@ -108,6 +111,8 @@ public class ClassReminderReceiver extends BroadcastReceiver {
             JSONObject student = students.optJSONObject(index);
             if (student == null || student.optBoolean("longTermAbsent")) continue;
             if (!className.trim().equals(student.optString("className").trim())) continue;
+            if (ReminderScheduler.dateSet(student.optJSONArray("cancelledLessonDates")).contains(date)) continue;
+            if (partialLesson && !ReminderScheduler.dateSet(student.optJSONArray("extraLessonDates")).contains(date)) continue;
             if (!checkedIds.contains(String.valueOf(student.optLong("id")))) absent.add(student.optString("name", "未命名学生"));
         }
         return absent;

@@ -43,7 +43,7 @@ final class ReminderScheduler {
             for (int index = 0; index < classes.length(); index++) {
                 JSONObject course = classes.optJSONObject(index);
                 if (course != null && course.optBoolean("reminderEnabled")
-                    && course.optInt("scheduleWeekday") >= 1
+                    && (course.optInt("scheduleWeekday") >= 1 || course.optJSONArray("extraLessonDates") != null && course.optJSONArray("extraLessonDates").length() > 0)
                     && !course.optString("scheduleStart").isEmpty()) return true;
             }
         } catch (Exception ignored) {}
@@ -77,7 +77,7 @@ final class ReminderScheduler {
         String startTime = course.optString("scheduleStart");
         try {
             Calendar now = Calendar.getInstance();
-            Calendar start = ClassReminderTime.nextClassStart(now, weekday, startTime);
+            Calendar start = ClassReminderTime.nextClassStart(now, weekday, startTime, dateSet(course.optJSONArray("extraLessonDates")), dateSet(course.optJSONArray("cancelledLessonDates")));
             if (start == null) return false;
             String classDate = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(start.getTime());
             Calendar trigger = (Calendar) start.clone();
@@ -91,6 +91,12 @@ final class ReminderScheduler {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    static Set<String> dateSet(JSONArray dates) {
+        Set<String> values = new HashSet<>();
+        if (dates != null) for (int index = 0; index < dates.length(); index++) values.add(dates.optString(index));
+        return values;
     }
 
     private static void cancelClass(Context context, String classId) {
