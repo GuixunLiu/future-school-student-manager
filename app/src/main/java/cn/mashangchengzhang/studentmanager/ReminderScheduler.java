@@ -13,6 +13,8 @@ import org.json.JSONObject;
 import java.util.Calendar;
 import java.util.HashSet;
 import java.util.Set;
+import java.text.SimpleDateFormat;
+import java.util.Locale;
 
 final class ReminderScheduler {
     static final String ACTION_CLASS_REMINDER = "cn.mashangchengzhang.studentmanager.CLASS_REMINDER";
@@ -73,27 +75,18 @@ final class ReminderScheduler {
     static boolean scheduleClass(Context context, JSONObject course) {
         int weekday = course.optInt("scheduleWeekday");
         String startTime = course.optString("scheduleStart");
-        String[] parts = startTime.split(":");
-        if (weekday < 1 || weekday > 7 || parts.length != 2) return false;
         try {
-            int hour = Integer.parseInt(parts[0]);
-            int minute = Integer.parseInt(parts[1]);
             Calendar now = Calendar.getInstance();
-            Calendar trigger = Calendar.getInstance();
-            trigger.set(Calendar.SECOND, 0);
-            trigger.set(Calendar.MILLISECOND, 0);
-            trigger.set(Calendar.HOUR_OF_DAY, hour);
-            trigger.set(Calendar.MINUTE, minute);
+            Calendar start = ClassReminderTime.nextClassStart(now, weekday, startTime);
+            if (start == null) return false;
+            String classDate = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(start.getTime());
+            Calendar trigger = (Calendar) start.clone();
             trigger.add(Calendar.MINUTE, 5);
-            int targetCalendarDay = weekday == 7 ? Calendar.SUNDAY : weekday + 1;
-            int daysAhead = (targetCalendarDay - trigger.get(Calendar.DAY_OF_WEEK) + 7) % 7;
-            trigger.add(Calendar.DAY_OF_YEAR, daysAhead);
-            if (trigger.getTimeInMillis() <= now.getTimeInMillis()) trigger.add(Calendar.DAY_OF_YEAR, 7);
 
             String classId = String.valueOf(course.optLong("id"));
             AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
             if (alarms == null) return false;
-            alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger.getTimeInMillis(), reminderIntent(context, classId));
+            alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger.getTimeInMillis(), reminderIntent(context, classId, classDate));
             return true;
         } catch (Exception ignored) {
             return false;
@@ -106,9 +99,14 @@ final class ReminderScheduler {
     }
 
     private static PendingIntent reminderIntent(Context context, String classId) {
+        return reminderIntent(context, classId, null);
+    }
+
+    private static PendingIntent reminderIntent(Context context, String classId, String classDate) {
         Intent intent = new Intent(context, ClassReminderReceiver.class);
         intent.setAction(ACTION_CLASS_REMINDER);
         intent.putExtra(EXTRA_CLASS_ID, classId);
+        if (classDate != null) intent.putExtra(EXTRA_REMINDER_DATE, classDate);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         return PendingIntent.getBroadcast(context, requestCode(classId), intent, flags);

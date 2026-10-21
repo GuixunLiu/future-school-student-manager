@@ -3,25 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-  <meta name="theme-color" content="#18231f">
+  <meta name="theme-color" content="#0165b3">
   <title>未来学校学生管理系统</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="polish.css">
+  <link rel="stylesheet" href="class-space.css">
 </head>
 <body>
   <div class="app-shell">
+    <header class="app-masthead">
+      <div class="brand"><span class="brand-mark"><img src="future-school-logo.png" alt="未来学校"></span><div><b id="brandName">未来学校学生管理系统</b><small>学生管理 · 本机离线保存</small></div></div>
+      <form class="global-student-search" id="globalStudentSearchForm" role="search"><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#search"></use></svg><input id="globalStudentSearchInput" aria-label="搜索学生、学号或班级" placeholder="搜索学生、学号或班级" autocomplete="off"><button type="submit" aria-label="开始搜索">搜索</button></form>
+      <div class="masthead-actions"><button type="button" class="shell-settings" id="shellSettingsBtn" aria-label="打开设置"><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#settings"></use></svg></button><button type="button" class="admin-access-btn" id="adminAccessBtn" onclick="return requestAdminEntry(event)" ontouchend="return requestAdminEntry(event)"><span>⌾</span><b>进入后台</b></button></div>
+    </header>
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark"><img src="future-school-logo.png" alt=""></span><div><b id="brandName">未来学校学生管理系统</b><small>单机教务管理</small></div></div>
-      <nav id="navList">
-        <button class="nav-item active" data-view="dashboard"><span>⌂</span><b>工作台</b></button>
-        <button class="nav-item" data-view="students"><span>◎</span><b>学生</b></button>
-        <button class="nav-item" data-view="classes"><span>▦</span><b>班级</b></button>
-        <button class="nav-item" data-view="checkin"><span>✓</span><b>签到</b></button>
-        <button class="nav-item" data-view="hours"><span>◷</span><b>课时</b></button>
-        <button class="nav-item" data-view="report"><span>▥</span><b>周报</b></button>
-        <button class="nav-item" data-view="settings"><span>⚙</span><b>设置</b></button>
-        <button class="nav-item nav-more" data-more><span>•••</span><b>更多</b></button>
+      <nav id="navList" aria-label="教务功能导航">
+        <button class="nav-item active" data-view="dashboard"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#home"></use></svg></span><b>今日</b></button>
+        <button class="nav-item" data-view="students"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#students"></use></svg></span><b>学生</b></button>
+        <button class="nav-item" data-view="classes"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#classes"></use></svg></span><b>班级</b></button>
+        <button class="nav-item" data-view="checkin"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#check"></use></svg></span><b>签到</b></button>
+        <button class="nav-item" data-view="hours"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#hours"></use></svg></span><b>课时</b></button>
+        <button class="nav-item" data-view="report"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#report"></use></svg></span><b>周报</b></button>
+        <button class="nav-item" data-view="settings"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#settings"></use></svg></span><b>设置</b></button>
+        <button class="nav-item nav-more" data-more><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#more"></use></svg></span><b>更多</b></button>
+        <button type="button" class="dock-add" data-dock-add><span>＋</span><b>录入学生</b></button>
       </nav>
-      <div class="offline-badge"><i></i><div><b>离线模式</b><small>数据仅保存在本机</small></div></div>
     </aside>
 
     <main class="workspace">
@@ -29,7 +35,6 @@
         <div><p id="todayLabel"></p><h1 id="viewTitle">教务工作台</h1><span id="viewSubtitle">今天也要陪孩子们一起成长</span></div>
         <div class="topbar-actions">
           <button class="primary-btn" id="quickAddBtn"><span>＋</span>录入学生</button>
-          <button type="button" class="admin-access-btn" id="adminAccessBtn" onclick="return requestAdminEntry(event)" ontouchend="return requestAdminEntry(event)"><span>⌾</span><b>进入后台</b></button>
         </div>
       </header>
       <section id="content" class="content"></section>
@@ -66,15 +71,8 @@
       }, 1800);
     });
   </script>
-  <script>
-    (function () {
-      var nativeFace = false;
-      try { nativeFace = !!(window.AndroidBridge && AndroidBridge.hasNativeSFace && AndroidBridge.hasNativeSFace()); } catch (ignore) {}
-      if (!nativeFace) document.write('<script src="ort.wasm.min.js"><\/script>');
-    })();
-  </script>
-  <script src="face-api.min.js"></script>
   <script src="xlsx.full.min.js"></script>
+  <script src="class-space.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

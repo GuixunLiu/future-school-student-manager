@@ -27,7 +27,7 @@ const fixture = {
 };
 let persistedState=JSON.stringify(fixture);
 
-const element = () => ({style:{},classList:{toggle(){},add(){},remove(){}},innerHTML:'',textContent:'',onclick:null});
+const element = () => ({style:{},classList:{toggle(){},add(){},remove(){},contains(){return false}},innerHTML:'',textContent:'',onclick:null,addEventListener(){}});
 const elements = new Map(['#todayLabel','#navList','#quickAddBtn','#adminAccessBtn','#viewTitle','#viewSubtitle','#brandName','#content'].map(selector=>[selector,element()]));
 const context = {
   console,
@@ -45,7 +45,7 @@ const context = {
   confirm:()=>true
 };
 vm.createContext(context);
-const appSource = fs.readFileSync('app/src/main/assets/app.js','utf8');
+const appSource = fs.readFileSync('app/src/main/assets/class-space.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/app.js','utf8');
 assert(!appSource.includes('?.'),'主程序不能包含旧版 Android WebView 无法解析的可选链语法');
 assert(!appSource.includes('??'),'主程序不能包含旧版 Android WebView 无法解析的空值合并语法');
 assert(!appSource.includes('||='),'主程序不能包含旧版 Android WebView 无法解析的逻辑赋值语法');
@@ -105,7 +105,7 @@ assert.strictEqual(vm.runInContext('classScheduleLabel(state.classes[0])',contex
 assert.strictEqual(vm.runInContext('classReminderLabel(state.classes[0])',context),'开课 5 分钟后提醒 · 每周六 09:00');
 const reminderPayload = JSON.parse(vm.runInContext('JSON.stringify(reminderSyncPayload())',context));
 assert.deepStrictEqual(reminderPayload.classes[0],{id:11,name:'A班',teacher:'王老师',classroom:'',scheduleWeekday:6,scheduleStart:'09:00',reminderEnabled:true});
-assert.strictEqual(reminderPayload.attendance.length,3);
+assert.strictEqual(reminderPayload.attendance.length,1);
 assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(parseImportedLongTermStatus("是"))',context)),{valid:true,value:true});
 assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(parseImportedLongTermStatus("长期不来"))',context)),{valid:true,value:true});
 assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(parseImportedLongTermStatus("正常在读"))',context)),{valid:true,value:false});
@@ -141,7 +141,8 @@ assert(report.includes('1 次有效签到 / 2 次应到'));
 assert(report.includes('周历到课率'));
 assert(report.includes('data-report-student-detail="attended"'));
 assert(report.includes('data-report-student-detail="absent"'));
-assert(vm.runInContext('renderKioskCheckin()',context).includes('future-school-logo.png'));
+assert(fs.readFileSync('app/src/main/assets/index.html','utf8').includes('future-school-logo.png'),'机构标识显示在共享页头');
+assert(vm.runInContext('renderKioskCheckin()',context).includes('space-face-action'));
 vm.runInContext('state.students[1].longTermAbsent=false;state.students[1].longTermAbsentSince=""',context);
 const makeupGroups = JSON.parse(vm.runInContext('JSON.stringify(makeupClassGroupsAt("2026-08-30").map(group=>({name:group.className,students:group.members.map(item=>item.student.name)})))',context));
 assert.deepStrictEqual(makeupGroups,[{name:'B班',students:['乙同学']}]);

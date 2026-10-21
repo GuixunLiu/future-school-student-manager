@@ -70,8 +70,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(Color.rgb(19, 24, 22));
-        getWindow().setNavigationBarColor(Color.rgb(19, 24, 22));
+        getWindow().setStatusBarColor(Color.rgb(1, 101, 179));
+        getWindow().setNavigationBarColor(Color.rgb(1, 79, 140));
         Bitmap taskIcon = BitmapFactory.decodeResource(getResources(), R.drawable.ic_launcher_future_school_centered_small);
         setTaskDescription(new ActivityManager.TaskDescription(
             getString(R.string.app_name), taskIcon, Color.WHITE
@@ -109,6 +109,9 @@ public class MainActivity extends Activity {
     }
 
     private void configureWebView() {
+        WebView.setWebContentsDebuggingEnabled(
+            (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        );
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -233,9 +236,9 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void createAutoBackup(String stateJson, String reason, boolean force) {
-            if (!force && !AutoBackupManager.shouldBackup(MainActivity.this)) return;
-            if (!AutoBackupManager.tryStart()) return;
+        public boolean createAutoBackup(String stateJson, String reason, boolean force) {
+            if (!force && !AutoBackupManager.shouldBackup(MainActivity.this)) return false;
+            if (!AutoBackupManager.tryStart()) return false;
             new Thread(() -> {
                 String result;
                 try {
@@ -248,6 +251,19 @@ public class MainActivity extends Activity {
                     if (webView != null) webView.evaluateJavascript(script, null);
                 });
             }).start();
+            return true;
+        }
+
+        @JavascriptInterface
+        public String createSafetyBackup(String stateJson, String reason) {
+            if (!AutoBackupManager.tryStart()) {
+                return "{\"ok\":false,\"error\":\"正在生成其他备份，请稍后重试\"}";
+            }
+            try {
+                return AutoBackupManager.backup(MainActivity.this, stateJson, reason);
+            } finally {
+                AutoBackupManager.finish();
+            }
         }
     }
 
@@ -407,6 +423,7 @@ public class MainActivity extends Activity {
         if (path.endsWith(".onnx")) return "application/octet-stream";
         if (path.endsWith(".json")) return "application/json";
         if (path.endsWith(".png")) return "image/png";
+        if (path.endsWith(".svg")) return "image/svg+xml";
         if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
         return "application/octet-stream";
     }

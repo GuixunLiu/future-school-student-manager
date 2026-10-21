@@ -35,7 +35,10 @@ public class ClassReminderReceiver extends BroadcastReceiver {
             if (course == null || !course.optBoolean("reminderEnabled")) return;
             ReminderScheduler.scheduleClass(context, course);
 
-            String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+            String today = intent.getStringExtra(ReminderScheduler.EXTRA_REMINDER_DATE);
+            if (today == null || !today.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+            }
             List<String> absentNames = absentStudents(state, course.optString("name"), today);
             NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager == null) return;
