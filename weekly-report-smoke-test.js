@@ -45,7 +45,7 @@ const context = {
   confirm:()=>true
 };
 vm.createContext(context);
-const appSource = fs.readFileSync('app/src/main/assets/pattern-lock.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/class-space.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/lesson-review.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/app.js','utf8');
+const appSource = ['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','student-leave.js','course-groups.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
 assert(!appSource.includes('?.'),'主程序不能包含旧版 Android WebView 无法解析的可选链语法');
 assert(!appSource.includes('??'),'主程序不能包含旧版 Android WebView 无法解析的空值合并语法');
 assert(!appSource.includes('||='),'主程序不能包含旧版 Android WebView 无法解析的逻辑赋值语法');
@@ -104,7 +104,7 @@ vm.runInContext('Object.assign(state.classes[0],{scheduleWeekday:6,scheduleStart
 assert.strictEqual(vm.runInContext('classScheduleLabel(state.classes[0])',context),'每周六 09:00');
 assert.strictEqual(vm.runInContext('classReminderLabel(state.classes[0])',context),'开课 5 分钟后提醒 · 每周六 09:00');
 const reminderPayload = JSON.parse(vm.runInContext('JSON.stringify(reminderSyncPayload())',context));
-assert.deepStrictEqual(reminderPayload.classes[0],{id:11,name:'A班',teacher:'王老师',classroom:'',scheduleWeekday:6,scheduleStart:'09:00',reminderEnabled:true,extraLessonDates:[],cancelledLessonDates:[]});
+assert.deepStrictEqual(reminderPayload.classes[0],{id:11,name:'A班',teacher:'王老师',classroom:'',scheduleWeekday:6,scheduleIntervalWeeks:1,scheduleAnchorDate:'',scheduleStart:'09:00',reminderEnabled:true,extraLessonDates:[],cancelledLessonDates:[]});
 assert.strictEqual(reminderPayload.attendance.length,1);
 assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(parseImportedLongTermStatus("是"))',context)),{valid:true,value:true});
 assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(parseImportedLongTermStatus("长期不来"))',context)),{valid:true,value:true});

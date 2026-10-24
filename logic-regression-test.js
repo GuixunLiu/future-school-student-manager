@@ -1,7 +1,7 @@
 const fs=require('fs');
 const vm=require('vm');
 const assert=require('assert/strict');
-const source=fs.readFileSync('app/src/main/assets/pattern-lock.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/class-space.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/lesson-review.js','utf8')+'\n'+fs.readFileSync('app/src/main/assets/app.js','utf8');
+const source=['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','student-leave.js','course-groups.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
 const fixture={
   students:[{id:1,name:'同名学生',studentNo:'26010001',className:'A班',teacher:'王老师',hours:10,createdAt:'2026-01-01'},{id:2,name:'同名学生',studentNo:'26010002',className:'B班',teacher:'李老师',hours:8,createdAt:'2026-01-01'}],
   classes:[{id:11,name:'A班',teacher:'王老师'},{id:12,name:'B班',teacher:'李老师'}],

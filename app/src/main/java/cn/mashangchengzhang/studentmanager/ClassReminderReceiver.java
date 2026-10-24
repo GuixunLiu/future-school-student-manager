@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.service.notification.StatusBarNotification;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -33,13 +34,14 @@ public class ClassReminderReceiver extends BroadcastReceiver {
             JSONObject state = new JSONObject(ReminderScheduler.storedState(context));
             JSONObject course = findClass(state.optJSONArray("classes"), classId);
             if (course == null || !course.optBoolean("reminderEnabled")) return;
-            ReminderScheduler.scheduleClass(context, course);
+            boolean silentRefresh = intent.getBooleanExtra("leave_silent_refresh", false);
+            if (!silentRefresh) ReminderScheduler.scheduleClass(context, course);
 
             String today = intent.getStringExtra(ReminderScheduler.EXTRA_REMINDER_DATE);
             if (today == null || !today.matches("\\d{4}-\\d{2}-\\d{2}")) {
                 today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
             }
-            if (ReminderScheduler.dateSet(course.optJSONArray("cancelledLessonDates")).contains(today)) return;
+            if (!isClassDate(course, today)) return;
             List<String> absentNames = absentStudents(state, course, today);
             NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager == null) return;
@@ -77,10 +79,47 @@ public class ClassReminderReceiver extends BroadcastReceiver {
                 .setAutoCancel(true)
                 .setCategory(Notification.CATEGORY_REMINDER)
                 .setPriority(Notification.PRIORITY_HIGH)
-                .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
+                .setOnlyAlertOnce(silentRefresh)
                 .setWhen(System.currentTimeMillis())
                 .setShowWhen(true);
+            if (!silentRefresh) builder.setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE);
             manager.notify(notificationId, builder.build());
+        } catch (Exception ignored) {}
+    }
+
+    private static boolean isClassDate(JSONObject course, String date) {
+        return !ReminderScheduler.dateSet(course.optJSONArray("cancelledLessonDates")).contains(date)
+            && (ReminderScheduler.dateSet(course.optJSONArray("extraLessonDates")).contains(date)
+                || ClassReminderTime.regularLessonOnDate(date, course.optInt("scheduleWeekday"), course.optInt("scheduleIntervalWeeks", 1), course.optString("scheduleAnchorDate")));
+    }
+
+    // Update only notifications already visible; a local edit must not trigger a new alarm.
+    static void refreshVisibleNotifications(Context context) {
+        try {
+            NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager == null) return;
+            JSONObject state = new JSONObject(ReminderScheduler.storedState(context));
+            JSONArray classes = state.optJSONArray("classes");
+            if (classes == null) return;
+            String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+            for (StatusBarNotification posted : manager.getActiveNotifications()) {
+                for (int index = 0; index < classes.length(); index++) {
+                    JSONObject course = classes.optJSONObject(index);
+                    if (course == null) continue;
+                    String id = String.valueOf(course.optLong("id"));
+                    if (posted.getId() != ReminderScheduler.requestCode(id)) continue;
+                    String postedDate = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date(posted.getPostTime()));
+                    if (!today.equals(postedDate) || !course.optBoolean("reminderEnabled") || !isClassDate(course, today)) manager.cancel(posted.getId());
+                    else {
+                        Intent refresh = new Intent(ReminderScheduler.ACTION_CLASS_REMINDER);
+                        refresh.putExtra(ReminderScheduler.EXTRA_CLASS_ID, id);
+                        refresh.putExtra(ReminderScheduler.EXTRA_REMINDER_DATE, today);
+                        refresh.putExtra("leave_silent_refresh", true);
+                        new ClassReminderReceiver().onReceive(context, refresh);
+                    }
+                    break;
+                }
+            }
         } catch (Exception ignored) {}
     }
 
@@ -111,6 +150,7 @@ public class ClassReminderReceiver extends BroadcastReceiver {
             JSONObject student = students.optJSONObject(index);
             if (student == null || student.optBoolean("longTermAbsent")) continue;
             if (!className.trim().equals(student.optString("className").trim())) continue;
+            if (ReminderScheduler.dateSet(student.optJSONArray("leaveDates")).contains(date)) continue;
             if (ReminderScheduler.dateSet(student.optJSONArray("cancelledLessonDates")).contains(date)) continue;
             if (partialLesson && !ReminderScheduler.dateSet(student.optJSONArray("extraLessonDates")).contains(date)) continue;
             if (!checkedIds.contains(String.valueOf(student.optLong("id")))) absent.add(student.optString("name", "未命名学生"));
