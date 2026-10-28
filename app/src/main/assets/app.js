@@ -1402,6 +1402,7 @@ bindClassSpaceShell();
 $('#quickAddBtn').onclick=()=>openStudentModal();
 render();
 window.__futureSchoolAppStarted=true;
+if(typeof window.finishAppStartup==='function')window.finishAppStartup();
 if(window.__pendingAdminEntry){window.__pendingAdminEntry=false;setTimeout(openAdminLogin,80)}
 function refreshScreenLayout(){
   clearTimeout(window.cameraPositionResizeTimer);window.cameraPositionResizeTimer=setTimeout(()=>{syncScreenOrientationClass();if(document.body.classList.contains('face-dialog-open'))applyFacePopupPosition()},120);
