@@ -5,3 +5,4 @@ server/ops/apply-teacher-access.cmd text eol=crlf
 server/ops/change-teacher-logins.cmd text eol=crlf
 server/ops/run-remote-sync-check.cmd text eol=crlf
 server/ops/check-single-class-server.cmd text eol=crlf
+server/ops/check-web-entry.cmd text eol=crlf
