@@ -14,7 +14,7 @@
 - `server/ops/install-pilot-standby.py`：核对真实stage回执、备份/候选指纹、原服务和空闲新端口，再创建`standby/`私有目录及工作库。注册新用户单位，失败只停禁此新增单位，保留现场；不替换原数据库或原单位。
 - `server/ops/deploy-pilot-standby.cjs`及CMD：固定安装器、运行器、辅助程序、真实stage回执4项指纹，一次负责人SSH；提供安装及独立暂停模式，不读取或发送教师密码。
 
-仓库外入口为`outputs/pilot-standby-2026-10-28-ready/DEPLOY-STANDBY.cmd`，暂停入口为同目录`PAUSE-STANDBY.cmd`。**已完成7项虚构资料API/安装/回退/暂停测试、JS包装及回执测试、Windows入口自检；尚未远程执行。**不能把材料完成描述为新服务已运行。
+仓库外入口为`outputs/pilot-standby-2026-10-28-ready/DEPLOY-STANDBY.cmd`，暂停入口为同目录`PAUSE-STANDBY.cmd`。**2026-10-28 20:46已实际安装成功并取得回执**：active/running/enabled、NRestarts=0，只监听回环18084，16人基线和运行器指纹匹配，原候选保持。安装回执SHA256`e0e85fd6829189d94dd5dcef46efbd1e4a2789e76c5d2a68efb21f9bbd72dc05`，位于`outputs/private-pilot-standby-2026-10-28/standby-installed-2026-10-28T12-46-48-872Z.json`；已再次用固定计划验证。7项虚构资料测试、JS及Windows自检为此前准备证据。本次核对未重新连接SSH、重启服务、暂停单位或使用真实教师凭证；不重复安装。
 
 最初本机ASGI测试因Windows事件循环的回环套接字限制未完成，开放本机测试权限后运行；暂停测试的Windows路径表示改为PurePosixPath后通过。没有把这些本机问题作为服务器故障或重启既有服务。
 
@@ -30,4 +30,4 @@
 
 暂停工具先确认该新单位WorkingDirectory恰为已核对的standby目录，再只执行本单位的disable/stop，并验证inactive/disabled。原18080—18083服务保留；数据及备份不删除、不恢复覆盖。
 
-实际安装后先读`outputs/private-pilot-standby-2026-10-28/standby-installed-*.json`，核对源码、只读状态、16人和单位active/running/enabled，再继续实现单班写入/事件范围守卫、建立已确认课次及核对安全设备连接。仅有standby健康不代表上述步骤已完成。
+实际安装回执已核对。下一步实现单班写入/事件范围守卫及可回退的受控切换，再建立已确认课次和核对安全设备连接。当前运行器校验原业务摘要，且要求所选班尚无课次，**不能直接向运行中的standby工作库插入课次或调整业务资料**；那会使健康校验失败。后续应先准备允许明确业务变化的独立阶段及备份，不直接删掉当前只读守卫。仅有standby健康不代表真实同步已上线。
