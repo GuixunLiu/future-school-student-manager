@@ -16,6 +16,8 @@
 
 ## 下一步按这个顺序推进
 
+**当前待执行只读核对：**用户22:21新备份已于22:29读取两次，SHA256`6e7f8b864f7e4749153153df13a7d49e878737d923d3ae7ef607402b77740db9`与上午相同；试点16人/345课时无变化，本次课本机签到/请假/撤假0，设备捕获关闭、队列0。新增[两端请假差异核对](docs/pilot-leave-reconciliation.md)已通过18项虚构测试和JS/Windows自检，入口`outputs/pilot-leave-review-2026-10-28-ready/REVIEW-PILOT-LEAVES.cmd`，只读现有教师工作库并本机比较，不安装、重启、造课次或启用设备。**尚未执行新的服务器读取，不记为两端一致。**先核对后续`private-pilot-leave-review-2026-10-28/leave-review-*.private.json`。GUI只读因工具不能确认当前浏览器URL中止，未操作学生记录，后续不用GUI、调试器或真实教师密码自动验收。快照超过一天或发生新业务须重读，但不要无原因重复要求备份。
+
 **最新完成步骤：**[单班教师准备阶段](docs/scoped-teacher-pilot.md)已于21:59实际部署。回执`outputs/private-scoped-teacher-pilot-2026-10-28/scoped-installed-2026-10-28T13-59-43-313Z.json`，SHA256`629c468ab8a123a18e4fc70d4fabf188b018be9611e197ff95cca54e89d24917`；运行器`28960bfa7b1001deb29be0491927e20415f5866d885425d3beeeafdedc64945b`。已按固定10项输入核对，22:07现有加密转发健康匹配运行器/课次/16人及teacher_preparation阶段，用户确认课时和状态显示正常。新单位wxnotify-single-class-teacher.service回环18085，工作库为原stage下`teacher-pilot/business.sqlite`；已创建10月31日14:00—16:00课次及16人名单。**不要重复DEPLOY或创建课次。**用仓库外ready目录的OPEN-TEACHER-PILOT.cmd只重开连接；PAUSE仅停新单位。负责人可登记本课真实请假和草稿，但暂不回传平板；最新签到和余额仍以平板为准。原API读取仍遵循原身份/任课，其他业务写入及所有设备/通知均被新守卫阻断。下一步准备最新平板核对、设备安全连接和两端请假/草稿权威归属及冲突处理，不直接在当前库插入同步事件。
 
 **保留的standby基线：**2026-10-28 20:46[独立待启用服务](docs/pilot-standby.md)已部署，回环18084，运行器`ec43969834469317ca9c2cff21d3a6c5dbb11c8cd927a4e93f95387f8d4bf3d1`。回执`outputs/private-pilot-standby-2026-10-28/standby-installed-2026-10-28T12-46-48-872Z.json`，SHA256`e0e85fd6829189d94dd5dcef46efbd1e4a2789e76c5d2a68efb21f9bbd72dc05`。该服务和原候选继续保持只读，不能直接插入课次，否则破坏基线。后续课次已在独立teacher-pilot工作库建立，详见上方最新记录；不要重做standby或将两个工作库混用。
@@ -84,6 +86,7 @@ Git只包含源码、测试演示、文档，不包含真实数据。原电脑�
 | `private-single-class-offline-stage-2026-10-28/`、`private-pilot-standby-2026-10-28/` | 已执行离线准备及standby真实回执，不重复部署 |
 | `scoped-teacher-pilot-2026-10-28-ready/` | 本轮单班教师准备的10项固定输入、私有计划、安装/连接/暂停入口；整体安全转移，不只拷贝CMD |
 | `private-scoped-teacher-pilot-2026-10-28/` | 本轮本机材料/冻结源码校验及后续实际安装/暂停回执；没有安装回执即不代表已部署 |
+| `private-pilot-leave-review-2026-10-28/`、`pilot-leave-review-2026-10-28-ready/` | 最新平板最小事实和核对记录、两端只读比较入口/私有配置，服务器新读取尚未执行 |
 | `private-server-migration-2026-10-27/` | 已导入的最小名册基线及部署回执；不是最新余额的永久来源 |
 | `private-login-change-2026-10-27/` | 最新8人拼音账号和逐人凭证交接；旧编号文件不再作为登录依据 |
 | `private-teacher-access-2026-10-27/` | 已确认教师/43班映射及授权审计；其旧密码记录不能替代最新交接 |
