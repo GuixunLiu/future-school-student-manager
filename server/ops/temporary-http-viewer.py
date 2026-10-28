@@ -33,7 +33,8 @@ def backend_ready(data):
 
 class Viewer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = True  # Allow restart after closed connections; never enable SO_REUSEPORT.
+    allow_reuse_port = False
     request_queue_size = 16
 
     def __init__(self, address, public_origin, expires_at, *, upstream=("127.0.0.1", 18082), clock=time.time):

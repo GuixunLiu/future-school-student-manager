@@ -16,7 +16,7 @@
 
 ## 下一步按这个顺序推进
 
-**最新故障优先：**用户已运行退出修复，但报`New viewer readiness failed`，后续18083公网连接拒绝。原工具尝试回退后未验证旧服务健康；不能认为网页已经恢复。代码更新已暂停，负责人下一步运行`outputs/http-viewer-logout-fix-2026-10-28-ready/RECOVER-HTTP-VIEWER.cmd`，仅检查原源码/单位/期限、读取本单位60行日志，必要时重置其失败状态并启动。该入口已通过本机虚构状态测试，尚未远程执行，必须读取实际恢复回执再定原因。不要重复FIX/DEPLOY，不改原后台或真实资料。下段外网200为本次更新前的历史状态。
+**最新状态覆盖下方旧记录：**2026-10-28 19:32恢复工具已实际成功，原网页active/running、NRestarts=0，外网复测ready且源码/原期限匹配。真实恢复回执`outputs/private-http-viewer-2026-10-28/http-viewer-original-recovery-2026-10-28T11-32-52-008Z.json`，SHA256`46b9e7c5683c9db5ea7259b662a00cbd8d2f645015784eb3b8ead7e480b0a10f`。日志确认新/旧版本bind均报EADDRINUSE，继而触发连续失败限制。已准备第二版`outputs/http-viewer-logout-fix-v2-2026-10-28-ready/FIX-HTTP-LOGOUT-V2.cmd`：固定恢复证明、现有单位/源码/期限；先做服务器独立回环端口两轮重启预检，通过后才更新18083；新/旧版启动都先等端口可绑定，重置本单位失败状态，并验证回退后的原网页健康。16项更新/恢复/端口回归、5项虚构账号HTTP链路及JS/Windows入口自检通过，**第二版尚未远程执行，Linux现场预检也尚未运行**。线上仍原代码，空正文退出兼容问题和真实人工登录待验收。旧FIX继续暂停，不重复旧RECOVER/DEPLOY，不改原后台/资料/账号或延长期限。
 
 **最新选择覆盖前述HTTPS优先顺序：用户已明确同意先用HTTP短期只读查看。**[临时HTTP教师网页](docs/temporary-http-viewer.md)已于2026-10-28 18:08部署，18:33外网首页和健康均返回200，网址`http://47.97.226.219:18083`。沿用原18082账号/授权，不改原Nginx；到期2026-11-11 18:08:03（北京时间）。工作目录`/opt/wxnotify/app/http-viewer-20261028100749-15dcb449`，原回执及新匿名复测证据在`outputs/private-http-viewer-2026-10-28/`。线上发现旧前端空正文退出被代理415拒绝；本机已修复并验证虚构账号退出后令牌失效，专用代码更新/回退入口`outputs/http-viewer-logout-fix-2026-10-28-ready/FIX-HTTP-LOGOUT.cmd`已准备，**尚未执行，不能说线上退出已修好**。保留单位、原服务、数据库和原期限，不重跑原部署。下一步负责人执行专用修复入口，再人工用原教师账号验收。自动审批拒绝了通过HTTP批量发送真实教师凭证和读取名册的自动验收，命令未执行，不得绕过重试。真实同步/微信关闭，无需再次确认同一HTTP选择。下面HTTPS/Nginx检查记录为前序材料。
 
@@ -41,7 +41,7 @@
 | `wxnotify-infrastructure.service` | 18080 | v0.1基础健康服务，保留 |
 | `wxnotify-business-pilot.service` | 18081 | v0.4旧联调业务，保留，不替换 |
 | `wxnotify-roster-review.service` | 18082 | v0.5只读名册副本，真实账号与名册在这里 |
-| `wxnotify-http-viewer.service` | 18083 | 原18:33外网200；更新启动检查失败后连接拒绝，原入口恢复待执行，11月11日18:08到期 |
+| `wxnotify-http-viewer.service` | 18083 | 19:32原代码恢复，外网ready；第二版退出修复尚未执行，11月11日18:08到期 |
 | 本轮虚构同步临时进程 | 18183 | 已停止，不是正式服务 |
 
 当前核对副本根目录：

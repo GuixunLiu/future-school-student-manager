@@ -1,6 +1,6 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
-const {load,wrapper,validateResult,validateRecovery}=require('../ops/patch-http-viewer.cjs'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'http-viewer-patch-client-'));
+const {load,wrapper,validateResult,validateRecovery,validateFailure}=require('../ops/patch-http-viewer.cjs'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'http-viewer-patch-client-'));
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
 try{
  const c={host:'8.8.8.8',user:'fictional-deploy',port:22,public_origin:'http://8.8.8.8:18083',work_directory:'/opt/wxnotify/app/http-viewer-20261028100749-15dcb449',expected_old_sha256:'a'.repeat(64),expires_at:Math.floor(Date.now()/1000)+86400,output_dir:dir};
@@ -16,6 +16,15 @@ try{
  const recovery={format:'future-school-http-viewer-original-recovery',schema_version:1,public_url:c.public_origin,gateway_sha256:c.expected_old_sha256,expires_at:c.expires_at,original_viewer_ready:true,viewer_journal_tail:'fictional error',source_changed:false,unit_config_changed:false,database_opened:false,teacher_credentials_used:false,expiry_changed:false,other_services_modified:false};
  assert.equal(validateRecovery(JSON.stringify(recovery),c).original_viewer_ready,true);
  for(const change of [{source_changed:true},{expires_at:1},{gateway_sha256:'0'.repeat(64)},{teacher_credentials_used:true}])assert.throws(()=>validateRecovery(JSON.stringify({...recovery,...change}),c));
+ const failure={format:'future-school-http-viewer-update-failed',schema_version:1,public_url:c.public_origin,requested_sha256:c.viewer.sha256,active_source_sha256:c.expected_old_sha256,expires_at:c.expires_at,original_viewer_restored:true,failed_phase:'verify_updated_viewer',viewer_journal_tail:'fictional failure',viewer_journal_after:'fictional recovery',unit_config_changed:false,database_opened:false,teacher_credentials_used:false,expiry_changed:false,other_services_modified:false};
+ assert.equal(validateFailure(JSON.stringify(failure),c).original_viewer_restored,true);
+ for(const change of [{database_opened:true},{active_source_sha256:c.viewer.sha256},{expires_at:1},{failed_phase:'other_service'}])assert.throws(()=>validateFailure(JSON.stringify({...failure,...change}),c));
+ const proof=path.join(dir,'fictional-recovery.private.json'),proofRaw=JSON.stringify({...recovery,external_access_verified:true});fs.writeFileSync(proof,proofRaw);
+ c.patch_revision=2;c.recovery_proof={path:proof,sha256:sha(proofRaw)};fs.writeFileSync(plan,JSON.stringify(c));assert.equal(load(dir).patch_revision,2);
+ assert.throws(()=>validateResult(JSON.stringify(r),c));
+ const preflight={platform:'linux',rounds:2,real_backend_accessed:false};assert.equal(validateResult(JSON.stringify({...r,isolated_restart_preflight:preflight}),c).new_sha256,c.viewer.sha256);
+ assert.throws(()=>validateResult(JSON.stringify({...r,isolated_restart_preflight:{...preflight,platform:'win32'}}),c));
+ fs.writeFileSync(proof,proofRaw+' ');assert.throws(()=>load(dir));fs.writeFileSync(proof,proofRaw);
  c.work_directory='/opt/other';fs.writeFileSync(plan,JSON.stringify(c));assert.throws(()=>load(dir));
  console.log('HTTP logout patch client passed: pinned code, scoped existing directory, unchanged expiry, syntax and receipt guards. No network or real credentials.');
 }finally{fs.rmSync(dir,{recursive:true,force:true});}

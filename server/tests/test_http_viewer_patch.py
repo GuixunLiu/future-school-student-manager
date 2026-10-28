@@ -1,10 +1,11 @@
+import errno
 import hashlib
 import importlib.util
 from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 spec = importlib.util.spec_from_file_location("http_patch", Path(__file__).resolve().parents[1] / "ops/patch-http-viewer.py")
 updater = importlib.util.module_from_spec(spec);spec.loader.exec_module(updater)
@@ -23,10 +24,12 @@ class ViewerPatchTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 updater.validate_config({**config, **change}, payload)
 
-    def scenario(self, fail=False, changed=False):
+    def scenario(self, fail=False, changed=False, health_failure=False, rollback_failure=False, existing_backup=False, preflight_failure=False):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp);work = home / "work";work.mkdir()
             target = work / "temporary-http-viewer.py";old = b"old = True\n";new = b"new = True\n";target.write_bytes(old if not changed else b"other = True\n")
+            if existing_backup:
+                (work / "temporary-http-viewer.before-logout-fix.py").write_bytes(old)
             units = home / ".config/systemd/user";units.mkdir(parents=True)
             config = self.config()
             unit = "WorkingDirectory=" + str(work) + "\nExecStart=python --origin " + config["public_origin"] + " --expires-at " + str(config["expires_at"]) + " --temporary-http-confirmed\n"
@@ -45,10 +48,19 @@ class ViewerPatchTests(unittest.TestCase):
                 if method == "POST":
                     return 401, {"error": "unauthorized"}
                 return 200, {"backend_ready": True, "expires_at": config["expires_at"], "gateway_sha256": sha(target.read_bytes())}
-            with patch.object(updater, "validate_config", return_value=work), patch.object(updater, "private"), patch.object(updater.Path, "home", return_value=home), patch.object(updater, "run", side_effect=run), patch.object(updater, "probe", side_effect=probe):
-                if fail or changed:
+            readiness = [False, not rollback_failure] if health_failure else [not rollback_failure] if fail else [True]
+            with patch.object(updater, "validate_config", return_value=work), patch.object(updater, "private"), patch.object(updater.Path, "home", return_value=home), patch.object(updater, "run", side_effect=run), patch.object(updater, "probe", side_effect=probe), patch.object(updater, "restart_smoke", side_effect=ValueError("fixture preflight") if preflight_failure else None, return_value={"platform": "fixture", "rounds": 2, "real_backend_accessed": False}), patch.object(updater, "wait_bindable") as port_wait, patch.object(updater, "ready_matches", side_effect=readiness) as checked_ready:
+                if changed or preflight_failure:
                     with self.assertRaises(ValueError):
                         updater.install(config, new)
+                    self.assertFalse(any("stop" in item for item in calls))
+                elif fail or health_failure:
+                    result = updater.install(config, new)
+                    self.assertEqual(result["format"], "future-school-http-viewer-update-failed")
+                    self.assertEqual(result["original_viewer_restored"], not rollback_failure)
+                    self.assertEqual(result["active_source_sha256"], sha(old))
+                    self.assertEqual(checked_ready.call_args.args[1], sha(old))
+                    self.assertEqual([item.args[0] for item in port_wait.call_args_list], [True, False])
                 else:
                     result = updater.install(config, new)
                     self.assertTrue(result["logout_without_json_reaches_backend"])
@@ -58,8 +70,8 @@ class ViewerPatchTests(unittest.TestCase):
                     self.assertFalse(any("stop" in item or "start" in item for item in calls[before:]))
             self.assertEqual(unit_path.read_text(), unit)
             self.assertTrue(all(item[3] == updater.UNIT for item in calls if "stop" in item or "start" in item))
-            self.assertEqual(target.read_bytes(), b"other = True\n" if changed else old if fail else new)
-            if not changed:
+            self.assertEqual(target.read_bytes(), b"other = True\n" if changed else old if fail or health_failure or preflight_failure else new)
+            if not changed and not preflight_failure:
                 self.assertEqual((work / "temporary-http-viewer.before-logout-fix.py").read_bytes(), old)
             else:
                 self.assertFalse((work / "temporary-http-viewer.before-logout-fix.py").exists())
@@ -72,6 +84,47 @@ class ViewerPatchTests(unittest.TestCase):
 
     def test_unexpected_current_code_is_not_overwritten(self):
         self.scenario(changed=True)
+
+    def test_reuses_only_verified_original_backup_after_reviewed_recovery(self):
+        self.scenario(existing_backup=True)
+
+    def test_health_failure_rolls_back_and_checks_original_readiness(self):
+        self.scenario(health_failure=True)
+
+    def test_failed_rollback_health_is_not_reported_as_recovered(self):
+        self.scenario(health_failure=True, rollback_failure=True)
+
+    def test_failed_isolated_preflight_never_stops_public_viewer(self):
+        self.scenario(preflight_failure=True)
+
+    def test_port_wait_retries_address_in_use_without_shared_listener(self):
+        factory = MagicMock();sock = factory.return_value.__enter__.return_value
+        sock.bind.side_effect = [OSError(errno.EADDRINUSE, "fictional busy"), None]
+        with patch.object(updater.socket, "socket", factory), patch.object(updater.time, "monotonic", side_effect=[0, 1]), patch.object(updater.time, "sleep") as sleep:
+            updater.wait_bindable(True)
+        self.assertEqual(sock.bind.call_count, 2)
+        sleep.assert_called_once_with(1)
+        self.assertEqual(sock.setsockopt.call_count, 2)
+        for call in sock.setsockopt.call_args_list:
+            self.assertEqual(call.args, (updater.socket.SOL_SOCKET, updater.socket.SO_REUSEADDR, 1))
+
+    def test_original_nonreuse_port_wait_is_bounded(self):
+        factory = MagicMock();sock = factory.return_value.__enter__.return_value
+        sock.bind.side_effect = OSError(errno.EADDRINUSE, "fictional busy")
+        with patch.object(updater.socket, "socket", factory), patch.object(updater.time, "monotonic", side_effect=[0, 91]), patch.object(updater.time, "sleep") as sleep:
+            with self.assertRaises(ValueError):
+                updater.wait_bindable(False)
+        sock.setsockopt.assert_not_called();sleep.assert_not_called()
+
+    def test_wrong_source_health_never_passes_readiness(self):
+        with patch.object(updater, "probe", return_value=(200, {"gateway_sha256": "wrong", "backend_ready": True, "expires_at": 2000000000})), patch.object(updater.time, "monotonic", side_effect=[0, 21]):
+            self.assertFalse(updater.ready_matches("fictional", "expected", 2000000000))
+
+    def test_real_os_restart_preflight_uses_no_backend(self):
+        source = Path(__file__).resolve().parents[1] / "ops/temporary-http-viewer.py"
+        result = updater.restart_smoke(source.read_bytes(), source)
+        self.assertEqual(result["rounds"], 2)
+        self.assertFalse(result["real_backend_accessed"])
 
     def recover_scenario(self, already=False, unexpected=False, failed=False):
         with tempfile.TemporaryDirectory() as temp:

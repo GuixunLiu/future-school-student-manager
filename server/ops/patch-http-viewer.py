@@ -1,15 +1,96 @@
 """Atomic code-only fix on the existing temporary viewer; preserve its unit, expiry, accounts and data."""
+import errno
 import hashlib
 from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import stat
 import subprocess
+import sys
+import threading
 import time
 
 UNIT = "wxnotify-http-viewer.service"
+
+
+def wait_bindable(reuse, timeout=90):
+    """Wait for old connections/listeners to release the port before starting a unit."""
+    deadline = time.monotonic() + timeout
+    announced = False
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            if reuse:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("0.0.0.0", 18083))
+                return
+            except OSError as error:
+                if error.errno != errno.EADDRINUSE:
+                    raise
+        if time.monotonic() >= deadline:
+            raise ValueError("Viewer port did not become bindable within the bounded wait")
+        if not announced:
+            print("Waiting for previous connections to release port 18083 (up to 90 seconds)...", file=sys.stderr, flush=True)
+            announced = True
+        time.sleep(1)
+
+
+def restart_smoke(payload, source_path):
+    """Real OS socket preflight using ephemeral loopback ports and fictional health only."""
+    ns = {"__name__": "viewer_restart_preflight", "__file__": str(source_path)}
+    exec(compile(payload, "<viewer-preflight>", "exec"), ns)
+    cls = ns["Viewer"]
+    if cls.allow_reuse_address is not True or getattr(cls, "allow_reuse_port", False):
+        raise ValueError("Restartable viewer without shared listening ports required")
+    port = 0
+    for _ in range(2):
+        server = cls(("127.0.0.1", port), "http://127.0.0.1:18083", time.time() + 600)
+        port = server.server_port
+        server.ready = lambda: True  # No request to the real backend or its database.
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05}, daemon=True)
+        thread.start()
+        try:
+            if server.socket.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 1:
+                raise ValueError("Restart socket option was not applied")
+            c = HTTPConnection("127.0.0.1", port, timeout=3)
+            try:
+                c.request("GET", "/viewer/health", headers={"Host": "127.0.0.1:18083"})
+                response = c.getresponse()
+                time.sleep(.1)  # Let the server initiate close before the client drains the response.
+                data = json.loads(response.read(32768))
+                if response.status != 200 or data.get("data_realtime") is not False:
+                    raise ValueError("Isolated restart health failed")
+            finally:
+                c.close()
+        finally:
+            server.shutdown();server.server_close();thread.join(3)
+        if thread.is_alive():
+            raise ValueError("Isolated restart did not stop")
+    return {"platform": sys.platform, "rounds": 2, "real_backend_accessed": False}
+
+
+def ready_matches(authority, source_hash, expires, timeout=20):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            status, data = probe(authority)
+            if status == 200 and data.get("gateway_sha256") == source_hash and data.get("expires_at") == expires and data.get("backend_ready") is True:
+                return True
+        except (OSError, ValueError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(.5)
+
+
+def journal_tail():
+    try:
+        return run(["journalctl", "--user", "-u", UNIT, "-n", "40", "--no-pager", "-o", "cat"])[-8000:]
+    except ValueError:
+        return "Viewer journal unavailable to this account"
 
 
 def digest(path):
@@ -123,49 +204,63 @@ def install(config, payload):
     current = digest(target)
     if current not in {config["expected_old_sha256"], config["new_sha256"]} or before.get("gateway_sha256") != current:
         raise ValueError("Unexpected existing code; no overwrite")
+    preflight = restart_smoke(payload, target)  # Must pass before stopping the existing public viewer.
     backup = work / "temporary-http-viewer.before-logout-fix.py"
     if current != config["new_sha256"]:
         if backup.exists() or backup.is_symlink():
-            raise ValueError("Prior update backup exists; inspect before retry")
-        fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(target.read_bytes())
-        if digest(backup) != current:
+            private(backup)
+        else:
+            fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(target.read_bytes())
+        if digest(backup) != config["expected_old_sha256"]:
             raise ValueError("Update backup differs")
-        pending = work / "temporary-http-viewer.logout-fix.pending"
+        pending = work / ("temporary-http-viewer.update-" + config["new_sha256"][:12] + ".pending")
         with os.fdopen(os.open(pending, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as stream:
             stream.write(payload)
         run(["systemctl", "--user", "stop", UNIT])
+        phase = "wait_for_port_release"
         try:
+            wait_bindable(True)  # Old non-reuse sockets may need their natural timeout even with new code.
             os.replace(pending, target)
+            phase = "start_updated_viewer"
+            run(["systemctl", "--user", "reset-failed", UNIT])
             run(["systemctl", "--user", "start", UNIT])
-            healthy = False
-            for _ in range(20):
-                try:
-                    status, data = probe(authority)
-                    if status == 200 and data.get("gateway_sha256") == config["new_sha256"] and data.get("expires_at") == config["expires_at"] and data.get("backend_ready") is True:
-                        healthy = True;break
-                except OSError:
-                    pass
-                time.sleep(.5)
-            if not healthy:
+            phase = "verify_updated_viewer"
+            if not ready_matches(authority, config["new_sha256"], config["expires_at"]):
                 raise ValueError("New viewer readiness failed")
             if probe(authority, "POST", "/v1/auth/logout")[0] != 401:
                 raise ValueError("Header-only logout compatibility failed")
-        except BaseException:
-            run(["systemctl", "--user", "stop", UNIT])
-            restore = work / "temporary-http-viewer.logout-rollback.pending"
-            with os.fdopen(os.open(restore, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as stream:
-                stream.write(backup.read_bytes())
-            os.replace(restore, target)
-            run(["systemctl", "--user", "start", UNIT])
-            raise
+        except Exception:
+            failure_journal = journal_tail()
+            restored = False
+            try:
+                run(["systemctl", "--user", "stop", UNIT])
+                if digest(target) != config["expected_old_sha256"]:
+                    restore = work / ("temporary-http-viewer.rollback-" + config["new_sha256"][:12] + ".pending")
+                    with os.fdopen(os.open(restore, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as stream:
+                        stream.write(backup.read_bytes())
+                    os.replace(restore, target)
+                wait_bindable(False)  # Verify that the original non-reuse listener can bind too.
+                run(["systemctl", "--user", "reset-failed", UNIT])
+                run(["systemctl", "--user", "start", UNIT])
+                restored = ready_matches(authority, config["expected_old_sha256"], config["expires_at"])
+            except Exception:
+                pass
+            return {"format": "future-school-http-viewer-update-failed", "schema_version": 1,
+                    "public_url": config["public_origin"], "expires_at": config["expires_at"],
+                    "requested_sha256": config["new_sha256"], "active_source_sha256": digest(target),
+                    "failed_phase": phase, "original_viewer_restored": restored, "viewer_journal_tail": failure_journal,
+                    "viewer_journal_after": journal_tail(), "isolated_restart_preflight": preflight,
+                    "unit_config_changed": False, "database_opened": False, "teacher_credentials_used": False,
+                    "expiry_changed": False, "other_services_modified": False}
     # No real credentials: a header-only logout should reach the backend and reject anonymous access.
     status, _ = probe(authority, "POST", "/v1/auth/logout")
     if status != 401:
         raise ValueError("Header-only logout was not accepted by the authenticated backend")
     return {"format": "future-school-http-viewer-logout-fixed", "schema_version": 1, "public_url": config["public_origin"],
             "old_sha256": config["expected_old_sha256"], "new_sha256": digest(target), "expires_at": config["expires_at"],
+            "isolated_restart_preflight": preflight,
             "logout_without_json_reaches_backend": True, "anonymous_logout_rejected": True,
             "unit_config_changed": False, "database_opened": False, "teacher_credentials_used": False,
             "expiry_changed": False, "other_services_modified": False}
