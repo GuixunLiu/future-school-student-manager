@@ -1,0 +1,50 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),net=require('node:net'),http=require('node:http'),crypto=require('node:crypto'),{spawn}=require('node:child_process');
+const sha=b=>crypto.createHash('sha256').update(b).digest('hex'),URL='http://127.0.0.1:18085';
+const NAMES=['scoped-pilot.py','scoped-pilot.html','scoped-pilot-ui.js','scoped-pilot.css','stage-single-class-pilot.py','pilot-standby.py'];
+const BOOT=`env -u PYTHONPATH -u PYTHONHOME /opt/wxnotify/app/business-v0.4.0-c59dab1f/.venv/bin/python -u -c 'import base64,sys; exec(compile(base64.b64decode(sys.stdin.buffer.readline(524289).strip(),validate=True),"<scoped-bootstrap>","exec"))'`;
+function read(f){if(!f||!path.isAbsolute(f.path)||!/^[a-f0-9]{64}$/.test(f.sha256))throw Error('缺少固定输入。');const st=fs.lstatSync(f.path),raw=fs.readFileSync(f.path);if(st.isSymbolicLink()||!st.isFile()||raw.length>131072||sha(raw)!==f.sha256)throw Error('准备材料已变化，请重新核对。');return raw;}
+function load(dir){
+ const c=JSON.parse(fs.readFileSync(path.join(dir,'scoped-deploy.private.json'),'utf8'));
+ if(net.isIP(c.host)!==4||!/^[a-z_][a-z0-9_-]{0,31}$/.test(c.user)||c.port!==22||!path.isAbsolute(c.output_dir)||c.teacher_preparation_only!==true||!/^[a-z0-9][a-z0-9_.-]{2,63}$/.test(c.actor_login)||Object.keys(c.files||{}).sort().join()!==[...NAMES].sort().join())throw Error('单班准备范围不符。');
+ for(const key of ['installer','stage_receipt','standby_receipt','plan'])read(c[key]);for(const f of Object.values(c.files))read(f);
+ const s=JSON.parse(read(c.stage_receipt)),b=JSON.parse(read(c.standby_receipt)),p=JSON.parse(read(c.plan));
+ if(s.format!=='future-school-offline-pilot-stage'||s.stage_complete!==true||b.format!=='future-school-pilot-standby-installed'||b.standby_ready!==true||s.work_directory!==b.stage_directory||!/^\/opt\/wxnotify\/app\/single-class-offline-\d{14}-[a-f0-9]{8}$/.test(s.work_directory)||p.format!=='future-school-owner-confirmed-pilot-lesson'||p.owner_confirmed!==true||p.plan_only!==true||s.plan_sha256!==c.plan.sha256||p.expected_students!==s.selected_students||b.selected_students!==s.selected_students||b.runtime_sha256!==c.files['pilot-standby.py'].sha256)throw Error('真实副本、待启用服务与确认计划不一致。');return c;
+}
+function wrapper(c,{pause=false,hold=true}={}){
+ const s=JSON.parse(read(c.stage_receipt)),b=JSON.parse(read(c.standby_receipt)),plan=JSON.parse(read(c.plan));
+ const config={stage_directory:s.work_directory,stage_receipt:Object.fromEntries(Object.entries(s).filter(([k])=>k!=='work_directory')),standby_receipt:b,plan,actor_login:c.actor_login};
+ const files=Object.fromEntries(Object.entries(c.files).map(([name,f])=>[name,{sha256:f.sha256,base64:read(f).toString('base64')}]))
+ const p={config,files,installer:read(c.installer).toString('base64'),installer_sha256:c.installer.sha256};
+ const source=`import base64,hashlib,json,os,sys,signal\nsys.dont_write_bytecode=True\nos.umask(0o077)\np=json.loads(base64.b64decode('${Buffer.from(JSON.stringify(p)).toString('base64')}'))\nraw=base64.b64decode(p['installer'],validate=True)\nassert len(raw)<=131072 and hashlib.sha256(raw).hexdigest()==p['installer_sha256']\nns={'__name__':'scoped_installer'}\nexec(compile(raw,'<scoped-installer>','exec'),ns)\ndef interrupted(signum,frame):raise KeyboardInterrupt()\nsignal.signal(signal.SIGHUP,interrupted)\nsignal.signal(signal.SIGTERM,interrupted)\nresult=ns['${pause?'pause':'install'}'](p['config']${pause?'':",p['files']"})\nprint(json.dumps(result,separators=(',',':')),flush=True)\n${hold&&!pause?"try:\n while sys.stdin.buffer.read(1):pass\nexcept KeyboardInterrupt:pass\n":""}`;
+ const encoded=Buffer.from(source).toString('base64');if(encoded.length>524288)throw Error('部署材料过大。');return encoded+'\n';
+}
+function validateResult(text,c,pause=false){
+ const r=JSON.parse(text),s=JSON.parse(read(c.stage_receipt)),p=JSON.parse(read(c.plan));
+ if(r.schema_version!==1||r.unit!=='wxnotify-single-class-teacher.service'||r.stage_directory!==s.work_directory||r.existing_services_modified!==false)throw Error('单班服务回执范围不符。');
+ if(pause){if(r.format!=='future-school-scoped-pilot-paused'||!r.service_state?.includes('ActiveState=inactive')||!r.service_state?.includes('UnitFileState=disabled'))throw Error('暂停未确认。');return r;}
+ if(r.format!=='future-school-scoped-pilot-installed'||r.runtime_sha256!==c.files['scoped-pilot.py'].sha256||!/^[a-f0-9]{32}$/.test(r.lesson_id)||r.starts_at!==p.starts_at||r.ends_at!==p.ends_at||r.expected_students!==p.expected_students||r.opening_remaining_units!==s.selected_remaining_units||r.port!==18085||r.loopback_only!==true||r.teacher_scope_ready!==true||r.lesson_created!==true||r.source_candidate_unchanged!==true||['device_enabled','wechat_enabled','parent_binding_enabled'].some(k=>r[k]!==false)||!r.service_state?.includes('ActiveState=active')||!r.service_state?.includes('SubState=running')||!r.service_state?.includes('UnitFileState=enabled'))throw Error('课次与单班权限尚未通过验收。');return r;
+}
+function checkHealth(h,c,r){if(h?.status!=='ready'||h.mode!=='pilot_scoped_teacher'||h.pilot_phase!=='teacher_preparation'||h.roster_review_only!==false||h.scoped_code_sha256!==c.files['scoped-pilot.py'].sha256||h.lesson_id!==r.lesson_id||h.selected_students!==r.expected_students||h.teacher_class_writes_enabled!==true||['business_ready','student_sync_enabled','wechat_sending_enabled','device_registration_enabled','parent_binding_enabled'].some(k=>h[k]!==false))throw Error('负责人试点页面状态不符。');return h;}
+function sshArgs(c,{forward=true,openOnly=false}={}){const args=['-p','22','-o','StrictHostKeyChecking=yes','-o','ExitOnForwardFailure=yes','-o','ConnectTimeout=15','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=3','-o','NumberOfPasswordPrompts=2'];if(forward)args.push('-L','127.0.0.1:18085:127.0.0.1:18085');if(openOnly)args.push('-N','-T');args.push(c.user+'@'+c.host);if(!openOnly)args.push(BOOT);return args;}
+function portFree(){return new Promise((resolve,reject)=>{const s=net.createServer();s.on('error',()=>reject(Error('本机试点页面连接已存在，请保留原窗口并返回聊天核对。')));s.listen(18085,'127.0.0.1',()=>s.close(resolve));});}
+function readHealth(){return new Promise((resolve,reject)=>{const req=http.get(URL+'/health/ready',{timeout:3000},res=>{let body='';res.on('data',b=>{body+=b;if(Buffer.byteLength(body)>32768)req.destroy()});res.on('end',()=>{try{if(res.statusCode!==200)throw Error('尚未就绪');resolve(JSON.parse(body));}catch(e){reject(e)}});res.on('error',reject)});req.on('timeout',()=>req.destroy(Error('连接超时')));req.on('error',reject)});}
+function save(c,r,pause){fs.mkdirSync(c.output_dir,{recursive:true,mode:0o700});if(fs.lstatSync(c.output_dir).isSymbolicLink())throw Error('回执目录不能为链接。');const file=path.join(c.output_dir,(pause?'scoped-paused-':'scoped-installed-')+new Date().toISOString().replace(/[:.]/g,'-')+'.json');fs.writeFileSync(file,JSON.stringify(r,null,2)+'\n',{flag:'wx',mode:0o600});console.log('回执已保存：'+file);}
+async function run(dir,args){
+ if(args.length>1||args.length===1&&!['--self-check','--pause','--open'].includes(args[0]))throw Error('Unsupported arguments');const c=load(dir),pause=args[0]==='--pause',openOnly=args[0]==='--open';
+ if(args[0]==='--self-check'){wrapper(c);console.log(JSON.stringify({launcher:'ok',pinned_inputs:10,private_ssh_forward:true,teacher_preparation_only:true,network_connected:false}));return;}
+ let receipt=null;if(openOnly){const names=fs.readdirSync(c.output_dir).filter(n=>/^scoped-installed-[0-9TZ.-]+\.json$/.test(n)).sort();if(!names.length)throw Error('尚无安装成功回执。');const f=path.join(c.output_dir,names.at(-1));if(fs.lstatSync(f).isSymbolicLink())throw Error('回执不能为链接。');receipt=validateResult(fs.readFileSync(f,'utf8'),c);}
+ if(!pause)await portFree();console.log(pause?'仅暂停新的单班教师试点服务。':openOnly?'建立负责人试点网页连接。':'将在新工作库建立已确认的单次课和名单，启用本课请假/撤假/课程草稿权限；原网页和待启用服务保留。');console.log('SSH提示处输入服务器密码；不保存密码，不自动使用教师凭证。');
+ const child=spawn('ssh',sshArgs(c,{forward:!pause,openOnly}),{windowsHide:true,stdio:openOnly?['inherit','ignore','inherit']:['pipe','pipe','inherit']});let failure=null,closing=false,chunks='',resolved=false;
+ let finish;const ended=new Promise(resolve=>finish=resolve);child.on('error',e=>{failure=e;finish(1)});child.on('close',code=>{if(!closing&&!pause)failure||=Error('连接已断开，请返回聊天核对；服务器独立服务继续运行。');finish(code)});
+ const stop=()=>{closing=true;child.kill();};process.once('SIGINT',stop);
+ try{
+  if(!openOnly){receipt=await new Promise((resolve,reject)=>{child.stdout.on('data',b=>{if(resolved)return;chunks+=b.toString('utf8');if(Buffer.byteLength(chunks)>65536){resolved=true;reject(Error('回执过大。'));return;}const end=chunks.indexOf('\n');if(end<0)return;try{const r=validateResult(chunks.slice(0,end),c,pause);resolved=true;resolve(r);}catch(e){resolved=true;reject(e);}});child.once('error',reject);child.once('close',()=>{if(!resolved)reject(Error('未取得完整回执，请保留提示，不要重复部署。'))});child.stdin.on('error',reject);if(pause)child.stdin.end(wrapper(c,{pause:true,hold:false}));else child.stdin.write(wrapper(c));});save(c,receipt,pause);if(pause){console.log('单班教师服务已暂停，资料和原网页保留。');await ended;return;}}
+  const deadline=Date.now()+60000;let ready=false;while(Date.now()<deadline){if(failure)throw failure;let h;try{h=await readHealth()}catch{}if(h){checkHealth(h,c,receipt);ready=true;break;}await new Promise(r=>setTimeout(r,500));}if(!ready)throw Error('负责人页面连接尚未就绪，请保留回执。');
+  console.log('已确认的试点课次及单班权限准备完成，负责人页面：'+URL);console.log('机构weilai，使用现有教师拼音账号和当前密码登录。请保持此窗口打开。');console.log('可登记真实请假及课程草稿；平板同步和通知仍未开启。关闭此窗口只断开本机页面连接。');
+  const browser=spawn('powershell.exe',['-NoProfile','-NonInteractive','-Command',"Start-Process -FilePath 'http://127.0.0.1:18085'"],{windowsHide:true,stdio:'ignore'});browser.on('error',()=>console.log('请手动打开：'+URL));
+  await ended;if(failure&&!closing)throw failure;
+ }finally{process.removeListener('SIGINT',stop);if(child.exitCode===null)child.kill();}
+}
+module.exports={load,wrapper,validateResult,checkHealth,sshArgs};
+if(require.main===module)run(__dirname,process.argv.slice(2)).catch(e=>{console.error('未完成：'+e.message);process.exitCode=1});
