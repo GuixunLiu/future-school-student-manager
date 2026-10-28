@@ -70,7 +70,8 @@ class TemporaryViewerTests(unittest.TestCase):
         others = json.loads(self.request("GET", "/v1/students", token=owner)[2])["items"]
         other = next(s for s in others if s["external_ref"] == "26020001")
         self.assertEqual(self.request("GET", "/v1/students/" + other["id"], token=teacher)[0], 403)
-        self.assertEqual(self.request("POST", "/v1/auth/logout", {}, token=teacher)[0], 200)
+        self.assertEqual(self.request("POST", "/v1/auth/logout", token=teacher)[0], 200)
+        self.assertEqual(self.request("GET", "/v1/me", token=teacher)[0], 401)
         self.request("POST", "/v1/auth/logout", {}, token=owner)
 
     def test_business_writes_and_other_methods_never_reach_backend(self):
@@ -83,6 +84,7 @@ class TemporaryViewerTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/v1/auth/login", {}, headers={"Transfer-Encoding": "chunked"})[0], 400)
         self.assertEqual(self.request("GET", "/", headers={"Content-Length": "16385"})[0], 413)
         self.assertEqual(self.request("GET", "http://evil.example/")[0], 400)
+        self.assertEqual(self.request("POST", "/v1/auth/login")[0], 415)
 
     def test_health_is_snapshot_only_no_store_banner_and_forwarded_headers_not_trusted(self):
         status, headers, raw = self.request("GET", "/", headers={"X-Forwarded-For": "203.0.113.1", "X-Forwarded-Host": "evil.example"})

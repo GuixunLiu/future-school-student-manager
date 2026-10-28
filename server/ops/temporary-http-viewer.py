@@ -167,7 +167,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if login and not server.login_allowed(self.client_address[0]):
             return self.reject(429, "viewer_login_rate_limit")
-        if login and self.headers.get_content_type() != "application/json":
+        empty_logout = parsed.path == "/v1/auth/logout" and length == 0
+        if login and not empty_logout and self.headers.get_content_type() != "application/json":
             return self.reject(415, "json_required")
         auth = self.headers.get_all("Authorization", [])
         if len(auth) > 1 or auth and len(auth[0]) > 128:
