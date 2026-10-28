@@ -10,3 +10,4 @@ server/ops/deploy-http-viewer.cmd text eol=crlf
 server/ops/patch-http-viewer.cmd text eol=crlf
 server/ops/recover-http-viewer.cmd text eol=crlf
 server/ops/stage-single-class-pilot.cmd text eol=crlf
+server/ops/deploy-pilot-standby.cmd text eol=crlf
