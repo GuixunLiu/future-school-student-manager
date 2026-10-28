@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="@@CSP@@"><title>未来学校 · 迁移前核对</title><style>@@CSS@@</style></head>
+<body><header><div class="mark">未</div><div><b>未来学校</b><small>迁移前核对 · 本机离线工具</small></div><span class="pill">只核对，不导入</span></header>
+<main><section class="intro"><span class="eyebrow">平板资料迁移准备</span><h1>先核对，再迁移</h1><p>查看学号、班级、课时和排课问题。文件只在当前页面处理，不上传服务器，不修改原备份，也不会发送微信。</p></section>
+<section class="panel"><h2>选择本机文件</h2><div class="files"><label>① 平板完整JSON备份<input type="file" id="backupFile" accept=".json,application/json"><small>从平板导出的原备份，不是Excel。</small></label><label>② 服务器核对清单（可选）<input type="file" id="snapshotFile" accept=".json,application/json"><small>用于比较同学号的姓名、班级和余额；未选时仅检查平板备份自身。</small></label></div><p class="help">原备份可能含人脸及联系方式，报告只保留核对所需字段。导出的报告仍含姓名、学号和余额，请在校内保管。</p><div class="actions"><button id="downloadReport" disabled>保存核对报告</button><button id="clearFiles" class="secondary">清空本页</button><span id="fileStatus" role="status" aria-live="polite">尚未选择平板备份</span></div></section>
+<p id="error" class="alert" role="alert" hidden></p><div id="results" hidden>
+<section class="result-heading"><div><h2 id="resultTitle"></h2><p id="comparisonNote"></p></div><span class="pill">尚未执行导入</span></section>
+<section id="metrics" class="metrics"></section>
+<section class="panel"><h2>需要核对的项目</h2><p id="issueSummary"></p><div class="table-wrap"><table><thead><tr><th>级别</th><th>涉及记录</th><th>核对说明</th></tr></thead><tbody id="issueRows"></tbody></table></div><p id="issueLimit" class="help"></p></section>
+<section class="panel"><h2>学生核对预览</h2><p class="help">页面最多预览200名，保存的核对报告包含全部核对行。不同学号的同名学生保持独立。</p><div class="table-wrap"><table><thead><tr><th>姓名 / 学号</th><th>完整班级</th><th>当前课时</th><th>在读状态</th><th>服务器比较</th></tr></thead><tbody id="studentRows"></tbody></table></div></section>
+<section class="panel"><h2>班级与排课</h2><p class="help">预览前200个班级，报告包含全部核对行。这里只展示当前周期，不自动生成历史或未来课次；已有调课、加课和历史在读需要单独核对。</p><div class="table-wrap"><table><thead><tr><th>课程 / 完整班级</th><th>老师标签</th><th>周期</th><th>星期 / 时间</th><th>隔周首课日期</th></tr></thead><tbody id="classRows"></tbody></table></div></section>
+<section class="panel"><h2>本次尚未完成</h2><ul id="unreviewed"></ul><p class="help">结构检查通过也不等于可以直接导入。真实人员授权、迁移方案和服务器课次仍需确认；本工具不会补签、扣课或合并学生。</p></section>
+</div></main><footer>未来学校 · 迁移核对工具 v0.1.0 · 不连接网络</footer><script>@@CORE@@
+@@UI@@</script></body></html>

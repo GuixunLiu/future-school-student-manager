@@ -38,7 +38,7 @@ function handleCourseGroupAction(event){
 function bindCourseGroupView(){const form=$('#courseClassSearchForm');if(form)form.onsubmit=event=>{event.preventDefault();courseClassSearch=cleanCourseText($('#courseClassSearchInput').value);render()}}
 function validCourseName(value){if(typeof value!=='string'||value.length>60||/[\x00-\x1f\x7f]/.test(value)||['待分类','全部课程','全部班级'].includes(cleanCourseText(value)))return false;try{encodeURIComponent(value);return true}catch(_){return false}}
 function classGroupingChangesEnrollment(course,next){return String(course.name||'')!==next.name||String(course.teacher||'')!==next.teacher||String(course.classroom||'')!==next.classroom||classCycleChanged(course,next)}
-function classGroupingMetadataOnly(course,next){return ['name','teacher','classroom','schedule','scheduleStart'].every(key=>String(course[key]||'')===String(next[key]||''))&&Boolean(course.reminderEnabled)===Boolean(next.reminderEnabled)&&!classCycleChanged(course,next)}
+function classGroupingMetadataOnly(course,next){return ['name','teacher','classroom','schedule','scheduleStart'].every(key=>String(course[key]||'')===String(next[key]||''))&&classLessonDuration(course)===classLessonDuration(next)&&Boolean(course.reminderEnabled)===Boolean(next.reminderEnabled)&&!classCycleChanged(course,next)}
 function courseFormResult(form,course){
   const courseName=cleanCourseText(form.get('courseName')||''),classLabel=cleanCourseText(form.get('classLabel')||'');if(!validCourseName(courseName)||classLabel.length>80||/[\x00-\x1f\x7f]/.test(classLabel))return{error:'课程名称限60字，班内显示名限80字；请勿使用“待分类”“全部课程”或“全部班级”作为课程名'};
   return{fields:{courseName,classLabel}};
@@ -50,7 +50,7 @@ function mountClassCourseEditor(course){
 function saveCourseAssignments(classIds,name){
   if(!isAdminAuthenticated)return{ok:false,error:'请先解锁后台'};const courseName=cleanCourseText(name);if(!validCourseName(courseName))return{ok:false,error:'请填写60字以内的有效课程名；留空可移至待分类'};
   if(!Array.isArray(classIds)||!classIds.length)return{ok:false,error:'请先选择班级'};const ids=new Set(classIds.map(Number));if(ids.size!==classIds.length||[...ids].some(id=>!Number.isSafeInteger(id)||!classById(id)))return{ok:false,error:'所选班级已变化，请重新核对，未保存任何分类'};
-  state.classes.filter(c=>ids.has(c.id)).forEach(c=>c.courseName=courseName);return saveState()?{ok:true,count:ids.size}:{ok:false,error:'课程归类保存失败，原分类未改变'};
+  const targets=state.classes.filter(c=>ids.has(c.id));let candidates;try{candidates=targets.map(c=>{const next={...c};preserveClassTimingOnGrouping(next,courseName);next.courseName=courseName;return next})}catch(error){return{ok:false,error:error.message||'班级时间记录需先核对'}}targets.forEach((c,index)=>Object.assign(c,candidates[index]));return saveState()?{ok:true,count:ids.size}:{ok:false,error:'课程归类保存失败，原分类未改变'};
 }
 function openCourseBatchEditor(){
   if(!isAdminAuthenticated)return openAdminLogin();if(!state.classes.length)return toast('请先新增一个班级',true);

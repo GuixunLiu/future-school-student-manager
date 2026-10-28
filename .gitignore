@@ -15,3 +15,28 @@ captures/
 *.jks
 *.keystore
 
+# Server development only; never commit credentials, virtualenvs or runtime data.
+**/.venv/
+**/__pycache__/
+*.pyc
+**/.env
+**/.env.*
+!**/.env.example
+server/dist/
+server/.test-data/
+server/**/*.sqlite
+server/**/*.sqlite-*
+server/**/*.db
+server/**/*.db-*
+
+# Minimal migration previews and server roster reads still contain private student data.
+*.migration-private.json
+*.migration-private.json.sha256
+server-roster-review-*.json
+server-roster-review-*.json.sha256
+
+# Per-run plans and credentials belong in the private workspace, never source control.
+*.private.json
+*.private.json.sha256
+**/outputs/
+

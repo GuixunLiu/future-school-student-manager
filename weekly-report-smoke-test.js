@@ -45,7 +45,7 @@ const context = {
   confirm:()=>true
 };
 vm.createContext(context);
-const appSource = ['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','student-leave.js','course-groups.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
+const appSource = ['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','lesson-timing.js','student-leave.js','course-groups.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
 assert(!appSource.includes('?.'),'主程序不能包含旧版 Android WebView 无法解析的可选链语法');
 assert(!appSource.includes('??'),'主程序不能包含旧版 Android WebView 无法解析的空值合并语法');
 assert(!appSource.includes('||='),'主程序不能包含旧版 Android WebView 无法解析的逻辑赋值语法');
@@ -101,8 +101,8 @@ const longTermLifecycle = JSON.parse(vm.runInContext(`JSON.stringify((()=>{const
 assert.deepStrictEqual(longTermLifecycle.paused,{className:'',teacher:'',pausedClassName:'A班',enrollmentEnd:'2026-08-31',longTerm:true});
 assert.deepStrictEqual(longTermLifecycle.restored,{className:'B班',teacher:' 王老师 ',longTerm:false,absenceEnd:'2026-09-04',enrollmentStart:'2026-09-05'});
 vm.runInContext('Object.assign(state.classes[0],{scheduleWeekday:6,scheduleStart:"09:00",reminderEnabled:true})',context);
-assert.strictEqual(vm.runInContext('classScheduleLabel(state.classes[0])',context),'每周六 09:00');
-assert.strictEqual(vm.runInContext('classReminderLabel(state.classes[0])',context),'开课 5 分钟后提醒 · 每周六 09:00');
+assert.strictEqual(vm.runInContext('classScheduleLabel(state.classes[0])',context),'每周六 09:00—10:30');
+assert.strictEqual(vm.runInContext('classReminderLabel(state.classes[0])',context),'开课 5 分钟后提醒 · 每周六 09:00—10:30');
 const reminderPayload = JSON.parse(vm.runInContext('JSON.stringify(reminderSyncPayload())',context));
 assert.deepStrictEqual(reminderPayload.classes[0],{id:11,name:'A班',teacher:'王老师',classroom:'',scheduleWeekday:6,scheduleIntervalWeeks:1,scheduleAnchorDate:'',scheduleStart:'09:00',reminderEnabled:true,extraLessonDates:[],cancelledLessonDates:[]});
 assert.strictEqual(reminderPayload.attendance.length,1);

@@ -32,6 +32,7 @@ import android.widget.ProgressBar;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.ByteArrayInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -56,6 +57,7 @@ public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1202;
     private static final int NOTIFICATION_REQUEST = 1203;
     private WebView webView;
+    private DeviceSyncTransport deviceSyncTransport;
     private ProgressBar progressBar;
     private PermissionRequest pendingCameraRequest;
     private ValueCallback<Uri[]> pendingFileChooser;
@@ -109,6 +111,9 @@ public class MainActivity extends Activity {
     }
 
     private void configureWebView() {
+        deviceSyncTransport = new DeviceSyncTransport(this, (id, result) -> {
+            if (webView != null) webView.evaluateJavascript("window.onDeviceSyncNativeResult && window.onDeviceSyncNativeResult(" + JSONObject.quote(id) + "," + JSONObject.quote(result.toString()) + ")", null);
+        });
         WebView.setWebContentsDebuggingEnabled(
             (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         );
@@ -132,14 +137,22 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
+                if (!trustedAppUri(Uri.parse(url))) return;
                 pageReady = true;
                 deliverPendingReminder();
             }
 
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (!trustedAppUri(request.getUrl())) return new WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
                 return localAssetResponse(request.getUrl());
             }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) { return !trustedAppUri(request.getUrl()); }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) { return !trustedAppUri(Uri.parse(url)); }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
@@ -196,6 +209,16 @@ public class MainActivity extends Activity {
     }
 
     private class AppBridge {
+        private final LocalRepairCheckpoint repairCheckpoint = new LocalRepairCheckpoint(MainActivity.this);
+        @JavascriptInterface
+        public String getDeviceSyncProfile() { return deviceSyncTransport.overview(); }
+
+        @JavascriptInterface
+        public void configureDeviceSync() { deviceSyncTransport.configure(); }
+
+        @JavascriptInterface
+        public void requestDeviceSync(String id, String profileId, String kind, String payload) { deviceSyncTransport.request(id, profileId, kind, payload); }
+
         @JavascriptInterface
         public String getScreenOrientation() {
             int orientation = getResources().getConfiguration().orientation;
@@ -264,6 +287,28 @@ public class MainActivity extends Activity {
             } finally {
                 AutoBackupManager.finish();
             }
+        }
+
+        @JavascriptInterface
+        public String createVerifiedRepairBackup(String stateJson, String phase) {
+            if (!AutoBackupManager.tryStart()) return "{\"ok\":false,\"verified\":false}";
+            try { return AutoBackupManager.verifiedRepairBackup(MainActivity.this, stateJson, phase); }
+            finally { AutoBackupManager.finish(); }
+        }
+
+        @JavascriptInterface
+        public boolean commitLocalRepairCheckpoint(String oldStored, String candidate) {
+            return repairCheckpoint.commit(oldStored, candidate);
+        }
+
+        @JavascriptInterface
+        public String recoverLocalRepairCheckpoint(String currentStored) {
+            return repairCheckpoint.recovery(currentStored);
+        }
+
+        @JavascriptInterface
+        public void discardLocalRepairCheckpoint() {
+            repairCheckpoint.discard();
         }
     }
 
@@ -410,8 +455,14 @@ public class MainActivity extends Activity {
             String encoding = mime.startsWith("text/") || mime.contains("javascript") || mime.contains("json") ? "UTF-8" : null;
             return new WebResourceResponse(mime, encoding, stream);
         } catch (IOException ignored) {
-            return null;
+            return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
         }
+    }
+
+    private boolean trustedAppUri(Uri uri) {
+        String path = uri.getPath();
+        return "https".equals(uri.getScheme()) && LOCAL_HOST.equals(uri.getHost()) && (uri.getPort() == -1 || uri.getPort() == 443)
+            && uri.getUserInfo() == null && path != null && path.startsWith("/assets/") && !path.contains("..") && !path.contains("\\");
     }
 
     private String mimeType(String path) {
@@ -492,10 +543,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (deviceSyncTransport != null) deviceSyncTransport.close();
         synchronized (sfaceLock) {
             sfaceNet = null;
         }
-        if (webView != null) webView.destroy();
+        if (webView != null) {webView.removeJavascriptInterface("AndroidBridge");webView.destroy();webView=null;}
         super.onDestroy();
     }
 }

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>未来学校 · 教务工作台</title>
+  <link rel="stylesheet" href="/workspace.css">
+  <script src="/workspace.js" defer></script>
+</head>
+<body>
+  <div class="test-ribbon">本地联调版 <span>资料尚未与平板同步 · 通知仅作演练</span></div>
+  <div id="message" role="status" aria-live="polite" hidden></div>
+  <section id="loginScreen" class="login-layout">
+    <div class="login-intro"><div class="brand-mark">未</div><p class="eyebrow">未来学校 / 教务工作台</p><h1>把每一次课堂，<br>安排得清清楚楚。</h1><p class="intro-text">查看到课情况、安排任课老师、提前准备课堂内容。老师与管理员，各有自己的工作入口。</p><div class="intro-foot">课堂 · 人员 · 教学反馈</div></div>
+    <div class="login-panel"><p class="eyebrow">欢迎回来</p><h2>登录工作台</h2><p class="muted">使用管理员分配的本地联调账号。</p>
+      <form id="loginForm" class="stack">
+        <label>机构账号<input name="organization" autocomplete="organization" minlength="3" maxlength="64" required placeholder="请输入机构账号"></label>
+        <label>登录账号<input name="login" autocomplete="username" minlength="3" maxlength="64" required placeholder="请输入登录账号"></label>
+        <label>密码<input name="password" type="password" autocomplete="current-password" maxlength="128" required placeholder="请输入密码"></label>
+        <button class="primary" type="submit">登录工作台</button>
+      </form><p class="small muted">首次使用由部署人员初始化管理员。这里没有注册或自助授予权限入口。</p>
+    </div>
+  </section>
+  <div id="appScreen" class="app-shell" hidden>
+    <aside class="sidebar"><div class="brand"><div class="brand-mark small-mark">未</div><div><strong>未来学校</strong><small>教务工作台</small></div></div><nav id="navigation" aria-label="工作台导航"></nav><div class="sidebar-foot"><span class="live-dot"></span> 本地联调环境<br><small>微信正式发送尚未接通</small></div></aside>
+    <div class="app-body"><header class="topbar"><div><span class="muted small">学校管理 / </span><span id="breadcrumb">课堂</span></div><div class="account"><span id="accountName"></span><span id="accountRoles" class="role-tags"></span><button id="logoutButton" class="text-button" type="button">退出</button></div></header><main id="main" tabindex="-1"></main><footer class="page-foot">未来学校 · 只展示当前账号有权查看的资料</footer></div>
+  </div>
+  <dialog id="editorDialog" aria-labelledby="dialogTitle"><div id="dialogBody"></div><button type="button" id="closeDialog" class="dialog-close" aria-label="关闭对话框">×</button></dialog>
+  <noscript>请启用浏览器脚本后使用工作台。</noscript>
+</body>
+</html>

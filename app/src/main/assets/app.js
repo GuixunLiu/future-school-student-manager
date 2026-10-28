@@ -219,7 +219,12 @@ async function prepareSFaceProfiles(students,status){
 
 function loadState(){
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    let stored=localStorage.getItem(STORAGE_KEY);
+    if(window.AndroidBridge&&typeof AndroidBridge.recoverLocalRepairCheckpoint==='function'){
+      const approved=AndroidBridge.recoverLocalRepairCheckpoint(stored);
+      if(approved){try{const checked=JSON.parse(approved);if(!Array.isArray(checked.students)||!Array.isArray(checked.attendance))throw Error('Invalid checkpoint');localStorage.setItem(STORAGE_KEY,approved);stored=approved;window.__localRepairRecovered=true}catch(_){}}
+    }
+    const parsed = JSON.parse(stored);
     if (parsed && Array.isArray(parsed.students) && Array.isArray(parsed.attendance)) return {...emptyState(), ...parsed, settings:{...emptyState().settings,...parsed.settings}};
   } catch (_) {}
   return emptyState();
@@ -288,10 +293,12 @@ function validateBackupState(data){
       [change.fromDate,change.toDate].forEach(date=>{const key=`${change.classId}:${date}`;if(endpoints.has(key))throw new Error('备份含有相互冲突的调课日期');endpoints.add(key);const weekKey=`${change.classId}:${dateWeekStart(date)}`;if(weekdays.has(weekKey)&&weekdays.get(weekKey)!==change.regularWeekday)throw new Error('备份中同一班级同周的常规星期不一致');weekdays.set(weekKey,change.regularWeekday)});
     });
   }
-  validateCycleData(data);validateStudentLeaves(data);validateCourseGroups(data);
+  validateCycleData(data);validateClassLessonTiming(data);validateStudentLeaves(data);validateCourseGroups(data);
   validateStudentReschedules(data);
   validateWechatNotices(data);
+  if(typeof validateDeviceSyncBackup==='function')validateDeviceSyncBackup(data);
   const restored={...emptyState(),...data,classes:data.classes||[],transactions:data.transactions||[],settings:{...emptyState().settings,...data.settings}};
+  delete restored.deviceSync;
   if(restored.settings.adminPattern){delete restored.settings.adminPassword;delete restored.settings.adminUser}return restored;
 }
 function restoreSnapshotValue(target,saved){
@@ -314,6 +321,7 @@ function rollbackUnsavedState(){state=restoreSnapshotValue(state,JSON.parse(comm
 function saveState(){
   invalidatePageCache();
   syncStudentNoCounters();compactAllFaceProfiles();
+  if(state.deviceSync&&state.deviceSync.captureEnabled&&typeof prepareDeviceSyncForSave==='function')prepareDeviceSyncForSave(JSON.parse(committedStateSnapshot));
   let saved=false,releasedPhotos=0,releasedLearning=0,releasedThumbnails=0;
   try{saved=persistCurrentState()}catch(error){}
   if(!saved){
@@ -331,7 +339,7 @@ function saveState(){
   if(!saved){rollbackUnsavedState();toast('保存失败，本次修改已撤回，原有数据和课时不变；请释放存储空间后重试',true);return false}
   if(releasedPhotos||releasedThumbnails)toast(`已自动释放存储空间：人脸识别特征完整保留，清理了 ${releasedPhotos+releasedThumbnails} 张头像缩略图`);
   else if(releasedLearning)toast('已自动释放人脸学习缓存，基础人脸资料仍然保留');
-  syncNativeReminders();createNativeBackup('每日自动备份',false);return true;
+  syncNativeReminders();createNativeBackup('每日自动备份',false);if(typeof scheduleDeviceSync==='function')scheduleDeviceSync();return true;
 }
 async function optimizeExistingFacePhotos(){
   let optimized=0;
@@ -586,7 +594,7 @@ function ensureClasses(){
 }
 
 const CLASS_WEEKDAYS=['','周一','周二','周三','周四','周五','周六','周日'];
-function classScheduleLabel(course){const weekday=Number(course&&course.scheduleWeekday);return weekday?`${lessonCycleWeeks(course)===2?'每两周':'每'}${CLASS_WEEKDAYS[weekday]}${course.scheduleStart?' '+course.scheduleStart:''}${lessonCycleWeeks(course)===2?' · 首课 '+course.scheduleAnchorDate:''}`:String(course&&course.schedule||'暂未设置')}
+function classScheduleLabel(course){const weekday=Number(course&&course.scheduleWeekday),end=lessonClockEnd(String(course&&course.scheduleStart||''),classLessonDuration(course));return weekday?`${lessonCycleWeeks(course)===2?'每两周':'每'}${CLASS_WEEKDAYS[weekday]}${course.scheduleStart?' '+course.scheduleStart+(end?'—'+(end.dayOffset?'次日':'')+end.time:''):''}${lessonCycleWeeks(course)===2?' · 首课 '+course.scheduleAnchorDate:''}`:String(course&&course.schedule||'暂未设置')}
 function classReminderLabel(course){return course&&course.reminderEnabled&&Number(course.scheduleWeekday)&&course.scheduleStart?`开课 5 分钟后提醒 · ${classScheduleLabel(course)}`:'未开启未签到提醒'}
 
 function bindReliableTap(element,handler){
@@ -823,7 +831,7 @@ function openWeeklyRateCalendar(){
   typeSelect.value=selectedReportScopeType;typeSelect.onchange=refreshValues;valueSelect.onchange=drawWeeks;$('#closeWeekCalendar').onclick=closeModal;refreshValues();
 }
 
-function renderSettings(){return renderLocalSettings()+wechatNoticeSettingsMarkup()}
+function renderSettings(){return renderLocalSettings()+wechatNoticeSettingsMarkup()+(typeof deviceSyncSettingsMarkup==='function'?deviceSyncSettingsMarkup():'')}
 function renderLocalSettings(){
   return `<div class="settings-grid"><section class="panel"><div class="panel-head"><div><h2>基础与后台解锁</h2><p>设置会立即保存在本机</p></div></div><div class="setting-row"><div><b>机构名称</b><small>显示在签到页与应用左上角</small></div><input id="orgNameInput" value="${esc(state.settings.orgName)}"></div><div class="setting-row"><div><b>未排课班级默认每周应到次数</b><small>已排课班级按实际排课日计算；此项仅供未排课班级折算</small></div><input id="weeklyTargetInput" type="number" min="1" max="14" value="${esc(state.settings.weeklyTarget)}"></div><div class="setting-row"><div><b>后台解锁图案</b><small>九宫格图案，仅在本机验证；修改前需验证原图案</small></div><button type="button" class="secondary-btn" id="configurePattern">${state.settings.adminPattern?'修改解锁图案':'设置解锁图案'}</button></div><div class="setting-row"><div><b>保存设置</b><small>基础设置只保存在本机</small></div><button class="primary-btn" id="saveSettings">保存</button></div></section><section class="panel"><div class="panel-head"><div><h2>Excel 与本机数据</h2><p>批量管理学生并备份完整资料</p></div></div><div class="warning-box">Excel 适合查看、打印和批量录入；JSON 完整备份还包含人脸特征与全部本机记录，建议两种都定期保存。</div><div class="setting-row"><div><b>导出 Excel</b><small>学生、班级、签到和课时记录</small></div><button class="primary-btn" id="exportExcel">导出 .xlsx</button></div><div class="setting-row"><div><b>下载学生导入模板</b><small>先按模板填写，可减少导入错误</small></div><button class="secondary-btn" id="exportTemplate">下载模板</button></div><div class="setting-row"><div><b>批量导入学生</b><small>支持 .xlsx、.xls 和 .csv 文件</small></div><button class="secondary-btn" id="batchImport">选择文件</button></div><div class="setting-row"><div><b>完整 JSON 备份</b><small>包含人脸特征，可用于整机恢复</small></div><button class="secondary-btn" id="exportBackup">导出文本</button></div><div class="setting-row"><div><b>恢复 JSON 备份</b><small>从此前的完整备份恢复资料</small></div><button class="secondary-btn" id="importBackup">导入文本</button></div>${!state.students.length?`<div class="setting-row"><div><b>添加演示数据</b><small>体验签到、课时与周报</small></div><button class="secondary-btn" id="seedDemo">添加</button></div>`:''}<div class="setting-row"><div><b>清空本机数据</b><small>此操作无法撤销</small></div><button class="danger-btn" id="resetData">全部清空</button></div></section></div>`;
 }
@@ -874,12 +882,12 @@ function bindViewEvents(){
     const row=event.target.closest('[data-hours-detail]');
     if(row&&event.target===row){event.preventDefault();openHoursDetail(studentById(row.dataset.hoursDetail))}
   };
-  if(currentView==='settings'&&isAdminAuthenticated){mountCampusCodeSetting();mountCameraPositionSetting();mountAutoBackupSetting()}
+  if(currentView==='settings'&&isAdminAuthenticated){mountCampusCodeSetting();mountCameraPositionSetting();mountAutoBackupSetting();mountLocalDataRepairSetting()}
   const search=$('#studentSearch');if(search){search.oninput=scheduleStudentSearch;search.oncompositionend=scheduleStudentSearch}
   if($('#studentClassFilter'))$('#studentClassFilter').onchange=event=>{studentClassFilter=event.target.value;listPages.students=1;if(studentClassFilter==='long-term')studentStatusFilter='long-term';else if(studentStatusFilter==='long-term')studentStatusFilter='all';render()};
   if($('#studentStatusFilter'))$('#studentStatusFilter').onchange=event=>{studentStatusFilter=event.target.value;listPages.students=1;if(studentStatusFilter==='long-term')studentClassFilter='long-term';else if(studentClassFilter==='long-term')studentClassFilter='all';render()};
   mountWechatStudentButtons();
-  const actions={saveSettings,configurePattern:openPatternChange,openWechatNotices,exportExcel,exportTemplate:exportStudentTemplate,batchImport:openBatchImport,exportBackup:openExport,importBackup:openImport,seedDemo,resetData,openWeekCalendar:openWeeklyRateCalendar};
+  const actions={saveSettings,configurePattern:openPatternChange,openWechatNotices,...(typeof openDeviceSync==='function'?{openDeviceSync}:{}),exportExcel,exportTemplate:exportStudentTemplate,batchImport:openBatchImport,exportBackup:openExport,importBackup:openImport,seedDemo,resetData,openWeekCalendar:openWeeklyRateCalendar};
   Object.keys(actions).forEach(id=>{const button=$('#'+id);if(button)button.onclick=actions[id]});
   if($('#reportWeekSelect'))$('#reportWeekSelect').onchange=event=>{selectedReportWeekOffset=Number(event.target.value);render()};
   if($('#reportScopeType'))$('#reportScopeType').onchange=event=>{selectedReportScopeType=event.target.value;selectedReportScopeValue=reportScopeOptions(selectedReportScopeType)[0]||'';render()};
@@ -1013,7 +1021,7 @@ function openClassModal(course=null){
   const c=course||{name:'',teacher:'',schedule:'',classroom:'',scheduleWeekday:0,scheduleStart:'',reminderEnabled:false},oldName=c.name,weekdayOptions=CLASS_WEEKDAYS.slice(1).map((label,index)=>`<option value="${index+1}" ${Number(c.scheduleWeekday)===index+1?'selected':''}>${label}</option>`).join('');
   openModal(`<div class="modal-head"><span>${uiIcon('classes')}</span><div><h2>${course?'编辑班级':'新增班级'}</h2><p>设置准确的上课星期和时间后，可在开课 5 分钟后提醒未签到学生</p></div></div><form id="classForm" class="form-grid"><label class="field span-2"><span>班级名称 *</span><input name="name" required placeholder="如：Python 基础 A 班" value="${esc(c.name)}"></label><label class="field"><span>授课老师 *</span><input name="teacher" required placeholder="如：王老师" value="${esc(c.teacher)}"></label><label class="field"><span>上课教室</span><input name="classroom" placeholder="如：编程教室 1" value="${esc(c.classroom)}"></label><section class="class-reminder-editor span-2"><div class="class-reminder-editor-head"><div><b>开课 5 分钟未签到提醒</b><small>完全离线，由当前平板发出通知和提示音</small></div><label class="reminder-switch"><input id="classReminderEnabled" name="reminderEnabled" type="checkbox" value="1" ${c.reminderEnabled?'checked':''}><span></span><b>开启</b></label></div><div class="class-reminder-time-grid"><label class="field"><span>上课星期</span><select name="scheduleWeekday"><option value="0">请选择</option>${weekdayOptions}</select></label><label class="field"><span>开课时间</span><input name="scheduleStart" type="time" value="${esc(c.scheduleStart||'')}"></label></div><p>提醒会自动排除“长期不来”学生；学生签到后，未签到名单会同步更新。</p></section><label class="field span-2"><span>上课安排备注（选填）</span><input name="schedule" placeholder="如：每周六两课时，节假日另行通知" value="${esc(c.schedule||'')}"></label><div class="form-actions"><button type="button" class="secondary-btn" id="cancelModal">取消</button><button class="primary-btn" type="submit">${course?'保存修改':'创建班级'}</button></div></form>`);
   $('#cancelModal').onclick=closeModal;
-  mountClassCourseEditor(c);mountClassCycleEditor(c);
+  mountClassCourseEditor(c);mountClassCycleEditor(c);mountClassTimingEditor(c);
   $('#classForm').onsubmit=e=>{
     e.preventDefault();const form=new FormData(e.target),obj=formEntriesObject(form);
     ['name','teacher','classroom','schedule','scheduleStart'].forEach(key=>obj[key]=String(obj[key]||'').trim());obj.scheduleWeekday=Number(obj.scheduleWeekday||0);obj.reminderEnabled=form.has('reminderEnabled');
@@ -1021,7 +1029,9 @@ function openClassModal(course=null){
     if(obj.reminderEnabled&&(!obj.scheduleWeekday||!/^\d{2}:\d{2}$/.test(obj.scheduleStart)))return toast('开启提醒前，请选择上课星期和开课时间',true);
     if(!obj.name||!obj.teacher)return toast('请填写班级名称和授课老师',true);
     const duplicate=state.classes.find(x=>normalizedGroupLabel(x.name)===normalizedGroupLabel(obj.name)&&x.id!==(course&&course.id));if(duplicate)return toast('班级名称已存在，请换一个名称',true);
-    if(course){const nextCourse={...course,...obj};if(classGroupingMetadataOnly(course,nextCourse))Object.assign(course,grouping.fields);else{recordClassCycleHistory(course,nextCourse);if(classGroupingChangesEnrollment(course,nextCourse))state.students.filter(s=>s.className===oldName).forEach(s=>{updateStudentEnrollment(s,nextCourse);s.className=obj.name;s.teacher=obj.teacher});Object.assign(course,obj)}}else state.classes.push({...obj,id:uid(),createdAt:new Date().toISOString()});
+    const timing=classTimingFormResult(form);if(timing.error)return toast(timing.error,true);const applyTiming=!course||course.lessonDurationMinutes!==undefined||String(course.scheduleStart||'')!==obj.scheduleStart||classLessonDuration(course)!==timing.fields.lessonDurationMinutes||classLessonDuration(course)!==defaultLessonDuration({...course,...grouping.fields});delete obj.lessonDurationMinutes;
+    if(applyTiming){Object.assign(obj,timing.fields);try{obj.classTimingHistory=classTimingHistoryForSave(course,{...course,...obj},localDate())}catch(error){return toast(error.message,true)}}
+    if(course){const nextCourse={...course,...obj};if(classGroupingMetadataOnly(course,nextCourse))Object.assign(course,grouping.fields,applyTiming?{...timing.fields,classTimingHistory:obj.classTimingHistory}:{});else{recordClassCycleHistory(course,nextCourse);if(classGroupingChangesEnrollment(course,nextCourse))state.students.filter(s=>s.className===oldName).forEach(s=>{updateStudentEnrollment(s,nextCourse);s.className=obj.name;s.teacher=obj.teacher});Object.assign(course,obj)}}else state.classes.push({...obj,id:uid(),createdAt:new Date().toISOString()});
     if(!saveState())return false;closeModal();render();toast(obj.reminderEnabled?'班级已保存，按实际课日开课 5 分钟后将在本机提醒':course?'班级信息已更新':'班级创建成功');
   };
 }

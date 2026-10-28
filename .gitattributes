@@ -1,0 +1,7 @@
+# Windows entry point must retain CMD-compatible line endings.
+server/ops/windows-review-launcher.cmd text eol=crlf
+server/ops/roster-review-browser.cmd text eol=crlf
+server/ops/apply-teacher-access.cmd text eol=crlf
+server/ops/change-teacher-logins.cmd text eol=crlf
+server/ops/run-remote-sync-check.cmd text eol=crlf
+server/ops/check-single-class-server.cmd text eol=crlf
