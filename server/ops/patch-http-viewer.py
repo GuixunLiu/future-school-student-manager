@@ -55,6 +55,55 @@ def validate_config(config, payload):
     return Path(config["work_directory"])
 
 
+def recover_original(config, payload):
+    """Inspect only this viewer's journal and restart its verified original code; no source replacement."""
+    work = validate_config(config, payload)
+    private(work, True)
+    target = work / "temporary-http-viewer.py";private(target)
+    unit_file = Path.home() / ".config/systemd/user" / UNIT;private(unit_file)
+    unit = unit_file.read_text(encoding="utf-8")
+    if (unit_file.parent / (UNIT + ".d")).exists() or unit.count("WorkingDirectory=" + str(work)) != 1 or "--origin " + config["public_origin"] + " --expires-at " + str(config["expires_at"]) + " --temporary-http-confirmed" not in unit:
+        raise ValueError("Unexpected viewer unit; recovery refused")
+    if digest(target) != config["expected_old_sha256"]:
+        raise ValueError("Original viewer source not restored; inspect without overwriting")
+    fields = ["-p", "ActiveState", "-p", "SubState", "-p", "Result", "-p", "NRestarts", "-p", "ExecMainStatus"]
+    before = run(["systemctl", "--user", "show", UNIT, "--no-pager", *fields])
+    def read_journal():
+        try:
+            return run(["journalctl", "--user", "-u", UNIT, "-n", "60", "--no-pager", "-o", "cat"])[-8000:]
+        except ValueError:
+            return "Viewer journal unavailable to this account"
+    journal = read_journal()
+    authority = config["public_origin"][7:]
+    def healthy():
+        try:
+            status, data = probe(authority)
+            return status == 200 and data.get("gateway_sha256") == config["expected_old_sha256"] and data.get("expires_at") == config["expires_at"] and data.get("backend_ready") is True
+        except (OSError, ValueError):
+            return False
+    already_healthy = healthy()
+    start_failed = False
+    if not already_healthy:
+        try:
+            run(["systemctl", "--user", "reset-failed", UNIT])
+            run(["systemctl", "--user", "start", UNIT])
+        except ValueError:
+            start_failed = True
+    recovered = False
+    for _ in range(30):
+        if healthy():
+            recovered = True;break
+        time.sleep(.5)
+    after = run(["systemctl", "--user", "show", UNIT, "--no-pager", *fields])
+    return {"format": "future-school-http-viewer-original-recovery", "schema_version": 1,
+            "public_url": config["public_origin"], "gateway_sha256": digest(target), "expires_at": config["expires_at"],
+            "original_viewer_ready": recovered, "already_healthy": already_healthy,
+            "service_before": before, "service_after": after, "viewer_journal_tail": journal,
+            "viewer_journal_after": read_journal(), "start_operation_failed": start_failed,
+            "source_changed": False, "unit_config_changed": False, "database_opened": False,
+            "teacher_credentials_used": False, "expiry_changed": False, "other_services_modified": False}
+
+
 def install(config, payload):
     work = validate_config(config, payload)
     private(work, True)

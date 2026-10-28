@@ -73,6 +73,51 @@ class ViewerPatchTests(unittest.TestCase):
     def test_unexpected_current_code_is_not_overwritten(self):
         self.scenario(changed=True)
 
+    def recover_scenario(self, already=False, unexpected=False, failed=False):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp);work = home / "work";work.mkdir()
+            target = work / "temporary-http-viewer.py";old = b"old = True\n";target.write_bytes(b"other = True\n" if unexpected else old)
+            config = self.config();units = home / ".config/systemd/user";units.mkdir(parents=True)
+            unit = "WorkingDirectory=" + str(work) + "\nExecStart=python --origin " + config["public_origin"] + " --expires-at " + str(config["expires_at"]) + " --temporary-http-confirmed\n"
+            unit_file = units / updater.UNIT;unit_file.write_text(unit)
+            calls = []
+            def run(args):
+                calls.append(args)
+                if failed and "start" in args:
+                    raise ValueError("fixture start failure")
+                return "fictional startup failure" if args[0] == "journalctl" else "ActiveState=active"
+            ready = (200, {"backend_ready": True, "gateway_sha256": sha(old), "expires_at": config["expires_at"]})
+            with patch.object(updater, "validate_config", return_value=work), patch.object(updater, "private"), patch.object(updater.Path, "home", return_value=home), patch.object(updater, "run", side_effect=run), patch.object(updater.time, "sleep"), patch.object(updater, "probe", side_effect=OSError("fixture disconnected") if failed else [ready if already else OSError("fixture disconnected"), ready]):
+                if unexpected:
+                    with self.assertRaises(ValueError):
+                        updater.recover_original(config, b"new = True\n")
+                    self.assertEqual(calls, [])
+                else:
+                    result = updater.recover_original(config, b"new = True\n")
+                    self.assertEqual(result["original_viewer_ready"], not failed)
+                    self.assertEqual(result["start_operation_failed"], failed)
+                    self.assertEqual(result["already_healthy"], already)
+                    self.assertFalse(result["source_changed"])
+                    self.assertEqual(result["expires_at"], config["expires_at"])
+                    self.assertEqual(result["viewer_journal_tail"], "fictional startup failure")
+                    self.assertEqual(any("start" in item for item in calls), not already)
+                    self.assertTrue(all(item[-1] == updater.UNIT for item in calls if "start" in item or "reset-failed" in item))
+            self.assertEqual(target.read_bytes(), b"other = True\n" if unexpected else old)
+            self.assertEqual(unit_file.read_text(), unit)
+            self.assertEqual(list(work.iterdir()), [target])
+
+    def test_recover_original_code_only_restarts_the_failed_viewer(self):
+        self.recover_scenario()
+
+    def test_healthy_original_viewer_is_not_restarted(self):
+        self.recover_scenario(already=True)
+
+    def test_recovery_refuses_unknown_code_without_service_changes(self):
+        self.recover_scenario(unexpected=True)
+
+    def test_failed_recovery_still_returns_logs_and_does_not_claim_ready(self):
+        self.recover_scenario(failed=True)
+
 
 if __name__ == "__main__":
     unittest.main()
