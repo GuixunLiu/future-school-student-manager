@@ -16,7 +16,7 @@
 
 ## 下一步按这个顺序推进
 
-**最新选择覆盖前述HTTPS优先顺序：用户已明确同意先用HTTP短期只读查看。**已完成[临时HTTP教师网页工具](docs/temporary-http-viewer.md)，单独18083端口、沿用原18082账号/授权、有效14天，不改原Nginx。负责人部署入口为仓库外`temporary-http-viewer-2026-10-28-ready/DEPLOY-HTTP-VIEWER.cmd`；尚待实际执行回执。无需再让用户为同一选择确认HTTPS或购买域名。先取得部署、本机/外网分别验证结果，若外网阻断再核对TCP18083安全组。教师实际登录仍待验收，真实同步/微信保持关闭。下面HTTPS/Nginx检查记录为前序材料，留供后续正式接入。
+**最新选择覆盖前述HTTPS优先顺序：用户已明确同意先用HTTP短期只读查看。**[临时HTTP教师网页](docs/temporary-http-viewer.md)已于2026-10-28 18:08实际部署成功，单独18083端口、沿用原18082账号/授权，不改原Nginx。单位wxnotify-http-viewer.service为active/running/enabled、NRestarts=0，本机健康通过；到期2026-11-11 18:08:03（北京时间）。工作目录`/opt/wxnotify/app/http-viewer-20261028100749-15dcb449`，本机真实回执在`outputs/private-http-viewer-2026-10-28/`。外网连接仍超时，下一步核对TCP18083安全组/主机防火墙，尚未确认具体拦截层。**不要重复运行部署入口，不要删除原单位/数据库；先放行网络再复测。**教师实际登录仍未验收，真实同步/微信关闭，无需再次确认同一HTTP选择。下面HTTPS/Nginx检查记录为前序材料。
 
 **用户最新优先事项：先让老师直接网页登录看数据。**沿用已经创建的教师账号，不要再把负责人SSH转发入口当作教师使用方案。已准备[教师网页接入说明](docs/teacher-web-access.md)、服务器最小只读检查及Nginx独立配置草稿；实际检查回执已核对（见下），尚无可交付的公网地址或证书实测。可研究IP＋HTTPS先接入，域名后置；不能对外开放明文密码登录。优先完成此只读入口，再继续以下真实同步准备。
 
@@ -39,6 +39,7 @@
 | `wxnotify-infrastructure.service` | 18080 | v0.1基础健康服务，保留 |
 | `wxnotify-business-pilot.service` | 18081 | v0.4旧联调业务，保留，不替换 |
 | `wxnotify-roster-review.service` | 18082 | v0.5只读名册副本，真实账号与名册在这里 |
+| `wxnotify-http-viewer.service` | 18083 | 10月28日已部署，本机验证通过；外网超时待放行网络，11月11日18:08到期 |
 | 本轮虚构同步临时进程 | 18183 | 已停止，不是正式服务 |
 
 当前核对副本根目录：
