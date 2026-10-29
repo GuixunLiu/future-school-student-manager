@@ -13,3 +13,4 @@ server/ops/stage-single-class-pilot.cmd text eol=crlf
 server/ops/deploy-pilot-standby.cmd text eol=crlf
 server/ops/deploy-scoped-pilot.cmd text eol=crlf
 server/ops/review-pilot-leaves.cmd text eol=crlf
+server/ops/deploy-teacher-web.cmd text eol=crlf
