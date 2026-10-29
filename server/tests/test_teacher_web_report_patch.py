@@ -38,7 +38,7 @@ class ReportPatchTests(unittest.TestCase):
                 if fail and not state['failed']:state['failed']=True;raise ValueError('fictional failed start')
                 state['new']=json.loads((self.work/'web.private.json').read_bytes())['files']!=self.pins
             return 'ActiveState=active\nSubState=running\nUnitFileState=enabled'
-        def health():return {'mode':'teacher_web','source_sha256':'a'*64,'makeup_mode':'request_pending_tablet','student_sync_enabled':False,'wechat_sending_enabled':False,'report_display_version':2 if state['new'] else 1}
+        def health():return {'mode':'teacher_web','source_sha256':'a'*64,'makeup_mode':'request_pending_tablet','student_sync_enabled':False,'wechat_sending_enabled':False,'report_display_version':2 if state['new'] else 1,'workspace_ui_version':3 if state['new'] else None,'workspace_role_selection':state['new']}
         with patch.object(installer,'ROOT',self.root),patch.object(installer.os,'geteuid',return_value=1000,create=True),patch.object(installer,'run',side_effect=run),patch.object(installer,'health',side_effect=health):
             if fail:
                 with self.assertRaisesRegex(ValueError,'restored and verified'):installer.install(self.config,self.payload)
@@ -53,6 +53,17 @@ class ReportPatchTests(unittest.TestCase):
 
     def test_patch_keeps_database_requests_gateway_and_refuses_repeat(self):self.scenario()
     def test_failed_new_start_restores_code_and_pins_without_database_restore(self):self.scenario(True)
+
+    def role_case(self,fail=False):
+        name='teacher_web/web/workspace.css';raw=b'/* fictional previous CSS */'
+        self.old[name]=raw;(self.work/name).write_bytes(raw);self.pins[name]=sha(raw)
+        self.cfg=json.dumps({'files':self.pins,'source_sha256':'a'*64}).encode();(self.work/'web.private.json').write_bytes(self.cfg)
+        self.config['kind']='role_interface'
+        self.payload['files'][name]={'base64':base64.b64encode(b'/* fictional new CSS */').decode(),'sha256':sha(b'/* fictional new CSS */')}
+        self.scenario(fail)
+
+    def test_role_ui_patch_keeps_database_requests_and_gateway(self):self.role_case()
+    def test_role_ui_failure_restores_all_three_files(self):self.role_case(True)
 
 
 if __name__=='__main__':unittest.main()

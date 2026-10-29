@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import sys
 import threading
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -14,6 +15,10 @@ from teacher_web.api import install_data
 def main():
     if sys.argv[1:]!=['--fictional']:raise SystemExit('Fictional fixture only')
     f=TeacherWebTests();f.setUp()
+    with sqlite3.connect(f.db) as db:
+        db.execute('INSERT INTO users SELECT ?,org_id,?,?,password_hash,active,created_at FROM users WHERE login=?',('9'*32,'fictional-admin','虚构管理员','fictional-teacher'))
+        db.execute('INSERT INTO roles SELECT org_id,?,? FROM users WHERE login=?',('9'*32,'admin','fictional-admin'))
+    db.close()
     old=f.data['weeks'][1];old.update(expected=18/7,rate='38.9%',fallback=True)
     old['classes']=[{'name':'虚构旧班名','expected':18/7,'arrived':1,'leave_count':0,'rate':'38.9%','needs_review':False}]
     install_data(f.db,f.data,clock=f.clock)

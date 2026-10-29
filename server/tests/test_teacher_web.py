@@ -7,6 +7,14 @@ from teacher_web.api import create_app,install_data,TZ
 import test_scoped_pilot as fixture
 
 
+class RoleClient(TestClient):
+    workspace_role=None
+    def request(self,method,url,**kwargs):
+        if method.upper()=='GET' and str(url).startswith('/v1/web/') and self.workspace_role and 'workspace_role=' not in str(url):
+            url=str(url)+('&' if '?' in str(url) else '?')+'workspace_role='+self.workspace_role
+        return super().request(method,url,**kwargs)
+
+
 class TeacherWebTests(unittest.TestCase):
     def setUp(self):
         self.f=fixture.ScopedPilotTests();self.f.setUp();self.addCleanup(self.f.doCleanups)
@@ -18,10 +26,10 @@ class TeacherWebTests(unittest.TestCase):
           'weeks':[{'start':'2026-10-26','end':'2026-11-01','offset':0,**summary,'fallback':False,'classes':[dict(summary,name='虚构提高班')],'teachers':[dict(summary,name='虚构教师')]},{'start':'2026-10-19','end':'2026-10-25','offset':-1,**dict(summary,arrived=1,rate='100%'),'fallback':False,'classes':[],'teachers':[]}]}
         install_data(self.db,self.data,clock=self.clock);self.app=create_app(self.db,self.clock,allow_test_client=True)
 
-    def client(self):return TestClient(self.app,base_url='http://127.0.0.1:18086')
+    def client(self):return RoleClient(self.app,base_url='http://127.0.0.1:18086')
     def login(self,c,name='fictional-teacher'):
-        r=c.post('/v1/auth/login',json={'organization':'fictional','login':name,'password':fixture.PASSWORD});self.assertEqual(r.status_code,200);return {'Authorization':'Bearer '+r.json()['access_token']}
-    def request(self):return {'lesson_key':'11:2026-10-31','student_local_id':'22','reason':'虚构核对补签','request_ref':'4'*32,'expected_source_sha256':'f'*64,'confirmed':True}
+        r=c.post('/v1/auth/login',json={'organization':'fictional','login':name,'password':fixture.PASSWORD});self.assertEqual(r.status_code,200);c.workspace_role='admin' if name=='fictional-teacher' else 'teacher';return {'Authorization':'Bearer '+r.json()['access_token']}
+    def request(self,role='admin'):return {'lesson_key':'11:2026-10-31','student_local_id':'22','reason':'虚构核对补签','request_ref':'4'*32,'expected_source_sha256':'f'*64,'confirmed':True,'workspace_role':role}
 
     def test_owner_today_roster_and_historical_week(self):
         with self.client() as c:
@@ -60,7 +68,34 @@ class TeacherWebTests(unittest.TestCase):
         with self.client() as c:
             h=self.login(c,'ordinary-teacher');self.assertEqual(len(c.get('/v1/web/days',headers=h).json()['lessons']),1)
             self.assertEqual(c.get('/v1/web/weeks',headers=h).status_code,403)
-            self.assertEqual(c.post('/v1/web/makeup-requests',headers=h,json=self.request()).status_code,201)
+            self.assertEqual(c.post('/v1/web/makeup-requests',headers=h,json=self.request('teacher')).status_code,201)
+
+    def test_dual_role_requires_choice_and_teacher_mode_cannot_use_admin_scope(self):
+        updated=copy.deepcopy(self.data)
+        updated['classes'].append({'local_id':'12','name':'虚构另一班','course_name':'虚构课程','teacher':'虚构另班老师'})
+        lesson=copy.deepcopy(updated['lessons'][0]);lesson.update(key='12:2026-10-31',class_local_id='12',class_name='虚构另一班',teacher='虚构另班老师')
+        lesson['members']=[dict(lesson['members'][0],student_local_id='23',name='虚构另一学生',external_ref='OTHER001')];updated['lessons'].append(lesson)
+        with sqlite3.connect(self.db) as db:
+            db.execute('INSERT INTO roster_source_links VALUES(?,?,?,?,?)',(fixture.fixture.ORG,'class','12',fixture.OTHER_C,'b'*64))
+            db.execute('INSERT INTO roster_source_links VALUES(?,?,?,?,?)',(fixture.fixture.ORG,'student','23',fixture.OTHER_S,'b'*64))
+        db.close();install_data(self.db,updated,clock=self.clock)
+        with self.client() as c:
+            h=self.login(c);c.workspace_role=None
+            self.assertEqual(c.get('/v1/web/days',headers=h).status_code,409)
+            missing=self.request();missing.pop('workspace_role');self.assertEqual(c.post('/v1/web/makeup-requests',headers=h,json=missing).status_code,409)
+            c.workspace_role='teacher'
+            self.assertEqual([l['class_local_id'] for l in c.get('/v1/web/days',headers=h).json()['lessons']],['11'])
+            self.assertEqual(c.get('/v1/web/weeks',headers=h).status_code,403)
+            target=self.request('teacher')|{'lesson_key':'12:2026-10-31','student_local_id':'23'}
+            self.assertEqual(c.post('/v1/web/makeup-requests',headers=h,json=target).status_code,403)
+            c.workspace_role='admin';self.assertEqual(len(c.get('/v1/web/days',headers=h).json()['lessons']),2)
+            self.assertEqual(c.get('/v1/web/weeks',headers=h).status_code,200)
+
+    def test_single_role_cannot_select_administrator_and_can_default_to_teacher(self):
+        with self.client() as c:
+            h=self.login(c,'other-teacher');c.workspace_role=None;self.assertEqual(c.get('/v1/web/days',headers=h).json()['workspace_role'],'teacher')
+            c.workspace_role='admin';self.assertEqual(c.get('/v1/web/days',headers=h).status_code,403)
+            self.assertEqual(c.get('/v1/web/requests',headers=h).status_code,403)
 
     def test_makeup_is_persistent_idempotent_request_without_charge_or_arrival(self):
         with self.client() as c:
