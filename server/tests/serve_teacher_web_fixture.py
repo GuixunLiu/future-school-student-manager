@@ -8,11 +8,15 @@ import threading
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uvicorn
 from test_teacher_web import TeacherWebTests
+from teacher_web.api import install_data
 
 
 def main():
     if sys.argv[1:]!=['--fictional']:raise SystemExit('Fictional fixture only')
     f=TeacherWebTests();f.setUp()
+    old=f.data['weeks'][1];old.update(expected=18/7,rate='38.9%',fallback=True)
+    old['classes']=[{'name':'虚构旧班名','expected':18/7,'arrived':1,'leave_count':0,'rate':'38.9%','needs_review':False}]
+    install_data(f.db,f.data,clock=f.clock)
     try:
         work=f.f.f.root/'gateway';(work/'teacher_web').mkdir(parents=True)
         root=Path(__file__).resolve().parents[1]

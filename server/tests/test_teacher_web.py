@@ -36,6 +36,21 @@ class TeacherWebTests(unittest.TestCase):
             self.assertEqual(c.get('/v1/web/weeks',headers=h).status_code,403)
             self.assertEqual(c.post('/v1/web/makeup-requests',headers=h,json=self.request()).status_code,403)
 
+    def test_historical_class_names_annotated_without_removing_history_or_rounding_totals(self):
+        updated=copy.deepcopy(self.data);old=updated['weeks'][1]
+        old.update(expected=18/7,arrived=1,fallback=True)
+        old['classes']=[{'name':'虚构旧班名','expected':18/7,'arrived':1,'leave_count':0,'rate':'38.9%','needs_review':False}]
+        install_data(self.db,updated,clock=self.clock)
+        with self.client() as c:
+            h=self.login(c);report=c.get('/v1/web/weeks?start=2026-10-19',headers=h).json()['report']
+            self.assertEqual(report['expected'],18/7);self.assertEqual(report['classes'][0]['expected'],18/7)
+            self.assertTrue(report['classes'][0]['historical_class_name']);self.assertEqual(report['arrived'],1)
+            current=c.get('/v1/web/weeks',headers=h).json()['report'];self.assertFalse(current['classes'][0]['historical_class_name'])
+            self.assertEqual(c.get('/health/ready').json()['report_display_version'],2)
+        with sqlite3.connect(self.db) as db:
+            stored=db.execute('SELECT data_json FROM web_dataset').fetchone()[0]
+            self.assertNotIn('historical_class_name',stored)
+
     def test_assigned_teacher_can_use_own_class_but_not_admin_weekly_report(self):
         person='8'*32;org=fixture.fixture.ORG
         with sqlite3.connect(self.db) as db:

@@ -89,7 +89,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
     @app.get('/health/ready')
     def health():
         with store.transaction() as db:data=dataset(db)
-        return {'status':'ready','mode':'teacher_web','version':'0.1.0','makeup_mode':'request_pending_tablet','data_realtime':False,'student_sync_enabled':False,'wechat_sending_enabled':False,'parent_binding_enabled':False,'business_ready':False,'source_sha256':data['source_sha256']}
+        return {'status':'ready','mode':'teacher_web','version':'0.1.0','report_display_version':2,'makeup_mode':'request_pending_tablet','data_realtime':False,'student_sync_enabled':False,'wechat_sending_enabled':False,'parent_binding_enabled':False,'business_ready':False,'source_sha256':data['source_sha256']}
 
     @app.get('/v1/web/days')
     def days(auth:Token,date:Annotated[str|None,Query(pattern=r'^\d{4}-\d{2}-\d{2}$')]=None):
@@ -112,7 +112,11 @@ def create_app(database, clock=None, *, allow_test_client=False):
             store.require_user(actor,'admin');data=dataset(db);today=datetime.fromtimestamp(store.clock(),TZ).date();default=(today-timedelta(days=today.weekday())).isoformat();target=start or default
             week=next((w for w in data['weeks'] if w['start']==target),None)
             if week is None:raise Problem(404,'week_unavailable','这周没有已导出的资料，请选择列表中的周次')
-            return {**metadata(data),'weeks':[{'start':w['start'],'end':w['end']} for w in data['weeks'] if w['start']<=default],'report':week}
+            current_names={c['name'] for c in data['classes']}
+            # Historical labels belong to that week's records, not today's class list.
+            # Annotate a response copy; never remove history or change its totals.
+            report=dict(week,classes=[dict(row,historical_class_name=row['name'] not in current_names) for row in week['classes']])
+            return {**metadata(data),'weeks':[{'start':w['start'],'end':w['end']} for w in data['weeks'] if w['start']<=default],'report':report}
         return store.command(auth,run)
 
     @app.get('/v1/web/requests')

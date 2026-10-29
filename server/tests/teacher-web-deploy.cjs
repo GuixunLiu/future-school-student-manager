@@ -2,6 +2,7 @@
 // Exercise the actual SSH stdin framing with a fictional installer and a large payload.
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
 const {frames,validateResult}=require('../ops/deploy-teacher-web.cjs');
+const {body:patchBody}=require('../ops/patch-teacher-web-report.cjs');
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'teacher-web-protocol-')),made=[];
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
 function pin(name,body){const p=path.join(tmp,name);fs.writeFileSync(p,body);made.push(p);return {path:p,sha256:sha(Buffer.from(body))};}
@@ -16,6 +17,9 @@ try{
  assert.equal(p.status,0,p.stderr);assert.deepEqual(JSON.parse(p.stdout),{fictional:true,characters:600000,mode:'request_pending_tablet'});
  const receipt={format:'future-school-teacher-web-installed',schema_version:1,public_url:c.public_origin,expires_at:c.expires_at,makeup_mode:c.makeup_mode,gateway_sha256:file.sha256,dataset_sha256:data.sha256,source_sha256:dataset.source_sha256,summary:{classes:1,source_records:2},accounts_preserved:true,old_roster_database_modified:false,tablet_modified:false,hours_deducted:false,wechat_enabled:false,device_sync_enabled:false,service_state:'ActiveState=active\nUnitFileState=enabled'};
  assert.equal(validateResult(receipt,c),receipt);assert.throws(()=>validateResult({...receipt,hours_deducted:true},c));
+ const patchInstaller=pin('patch-installer.py',"def install(config,payload):\n    return {'fictional':True,'mode':config['mode'],'files':len(payload['files'])}\n");
+ const patched=spawnSync(path.resolve(__dirname,'../.venv/Scripts/python.exe'),['-u','-c',bootstrap],{input:patchBody({scope:{mode:'fictional'},installer:patchInstaller,files:{'teacher_web/api.py':file,'teacher_web/web/workspace.js':file}}),windowsHide:true,encoding:'utf8'});
+ assert.equal(patched.status,0,patched.stderr);assert.deepEqual(JSON.parse(patched.stdout),{fictional:true,mode:'fictional',files:2});
  fs.appendFileSync(data.path,' ');assert.throws(()=>frames(c));
  console.log('Teacher web deployment protocol passed: large framed stdin, Python bootstrap, pinned receipt and changed-input rejection. Fictional data only.');
 }finally{for(const p of made)fs.unlinkSync(p);fs.rmdirSync(tmp);}
