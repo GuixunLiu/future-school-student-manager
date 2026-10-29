@@ -243,6 +243,7 @@ function syncNativeReminders(){try{if(window.AndroidBridge&&typeof AndroidBridge
 function nativeBackupInfo(){try{if(window.AndroidBridge&&typeof AndroidBridge.getAutoBackupInfo==='function')return JSON.parse(AndroidBridge.getAutoBackupInfo()||'{}')}catch(_){}return{}}
 function createNativeBackup(reason='每日自动备份',force=false){try{if(!state.students.length&&!state.attendance.length&&!state.classes.length)return false;if(window.AndroidBridge&&typeof AndroidBridge.createAutoBackup==='function'&&(force||typeof AndroidBridge.shouldAutoBackup!=='function'||AndroidBridge.shouldAutoBackup())){return AndroidBridge.createAutoBackup(JSON.stringify(state),reason,Boolean(force))!==false}}catch(_){}return false}
 function requireSafetyBackup(reason){
+  if(reason==='恢复前备份'||reason==='清空前备份'){try{window.AndroidBridge?.pauseWebMirror()}catch(_){}}
   if(!state.students.length&&!state.classes.length&&!state.attendance.length&&!state.transactions.length)return true;
   try{
     if(window.AndroidBridge&&typeof AndroidBridge.createSafetyBackup==='function'){
@@ -339,7 +340,7 @@ function saveState(){
   if(!saved){rollbackUnsavedState();toast('保存失败，本次修改已撤回，原有数据和课时不变；请释放存储空间后重试',true);return false}
   if(releasedPhotos||releasedThumbnails)toast(`已自动释放存储空间：人脸识别特征完整保留，清理了 ${releasedPhotos+releasedThumbnails} 张头像缩略图`);
   else if(releasedLearning)toast('已自动释放人脸学习缓存，基础人脸资料仍然保留');
-  syncNativeReminders();createNativeBackup('每日自动备份',false);if(typeof scheduleDeviceSync==='function')scheduleDeviceSync();return true;
+  syncNativeReminders();createNativeBackup('每日自动备份',false);if(typeof scheduleDeviceSync==='function')scheduleDeviceSync();if(typeof scheduleWebMirror==='function')scheduleWebMirror();return true;
 }
 async function optimizeExistingFacePhotos(){
   let optimized=0;
@@ -831,7 +832,7 @@ function openWeeklyRateCalendar(){
   typeSelect.value=selectedReportScopeType;typeSelect.onchange=refreshValues;valueSelect.onchange=drawWeeks;$('#closeWeekCalendar').onclick=closeModal;refreshValues();
 }
 
-function renderSettings(){return renderLocalSettings()+wechatNoticeSettingsMarkup()+(typeof deviceSyncSettingsMarkup==='function'?deviceSyncSettingsMarkup():'')}
+function renderSettings(){return renderLocalSettings()+webMirrorSettingsMarkup()+wechatNoticeSettingsMarkup()+(typeof deviceSyncSettingsMarkup==='function'?deviceSyncSettingsMarkup():'')}
 function renderLocalSettings(){
   return `<div class="settings-grid"><section class="panel"><div class="panel-head"><div><h2>基础与后台解锁</h2><p>设置会立即保存在本机</p></div></div><div class="setting-row"><div><b>机构名称</b><small>显示在签到页与应用左上角</small></div><input id="orgNameInput" value="${esc(state.settings.orgName)}"></div><div class="setting-row"><div><b>未排课班级默认每周应到次数</b><small>已排课班级按实际排课日计算；此项仅供未排课班级折算</small></div><input id="weeklyTargetInput" type="number" min="1" max="14" value="${esc(state.settings.weeklyTarget)}"></div><div class="setting-row"><div><b>后台解锁图案</b><small>九宫格图案，仅在本机验证；修改前需验证原图案</small></div><button type="button" class="secondary-btn" id="configurePattern">${state.settings.adminPattern?'修改解锁图案':'设置解锁图案'}</button></div><div class="setting-row"><div><b>保存设置</b><small>基础设置只保存在本机</small></div><button class="primary-btn" id="saveSettings">保存</button></div></section><section class="panel"><div class="panel-head"><div><h2>Excel 与本机数据</h2><p>批量管理学生并备份完整资料</p></div></div><div class="warning-box">Excel 适合查看、打印和批量录入；JSON 完整备份还包含人脸特征与全部本机记录，建议两种都定期保存。</div><div class="setting-row"><div><b>导出 Excel</b><small>学生、班级、签到和课时记录</small></div><button class="primary-btn" id="exportExcel">导出 .xlsx</button></div><div class="setting-row"><div><b>下载学生导入模板</b><small>先按模板填写，可减少导入错误</small></div><button class="secondary-btn" id="exportTemplate">下载模板</button></div><div class="setting-row"><div><b>批量导入学生</b><small>支持 .xlsx、.xls 和 .csv 文件</small></div><button class="secondary-btn" id="batchImport">选择文件</button></div><div class="setting-row"><div><b>完整 JSON 备份</b><small>包含人脸特征，可用于整机恢复</small></div><button class="secondary-btn" id="exportBackup">导出文本</button></div><div class="setting-row"><div><b>恢复 JSON 备份</b><small>从此前的完整备份恢复资料</small></div><button class="secondary-btn" id="importBackup">导入文本</button></div>${!state.students.length?`<div class="setting-row"><div><b>添加演示数据</b><small>体验签到、课时与周报</small></div><button class="secondary-btn" id="seedDemo">添加</button></div>`:''}<div class="setting-row"><div><b>清空本机数据</b><small>此操作无法撤销</small></div><button class="danger-btn" id="resetData">全部清空</button></div></section></div>`;
 }
@@ -887,7 +888,7 @@ function bindViewEvents(){
   if($('#studentClassFilter'))$('#studentClassFilter').onchange=event=>{studentClassFilter=event.target.value;listPages.students=1;if(studentClassFilter==='long-term')studentStatusFilter='long-term';else if(studentStatusFilter==='long-term')studentStatusFilter='all';render()};
   if($('#studentStatusFilter'))$('#studentStatusFilter').onchange=event=>{studentStatusFilter=event.target.value;listPages.students=1;if(studentStatusFilter==='long-term')studentClassFilter='long-term';else if(studentClassFilter==='long-term')studentClassFilter='all';render()};
   mountWechatStudentButtons();
-  const actions={saveSettings,configurePattern:openPatternChange,openWechatNotices,...(typeof openDeviceSync==='function'?{openDeviceSync}:{}),exportExcel,exportTemplate:exportStudentTemplate,batchImport:openBatchImport,exportBackup:openExport,importBackup:openImport,seedDemo,resetData,openWeekCalendar:openWeeklyRateCalendar};
+  const actions={saveSettings,configurePattern:openPatternChange,openWechatNotices,openWebMirror,...(typeof openDeviceSync==='function'?{openDeviceSync}:{}),exportExcel,exportTemplate:exportStudentTemplate,batchImport:openBatchImport,exportBackup:openExport,importBackup:openImport,seedDemo,resetData,openWeekCalendar:openWeeklyRateCalendar};
   Object.keys(actions).forEach(id=>{const button=$('#'+id);if(button)button.onclick=actions[id]});
   if($('#reportWeekSelect'))$('#reportWeekSelect').onchange=event=>{selectedReportWeekOffset=Number(event.target.value);render()};
   if($('#reportScopeType'))$('#reportScopeType').onchange=event=>{selectedReportScopeType=event.target.value;selectedReportScopeValue=reportScopeOptions(selectedReportScopeType)[0]||'';render()};

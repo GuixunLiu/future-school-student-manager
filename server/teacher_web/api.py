@@ -90,18 +90,32 @@ def create_app(database, clock=None, *, allow_test_client=False):
 
     def allowed(db,actor,data,role):
         if role=='admin':return {c['local_id'] for c in data['classes']}
+        if db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='web_mirror_status'").fetchone() and db.execute('SELECT 1 FROM web_mirror_status WHERE id=1').fetchone():
+            return {r[0] for r in db.execute('SELECT class_local_id FROM web_mirror_assignments WHERE user_id=?',(actor['id'],))}
         return {r[0] for r in db.execute('SELECT w.local_id FROM web_class_links w JOIN teacher_classes t ON t.class_id=w.remote_id WHERE t.org_id=? AND t.user_id=?',(actor['org_id'],actor['id']))}
 
     def requests(db,actor):
         return [dict(r) for r in db.execute('SELECT id,lesson_key,student_local_id,requested_by,status,reason,created_at FROM web_makeup_requests WHERE org_id=? ORDER BY created_at DESC LIMIT 1000',(actor['org_id'],))]
 
-    def metadata(data):
-        return {k:data[k] for k in ['source_captured_at','source_sha256','as_of_date','source_records']}
+    def mirror_status(db,role=None):
+        if not db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='web_mirror_devices'").fetchone():return {'enabled':False,'revision':0}
+        enabled=bool(db.execute('SELECT 1 FROM web_mirror_devices WHERE active=1 AND expires_at>?',(store.clock(),)).fetchone())
+        row=db.execute('SELECT revision,received_at,warnings FROM web_mirror_status WHERE id=1').fetchone()
+        result={'enabled':enabled,'revision':row['revision'] if row else 0,'received_at':row['received_at'] if row else None}
+        if row and role=='admin':result['teacher_warnings']=json.loads(row['warnings'])
+        return result
+
+    def metadata(data,db,role):
+        return {**{k:data[k] for k in ['source_captured_at','source_sha256','as_of_date','source_records']},'mirror':mirror_status(db,role)}
 
     @app.get('/health/ready')
     def health():
         with store.transaction() as db:data=dataset(db)
         return {'status':'ready','mode':'teacher_web','version':'0.1.0','report_display_version':2,'workspace_ui_version':3,'workspace_role_selection':True,'makeup_mode':'request_pending_tablet','data_realtime':False,'student_sync_enabled':False,'wechat_sending_enabled':False,'parent_binding_enabled':False,'business_ready':False,'source_sha256':data['source_sha256']}
+
+    @app.get('/v1/web/sync-status')
+    def sync_status(auth:Token,workspace_role:WorkspaceRole=None):
+        return store.command(auth,lambda db,actor:{'workspace_role':selected_role(actor,workspace_role),'mirror':mirror_status(db,selected_role(actor,workspace_role))})
 
     @app.get('/v1/web/days')
     def days(auth:Token,date:Annotated[str|None,Query(pattern=r'^\d{4}-\d{2}-\d{2}$')]=None,workspace_role:WorkspaceRole=None):
@@ -115,7 +129,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 if original['date']!=target or original['class_local_id'] not in ids:continue
                 l=dict(original);l['members']=[dict(r,makeup_request=pending.get((l['key'],r['student_local_id']))) for r in original['members']];lessons.append(l)
             upcoming=[{k:l[k] for k in ['date','class_name','start_time','teacher']} for l in sorted(data['lessons'],key=lambda l:(l['date'],l['start_time'],l['class_name'])) if l['date']>target and l['class_local_id'] in ids][:4]
-            return {**metadata(data),'workspace_role':role,'date':target,'lessons':sorted(lessons,key=lambda l:(l['start_time'],l['class_name'])),'upcoming':upcoming,'available_from':min(w['start'] for w in data['weeks']),'available_until':max(w['end'] for w in data['weeks']),'makeup_mode':'request_pending_tablet'}
+            return {**metadata(data,db,role),'workspace_role':role,'date':target,'lessons':sorted(lessons,key=lambda l:(l['start_time'],l['class_name'])),'upcoming':upcoming,'available_from':min(w['start'] for w in data['weeks']),'available_until':max(w['end'] for w in data['weeks']),'makeup_mode':'request_pending_tablet'}
         return store.command(auth,run)
 
     @app.get('/v1/web/weeks')
@@ -130,7 +144,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
             # Historical labels belong to that week's records, not today's class list.
             # Annotate a response copy; never remove history or change its totals.
             report=dict(week,classes=[dict(row,historical_class_name=row['name'] not in current_names) for row in week['classes']])
-            return {**metadata(data),'workspace_role':role,'weeks':[{'start':w['start'],'end':w['end']} for w in data['weeks'] if w['start']<=default],'report':report}
+            return {**metadata(data,db,role),'workspace_role':role,'weeks':[{'start':w['start'],'end':w['end']} for w in data['weeks'] if w['start']<=default],'report':report}
         return store.command(auth,run)
 
     @app.get('/v1/web/requests')
@@ -141,7 +155,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
             for r in requests(db,actor):
                 l=by_key.get(r['lesson_key']);student=next((s for s in l['members'] if s['student_local_id']==r['student_local_id']),None) if l else None
                 if student:out.append(dict(r,student_name=student['name'],external_ref=student['external_ref'],class_name=l['class_name'],date=l['date']))
-            return {**metadata(data),'workspace_role':role,'items':out,'attendance_changed':False,'hours_deducted':False}
+            return {**metadata(data,db,role),'workspace_role':role,'items':out,'attendance_changed':False,'hours_deducted':False}
         return store.command(auth,run)
 
     @app.post('/v1/web/makeup-requests',status_code=201)

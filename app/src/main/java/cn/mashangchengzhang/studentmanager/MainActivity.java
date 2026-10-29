@@ -58,6 +58,7 @@ public class MainActivity extends Activity {
     private static final int NOTIFICATION_REQUEST = 1203;
     private WebView webView;
     private DeviceSyncTransport deviceSyncTransport;
+    private WebMirrorTransport webMirrorTransport;
     private ProgressBar progressBar;
     private PermissionRequest pendingCameraRequest;
     private ValueCallback<Uri[]> pendingFileChooser;
@@ -111,6 +112,9 @@ public class MainActivity extends Activity {
     }
 
     private void configureWebView() {
+        webMirrorTransport = new WebMirrorTransport(this, () -> {
+            if (pageReady && webView != null) webView.evaluateJavascript("window.onWebMirrorChanged && window.onWebMirrorChanged()", null);
+        });
         deviceSyncTransport = new DeviceSyncTransport(this, (id, result) -> {
             if (webView != null) webView.evaluateJavascript("window.onDeviceSyncNativeResult && window.onDeviceSyncNativeResult(" + JSONObject.quote(id) + "," + JSONObject.quote(result.toString()) + ")", null);
         });
@@ -140,6 +144,7 @@ public class MainActivity extends Activity {
                 if (!trustedAppUri(Uri.parse(url))) return;
                 pageReady = true;
                 deliverPendingReminder();
+                webView.evaluateJavascript("window.scheduleWebMirror && window.scheduleWebMirror()", null);
             }
 
             @Override
@@ -209,6 +214,10 @@ public class MainActivity extends Activity {
     }
 
     private class AppBridge {
+        @JavascriptInterface public String getWebMirrorStatus() { return webMirrorTransport.overview(); }
+        @JavascriptInterface public void configureWebMirror() { webMirrorTransport.configure(); }
+        @JavascriptInterface public void submitWebMirror(String data) { webMirrorTransport.submit(data); }
+        @JavascriptInterface public void pauseWebMirror() { webMirrorTransport.pause(); }
         private final LocalRepairCheckpoint repairCheckpoint = new LocalRepairCheckpoint(MainActivity.this);
         @JavascriptInterface
         public String getDeviceSyncProfile() { return deviceSyncTransport.overview(); }
@@ -542,7 +551,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (webMirrorTransport != null) webMirrorTransport.resume();
+        if (pageReady && webView != null) webView.evaluateJavascript("window.scheduleWebMirror && window.scheduleWebMirror()", null);
+    }
+
+    @Override
     protected void onDestroy() {
+        if (webMirrorTransport != null) webMirrorTransport.close();
         if (deviceSyncTransport != null) deviceSyncTransport.close();
         synchronized (sfaceLock) {
             sfaceNet = null;
