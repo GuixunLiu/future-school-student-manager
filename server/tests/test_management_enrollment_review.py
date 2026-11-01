@@ -1,4 +1,5 @@
-import copy,unittest
+import copy,unittest,json,subprocess,os,shutil
+from pathlib import Path
 from business.store import Problem
 import test_management_delivery as fixture
 
@@ -94,3 +95,24 @@ class EnrollmentReviewTests(unittest.TestCase):
         self.assertTrue(renewed['renewed']);self.assertGreater(renewed['expires_at'],self.f.now)
         self.assertTrue(self.authorize(fresh['review_id'])['duplicate'])
         self.assertEqual(self.store.enrollment_plan(self.token,'fixture-generation')['baseline_sha256'],'c'*64)
+
+    def test_offline_projection_is_accepted_by_real_review_api_without_business_changes(self):
+        node=os.environ.get('NODE_BINARY') or shutil.which('node')
+        if not node:self.skipTest('Node runtime required for cross-language projection')
+        data=dict(classes=[dict(id=2,name='虚构班甲',teacher='虚构人员',courseName='虚构课程')],
+                  students=[dict(id=1,name='虚构学生',studentNo='TEST',className='虚构班甲',hours=10,contact='PRIVATE-MUST-NOT-EXPORT')],
+                  attendance=[],transactions=[],settings=dict(studentLeaves=[]))
+        source=self.source();mapping=dict(protocol=1,org_id=self.f.org,device_id=self.device['id'],generation='fixture-generation',
+            classes=source['classes'],students=[{k:v for k,v in source['students'][0].items() if k!='balance_units'}],
+            lessons=[dict(lesson_id='lesson',class_id='class-a',starts_at=1900,charge_units=150,student_ids=['student'])])
+        script="""const fs=require('fs'),crypto=require('crypto');const {data,mapping,now}=JSON.parse(fs.readFileSync(0,'utf8'));
+const raw=JSON.stringify(data),capture={format:'future-school-live-capture-v1',sha256:crypto.createHash('sha256').update(raw).digest('hex'),bytes:Buffer.byteLength(raw),captured_at:now};
+process.stdout.write(JSON.stringify(require('./server/ops/build-canonical-manifest.cjs').build(raw,mapping,capture,now)));"""
+        before=self.f.state()
+        result=subprocess.run([node,'-e',script],input=json.dumps(dict(data=data,mapping=mapping,now=self.f.now)),
+                              cwd=Path(__file__).resolve().parents[2],encoding='utf-8',capture_output=True,check=True)
+        self.assertNotIn('PRIVATE-MUST-NOT-EXPORT',result.stdout)
+        body=json.loads(result.stdout)['body']
+        response=self.client.post('/v1/management/enrollment-reviews',headers={'Authorization':'Bearer '+self.f.tokens['owner']},json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['facts'],1);self.assertEqual(before,self.f.state())
