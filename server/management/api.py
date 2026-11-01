@@ -89,6 +89,19 @@ class DeliveryReceipt(Input):
                            'balance_changed', 'invalid_event', 'storage_failed'] | None = None
 
 
+class CheckinInput(Input):
+    generation: str = Field(min_length=1, max_length=80)
+    event_ref: str = Field(min_length=1, max_length=80)
+    student_id: str = Field(min_length=1, max_length=80)
+    lesson_id: str = Field(min_length=1, max_length=200)
+    attendance_revision: int = Field(ge=0)
+    balance_revision: int = Field(ge=0)
+    previous_balance_units: int
+    consumed_units: int = Field(gt=0)
+    remaining_units: int
+    occurred_at: int = Field(ge=0, le=253402185599)
+
+
 def create_app(database, clock=None, *, allow_test_client=False):
     store = DeliveryStore(database, clock)
     with store.transaction() as db:
@@ -97,7 +110,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
                 'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
                 'assessment_scores', 'assessment_commands', 'management_device_access',
-                'management_device_students', 'management_deliveries'} <= tables:
+                'management_device_students', 'management_deliveries', 'management_uploads'} <= tables:
             raise ValueError('Explicit candidate migration required; no automatic production migration')
     app = base_app(database, clock, allow_test_client=allow_test_client)
     app.router.routes[:] = [r for r in app.router.routes if r.path in {'/v1/auth/login', '/v1/auth/logout'}]
@@ -132,6 +145,10 @@ def create_app(database, clock=None, *, allow_test_client=False):
     @app.post('/v1/management/device/receipt')
     def device_receipt(data: DeliveryReceipt, token: Token):
         return store.acknowledge(token, **data.model_dump())
+
+    @app.post('/v1/management/device/checkin')
+    def device_checkin(data: CheckinInput, token: Token):
+        return store.upload_attendance(token, **data.model_dump())
 
     @app.get('/health/ready')
     def health():
