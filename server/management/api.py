@@ -102,6 +102,22 @@ class CheckinInput(Input):
     occurred_at: int = Field(ge=0, le=253402185599)
 
 
+class EnrollmentReviewInput(Input):
+    workspace_role: Role
+    device_id: str = Field(min_length=1,max_length=80)
+    generation: str = Field(min_length=1,max_length=80)
+    baseline_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_captured_at: int = Field(ge=0)
+    source: dict
+
+
+class EnrollmentAuthorizeInput(Input):
+    workspace_role: Role
+    review_id: str = Field(min_length=1,max_length=80)
+    profile_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    nonce: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+
 def create_app(database, clock=None, *, allow_test_client=False):
     store = DeliveryStore(database, clock)
     with store.transaction() as db:
@@ -110,7 +126,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
                 'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
                 'assessment_scores', 'assessment_commands', 'management_device_access',
-                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs'} <= tables:
+                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews'} <= tables:
             raise ValueError('Explicit candidate migration required; no automatic production migration')
     app = base_app(database, clock, allow_test_client=allow_test_client)
     app.router.routes[:] = [r for r in app.router.routes if r.path in {'/v1/auth/login', '/v1/auth/logout'}]
@@ -141,6 +157,14 @@ def create_app(database, clock=None, *, allow_test_client=False):
     @app.get('/v1/management/device/plan')
     def device_plan(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):
         return store.enrollment_plan(token, generation)
+
+    @app.post('/v1/management/enrollment-reviews')
+    def enrollment_review(data: EnrollmentReviewInput, token: Token):
+        return store.review_enrollment(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-authorizations')
+    def enrollment_authorize(data: EnrollmentAuthorizeInput, token: Token):
+        return store.authorize_enrollment(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
 
     @app.get('/v1/management/device/next')
     def device_next(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):
