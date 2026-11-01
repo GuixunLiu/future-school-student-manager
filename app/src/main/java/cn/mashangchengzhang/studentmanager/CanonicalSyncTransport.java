@@ -1,7 +1,9 @@
 package cn.mashangchengzhang.studentmanager;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.SharedPreferences;
+import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import org.json.JSONObject;
@@ -11,6 +13,9 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.MessageDigest;
+import java.security.KeyPairGenerator;
+import java.security.PrivateKey;
+import java.security.spec.MGF1ParameterSpec;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -18,7 +23,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
+import javax.crypto.KeyGenerator;
 import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.OAEPParameterSpec;
+import javax.crypto.spec.PSource;
+import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.*;
 
 /** Fixed-route pinned client. No token enters JavaScript; no auto-enrolment.
@@ -27,7 +36,7 @@ import javax.net.ssl.*;
  */
 final class CanonicalSyncTransport {
     interface Callback { void reply(String id, JSONObject response); }
-    static final String PREFS="canonical_sync_native_v1", AES="school_canonical_sync_aes_v1";
+    static final String PREFS="canonical_sync_native_v1", AES="school_canonical_sync_aes_v1", RSA="school_canonical_sync_rsa_v1";
     private final Activity activity;
     private final SharedPreferences prefs;
     private final Callback callback;
@@ -40,8 +49,9 @@ final class CanonicalSyncTransport {
         String value="";try(InputStream in=a.getResources().openRawResource(R.raw.web_mirror_server_spki)){value=new String(read(in,256),StandardCharsets.US_ASCII).trim();}catch(Exception ignored){}
         pin=value;
     }
-    private JSONObject profile()throws Exception{
-        if(!prefs.getBoolean("enabled",false))throw new IOException("disabled");
+    private JSONObject profile()throws Exception{return profile(true);}
+    private JSONObject profile(boolean requireEnabled)throws Exception{
+        if(requireEnabled&&!prefs.getBoolean("enabled",false))throw new IOException("disabled");
         KeyStore keys=KeyStore.getInstance("AndroidKeyStore");keys.load(null);
         SecretKey key=(SecretKey)keys.getKey(AES,null);if(key==null)throw new IOException("unprovisioned");
         Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
@@ -50,16 +60,66 @@ final class CanonicalSyncTransport {
         validate(p);return p;
     }
     private void validate(JSONObject p)throws Exception{
+        fields(p,"e t d p o g id b n x");
         if(!pin.matches("[a-f0-9]{64}")||!pin.equals(p.getString("p"))||!p.getString("t").matches("wxd_[A-Za-z0-9_-]{43}"))throw new IOException("profile");
         for(String k:new String[]{"o","d","g","id"})if(!p.getString(k).matches("[a-f0-9]{32}"))throw new IOException("profile");
+        if(!p.getString("b").matches("[a-f0-9]{64}")||!p.getString("n").matches("[a-f0-9]{32}")||p.getLong("x")<=System.currentTimeMillis()/1000)throw new IOException("baseline or expiry");
         String endpoint=p.getString("e");
         if(!endpoint.equals("https://47.97.226.219:18083")&&!(BuildConfig.DEBUG&&endpoint.matches("https://127\\.0\\.0\\.1:[0-9]{4,5}")))throw new IOException("endpoint");
     }
     String overview(){
+        if(!prefs.getBoolean("enabled",false)&&prefs.getBoolean("staged",false))try{JSONObject p=profile(false);return new JSONObject().put("configured",false).put("staged",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d")).put("generation",p.getString("g")).put("profileId",p.getString("id")).put("baselineSha256",p.getString("b")).toString();}catch(Exception ignored){}
         try{JSONObject p=profile();return new JSONObject().put("configured",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d"))
             .put("generation",p.getString("g")).put("profileId",p.getString("id")).toString();}catch(Exception e){return "{\"configured\":false}";}
     }
-    void request(String id,String profileId,String kind,String text){
+    private KeyStore keys()throws Exception{KeyStore k=KeyStore.getInstance("AndroidKeyStore");k.load(null);return k;}
+    private PrivateKey rsa()throws Exception{
+        if(!keys().containsAlias(RSA)){KeyPairGenerator generator=KeyPairGenerator.getInstance("RSA","AndroidKeyStore");generator.initialize(new KeyGenParameterSpec.Builder(RSA,KeyProperties.PURPOSE_DECRYPT).setKeySize(3072).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP).setDigests(KeyProperties.DIGEST_SHA256,KeyProperties.DIGEST_SHA1).build());generator.generateKeyPair();}
+        return (PrivateKey)keys().getKey(RSA,null);
+    }
+    synchronized void prepareEnrollment(){
+        if(closed)return;worker.execute(()->{try{
+            rsa();String nonce=prefs.getString("nonce","");if(nonce.isEmpty()){nonce=java.util.UUID.randomUUID().toString().replace("-","");if(!prefs.edit().putString("nonce",nonce).commit())throw new IOException();}
+            JSONObject request=new JSONObject().put("protocol",1).put("nonce",nonce).put("public_key",Base64.encodeToString(keys().getCertificate(RSA).getPublicKey().getEncoded(),2));
+            File root=activity.getExternalFilesDir(null);if(root==null)throw new IOException();
+            android.util.AtomicFile file=new android.util.AtomicFile(new File(root,"canonical-sync-request.json"));FileOutputStream out=file.startWrite();try{out.write(request.toString().getBytes(StandardCharsets.UTF_8));file.finishWrite(out);}catch(Exception e){file.failWrite(out);throw e;}
+            reply("enrollment",result(true,200,new JSONObject().put("prepared",true)));
+        }catch(Exception e){reply("enrollment",result(false,0,null));}});
+    }
+    void stageEnrollment(String baseline){
+        if(closed||baseline==null||!baseline.matches("[a-f0-9]{64}"))return;
+        activity.runOnUiThread(()->new AlertDialog.Builder(activity).setTitle("核对新的同步连接")
+            .setMessage("将读取已核对资料对应的加密连接，仅准备新连接；日常同步模式暂不切换。")
+            .setNegativeButton("取消",null).setPositiveButton("核对连接",(dialog,which)->stage(baseline)).show());
+    }
+    synchronized void stage(String baseline){
+        if(closed||baseline==null||!baseline.matches("[a-f0-9]{64}")||!busy.compareAndSet(false,true))return;
+        worker.execute(()->{try{
+            if(prefs.getBoolean("enabled",false))throw new IOException("already active");
+            File root=activity.getExternalFilesDir(null);if(root==null)throw new IOException();
+            JSONObject envelope=new JSONObject(new String(read(new FileInputStream(new File(root,"canonical-sync-connection.enc.json")),16384),StandardCharsets.UTF_8));
+            fields(envelope,"protocol nonce wrapped_key iv ciphertext");String nonce=prefs.getString("nonce","");
+            if(envelope.getInt("protocol")!=1||nonce.isEmpty()||!nonce.equals(envelope.getString("nonce")))throw new IOException("different device");
+            Cipher unwrap=Cipher.getInstance("RSA/ECB/OAEPPadding");unwrap.init(Cipher.DECRYPT_MODE,rsa(),new OAEPParameterSpec("SHA-256","MGF1",MGF1ParameterSpec.SHA1,PSource.PSpecified.DEFAULT));
+            byte[] session=unwrap.doFinal(Base64.decode(envelope.getString("wrapped_key"),2));byte[] iv=Base64.decode(envelope.getString("iv"),2);
+            if(session.length!=32||iv.length!=12)throw new IOException("envelope");
+            Cipher decrypt=Cipher.getInstance("AES/GCM/NoPadding");decrypt.init(Cipher.DECRYPT_MODE,new SecretKeySpec(session,"AES"),new GCMParameterSpec(128,iv));decrypt.updateAAD(("future-school-canonical-v1:"+nonce).getBytes(StandardCharsets.UTF_8));
+            JSONObject p=new JSONObject(new String(decrypt.doFinal(Base64.decode(envelope.getString("ciphertext"),2)),StandardCharsets.UTF_8));validate(p);
+            if(!p.getString("n").equals(nonce)||!p.getString("b").equals(baseline))throw new IOException("baseline");
+            JSONObject previous=null;if(prefs.getBoolean("staged",false))try{previous=profile(false);}catch(Exception ignored){}
+            if(previous!=null&&!previous.getString("id").equals(p.getString("id")))throw new IOException("pending profile differs");
+            JSONObject response=http(p,"/v1/management/device/plan?generation="+URLEncoder.encode(p.getString("g"),"UTF-8"),null);
+            if(!response.getBoolean("ok"))throw new IOException("authorization");JSONObject plan=response.getJSONObject("data");
+            if(plan.getInt("protocol")!=1||!plan.getString("mode").equals("canonical_enrollment_staging")||plan.getBoolean("enabled")||!plan.getBoolean("activation_required"))throw new IOException("plan");
+            for(String[] pair:new String[][]{{"org_id","o"},{"device_id","d"},{"generation","g"},{"profile_id","id"},{"nonce","n"},{"baseline_sha256","b"}})if(!plan.getString(pair[0]).equals(p.getString(pair[1])))throw new IOException("plan identity");
+            if(plan.getLong("expires_at")!=p.getLong("x"))throw new IOException("plan expiry");
+            if(!keys().containsAlias(AES)){KeyGenerator generator=KeyGenerator.getInstance("AES","AndroidKeyStore");generator.init(new KeyGenParameterSpec.Builder(AES,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes("GCM").setEncryptionPaddings("NoPadding").build());generator.generateKey();}
+            Cipher save=Cipher.getInstance("AES/GCM/NoPadding");save.init(Cipher.ENCRYPT_MODE,(SecretKey)keys().getKey(AES,null));String secret=Base64.encodeToString(save.doFinal(p.toString().getBytes(StandardCharsets.UTF_8)),2);
+            if(!prefs.edit().putString("secret",secret).putString("iv",Base64.encodeToString(save.getIV(),2)).putBoolean("staged",true).putBoolean("enabled",false).commit())throw new IOException("save");
+            reply("enrollment",result(true,200,new JSONObject().put("staged",true).put("activated",false)));
+        }catch(Exception e){reply("enrollment",result(false,0,null));}finally{busy.set(false);}});
+    }
+    synchronized void request(String id,String profileId,String kind,String text){
         if(closed||id==null||!id.matches("canonical:[a-f0-9]{32}")||text==null||text.length()>16000)return;
         if(!busy.compareAndSet(false,true)){reply(id,result(false,429,null));return;}
         worker.execute(()->{
@@ -111,5 +171,5 @@ final class CanonicalSyncTransport {
     private static byte[] read(InputStream stream,int max)throws IOException{
         try(InputStream in=stream;ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] b=new byte[4096];int n;while((n=in.read(b))!=-1){if(out.size()+n>max)throw new IOException("limit");out.write(b,0,n);}return out.toByteArray();}
     }
-    void close(){closed=true;worker.shutdownNow();}
+    synchronized void close(){closed=true;worker.shutdownNow();}
 }

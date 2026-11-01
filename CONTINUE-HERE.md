@@ -1,5 +1,9 @@
 # 换电脑后从这里继续
 
+## 最新：基线授权/加密暂存已实现，原生验收被USB断开挡住（2026-11-01）
+
+先读[新连接接续](docs/canonical-enrollment.md)。新增设备plan及与当前服务器账本绑定的证明核对；原生RSA/AES混合解密、固定身份TLS核对plan、Keystore暂存及后台入口已加入，成功仍staged=true/enabled=false。19项授权/交付/API、10项实际App入口及桌面JCE防篡改测试通过；Android两种构建通过，release不包含debug测试Activity。**真机脚本安装前因HVA13XVR消失而退出，设备复查为空，不能声称原生导入/TLS验收成功。**连接恢复后先运行独立native-canonical-enrollment验收，再做授权证明生成工具、迁移映射与暂存到启用的双端确认；不直接改enabled，不替换日常App，不使用旧截图密码。
+
 ## 最新：候选App实际接线、原生固定路由与独立启动（2026-11-01）
 
 先读[App接线接续](docs/canonical-app-integration.md)。实际App保存/签到入口已接候选存储，Gradle直接打包相同JS源，旧镜像/事件通道受新模式门禁；新增原生固定路由加密客户端。8项实际入口测试、此前51项模块测试通过；debug/release构建成功，APK脚本逐字节校验通过。HVA13XVR安装并冷启动独立.synctest成功，清理测试包后返回日常App，真实包仍80且安装时间未变。**原生新配置安全授权导入尚未实现、服务器路由/真实库未迁移，未进行新通道真实TLS全流程，不得切换日常App或把enabled手工置true。**下一步先实现核对基线约束下的新设备授权/加密导入和服务器plan，再独立App真机联网验收；候选代码不是已上线状态。

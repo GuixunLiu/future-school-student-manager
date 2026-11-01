@@ -60,9 +60,28 @@ function canonicalNativeRequest(kind,payload){
   });
 }
 window.onCanonicalSyncNativeResult=(id,raw)=>{
+  if(id==='enrollment'){
+    try{const r=typeof raw==='string'?JSON.parse(raw):raw;const message=r.ok?(r.data?.staged?'新连接已核对并暂存，尚未切换资料':'连接申请已准备，请交由管理员核对'):'连接未通过核对，原资料和连接保持不变';toast(message,!r.ok);const el=document.getElementById('canonicalEnrollmentStatus');if(el)el.textContent=message;}catch(_){}return;
+  }
   const task=canonicalRequests.get(id);if(!task)return;clearTimeout(task.timer);canonicalRequests.delete(id);
   try{task.resolve(typeof raw==='string'?JSON.parse(raw):raw);}catch(_){task.reject(Error('response'));}
 };
+function canonicalEnrollmentSettingsMarkup(){
+  const p=canonicalProfile(),active=canonicalModeActive();
+  return `<details class="settings-card"><summary>网页主管理连接（准备）</summary><p id="canonicalEnrollmentStatus">${active?'已启用网页主管理':p.staged?'新连接已暂存，尚未切换资料':'尚未准备新连接'}</p><p>先由管理员核对资料并准备连接文件。这一步只准备连接，不会立即切换同步或修改课时。</p><button class="secondary-btn" data-canonical-enrollment="prepare" ${active?'disabled':''}>准备连接申请</button> <button class="secondary-btn" data-canonical-enrollment="stage" ${active?'disabled':''}>核对加密连接</button></details>`;
+}
+document.addEventListener('click',event=>{const action=event.target?.closest?.('[data-canonical-enrollment]')?.getAttribute('data-canonical-enrollment');if(action==='prepare')prepareCanonicalEnrollment();if(action==='stage')stageCanonicalEnrollment();});
+function prepareCanonicalEnrollment(){if(typeof isAdminAuthenticated==='undefined'||!isAdminAuthenticated)return toast('请先解锁后台',true);try{AndroidBridge.prepareCanonicalSyncEnrollment();}catch(_){toast('当前版本暂不支持新连接准备',true);}}
+async function stageCanonicalEnrollment(){
+  if(typeof isAdminAuthenticated==='undefined'||!isAdminAuthenticated)return toast('请先解锁后台',true);
+  if(canonicalModeActive())return toast('新模式已启用，不能覆盖当前连接',true);
+  try{
+    const raw=localStorage.getItem(STORAGE_KEY);if(!raw||JSON.stringify(state)!==committedStateSnapshot)throw Error('unsaved');
+    const hashed=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
+    if(localStorage.getItem(STORAGE_KEY)!==raw||JSON.stringify(state)!==committedStateSnapshot)throw Error('changed');
+    AndroidBridge.stageCanonicalSyncEnrollment(Array.from(new Uint8Array(hashed),b=>b.toString(16).padStart(2,'0')).join(''));
+  }catch(_){toast('资料尚未保存或已变化，请先保存并重新核对备份',true);}
+}
 function scheduleCanonicalSync(){
   if(!canonicalModeActive()||canonicalTimer!==null||!canonicalProfile().configured)return;
   canonicalTimer=setTimeout(async()=>{

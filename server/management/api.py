@@ -110,7 +110,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
                 'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
                 'assessment_scores', 'assessment_commands', 'management_device_access',
-                'management_device_students', 'management_deliveries', 'management_uploads'} <= tables:
+                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs'} <= tables:
             raise ValueError('Explicit candidate migration required; no automatic production migration')
     app = base_app(database, clock, allow_test_client=allow_test_client)
     app.router.routes[:] = [r for r in app.router.routes if r.path in {'/v1/auth/login', '/v1/auth/logout'}]
@@ -137,6 +137,10 @@ def create_app(database, clock=None, *, allow_test_client=False):
             raise Problem(401, 'unauthorized', '请先登录')
         return value[7:]
     Token = Annotated[str, Depends(authorization)]
+
+    @app.get('/v1/management/device/plan')
+    def device_plan(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):
+        return store.enrollment_plan(token, generation)
 
     @app.get('/v1/management/device/next')
     def device_next(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):

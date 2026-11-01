@@ -13,6 +13,7 @@ import re
 from business.store import Problem, uid
 from .assessments import AssessmentStore
 from .uplink import UplinkOperations, SCHEMA as UPLINK_SCHEMA
+from .enrollment import EnrollmentOperations, SCHEMA as ENROLLMENT_SCHEMA
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_device_access (
@@ -43,7 +44,7 @@ CONFLICTS = frozenset({'mapping_changed', 'local_changes', 'attendance_changed',
                       'balance_changed', 'invalid_event', 'storage_failed'})
 
 
-class DeliveryStore(UplinkOperations, AssessmentStore):
+class DeliveryStore(EnrollmentOperations, UplinkOperations, AssessmentStore):
     def delivery_status(self, db, org, request_id, request_status):
         if request_status != 'approved':
             return 'not_created'
@@ -63,7 +64,7 @@ class DeliveryStore(UplinkOperations, AssessmentStore):
         super().initialize()
         db = self.connect()
         try:
-            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + UPLINK_SCHEMA + '\nCOMMIT;')
+            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + UPLINK_SCHEMA + '\n' + ENROLLMENT_SCHEMA + '\nCOMMIT;')
         finally:
             db.close()
 

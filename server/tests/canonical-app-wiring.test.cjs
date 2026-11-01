@@ -63,3 +63,16 @@ test('canonical tablet cannot clear or restore an old backup to bypass canonical
  assert.equal(f.run("requireSafetyBackup('恢复前备份')"),false);
  assert.equal(f.run("requireSafetyBackup('清空前备份')"),false);assert.equal(f.disk.raw,raw);
 });
+test('enrollment staging requires unlocked admin and transmits only stable baseline digest',async()=>{
+ const f=fixture(false),calls=[];f.bridge.stageCanonicalSyncEnrollment=h=>calls.push(h);
+ await f.run('stageCanonicalEnrollment()');assert.equal(calls.length,0);
+ f.run('let isAdminAuthenticated=true;');const raw=f.disk.raw;
+ await f.run('stageCanonicalEnrollment()');
+ assert.equal(calls[0],require('node:crypto').createHash('sha256').update(raw).digest('hex'));
+ assert.equal(f.disk.raw,raw);assert.equal(f.run('canonicalModeActive()'),false);
+});
+test('state changing during baseline hash refuses staging',async()=>{
+ const f=fixture(false),calls=[];f.bridge.stageCanonicalSyncEnrollment=h=>calls.push(h);f.run('let isAdminAuthenticated=true;');
+ const task=f.run('stageCanonicalEnrollment()');f.disk.raw=JSON.stringify({...f.snapshot(),newField:'changed'});await task;
+ assert.equal(calls.length,0);assert.ok(f.notes.some(n=>n.includes('重新核对备份')));
+});
