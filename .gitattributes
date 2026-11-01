@@ -16,3 +16,5 @@ server/ops/review-pilot-leaves.cmd text eol=crlf
 server/ops/deploy-teacher-web.cmd text eol=crlf
 server/ops/patch-teacher-web-report.cmd text eol=crlf
 server/ops/add-web-administrators.cmd text eol=crlf
+# This read-only SSH helper is fingerprinted byte-for-byte by its caller.
+server/ops/export-management-review.py -text
