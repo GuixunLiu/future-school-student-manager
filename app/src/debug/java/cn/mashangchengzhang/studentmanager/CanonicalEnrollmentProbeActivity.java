@@ -26,6 +26,13 @@ public final class CanonicalEnrollmentProbeActivity extends Activity {
         });
         String phase=getIntent().getStringExtra("phase");
         if("prepare".equals(phase))transport.prepareEnrollment();
+        else if(phase!=null&&phase.startsWith("capture")){
+            try{
+                String raw="{\"students\":[{\"id\":1,\"studentNo\":\"TEST001\",\"name\":\"Fictional Student\",\"className\":\"Fictional Class\",\"hours\":10}],\"classes\":[{\"id\":2,\"name\":\"Fictional Class\",\"teacher\":\"Fictional Teacher\",\"courseName\":\"Fictional Course\"}],\"attendance\":[],\"transactions\":[],\"settings\":{\"studentLeaves\":[]}}";
+                StringBuilder hash=new StringBuilder();for(byte b:java.security.MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8)))hash.append(String.format(java.util.Locale.ROOT,"%02x",b&255));
+                transport.capture(raw,"capture-bad-digest".equals(phase)?new String(new char[64]).replace('\0','0'):hash.toString(),System.currentTimeMillis()/1000-("capture-stale".equals(phase)?120:0));
+            }catch(Exception e){text.setText("虚构资料准备失败");}
+        }
         else if("stage".equals(phase))transport.stage(getIntent().getStringExtra("baseline"));
         else finish();
     }

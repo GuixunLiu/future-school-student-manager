@@ -82,18 +82,25 @@ function build(raw,mapping,capture,now=Math.floor(Date.now()/1000)){
   if(Buffer.byteLength(wire)>16384)fail('single_class_request_limit');
   return {body,metadata:{format:'future-school-canonical-manifest-v1',org_id:mapping.org_id,source_sha256:sha,source_bytes:bytes.length,request_bytes:Buffer.byteLength(wire),classes:classes.length,students:students.length,facts:facts.length,offline_only:true,server_written:false,tablet_modified:false}};
 }
-module.exports={build};
+function buildNative(envelope,mapping,now=Math.floor(Date.now()/1000)){
+  exact(envelope,'format captured_at sha256 bytes payload_base64');
+  if(envelope.format!=='future-school-native-capture-v1'||typeof envelope.payload_base64!=='string'||envelope.payload_base64.length>28000000||envelope.payload_base64.length%4||!/^[A-Za-z0-9+/]*={0,2}$/.test(envelope.payload_base64))fail('invalid_native_capture');
+  const bytes=Buffer.from(envelope.payload_base64,'base64'),raw=bytes.toString('utf8');
+  if(bytes.toString('base64')!==envelope.payload_base64||bytes.length>20*1024*1024||!Buffer.from(raw,'utf8').equals(bytes))fail('invalid_native_capture');
+  return build(raw,mapping,{format:'future-school-live-capture-v1',sha256:envelope.sha256,bytes:envelope.bytes,captured_at:envelope.captured_at},now);
+}
+module.exports={build,buildNative};
 if(require.main===module){
   const fs=require('node:fs'),path=require('node:path');
   try{
     const args=process.argv.slice(2),options={};
-    if(!args.length){console.log('Offline manifest builder. Requires --backup --mapping --capture-receipt --output. Never sends a request.');process.exit(0);}
-    for(let n=0;n<args.length;n+=2){if(!['--backup','--mapping','--capture-receipt','--output'].includes(args[n])||!args[n+1]||options[args[n]])fail('invalid_arguments');options[args[n]]=args[n+1];}
-    if(Object.keys(options).length!==4)fail('invalid_arguments');
+    if(!args.length){console.log('Offline manifest builder. Use --native-capture --mapping --output, or --backup --capture-receipt --mapping --output. Never sends a request.');process.exit(0);}
+    for(let n=0;n<args.length;n+=2){if(!['--backup','--mapping','--capture-receipt','--native-capture','--output'].includes(args[n])||!args[n+1]||options[args[n]])fail('invalid_arguments');options[args[n]]=args[n+1];}
+    if(!options['--mapping']||!options['--output']||(options['--native-capture']?Object.keys(options).length!==3:Object.keys(options).length!==4||!options['--backup']||!options['--capture-receipt']))fail('invalid_arguments');
     const output=path.resolve(options['--output']),parent=fs.realpathSync(path.dirname(output)),repo=fs.realpathSync(path.resolve(__dirname,'../..'));
     const relative=path.relative(repo,parent);if(!relative||relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))fail('private_output_must_be_outside_repository');
-    const raw=fs.readFileSync(options['--backup'],'utf8'),mapping=JSON.parse(fs.readFileSync(options['--mapping'],'utf8')),capture=JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8'));
-    const result=build(raw,mapping,capture);
+    const mapping=JSON.parse(fs.readFileSync(options['--mapping'],'utf8'));
+    const result=options['--native-capture']?buildNative(JSON.parse(fs.readFileSync(options['--native-capture'],'utf8')),mapping):build(fs.readFileSync(options['--backup'],'utf8'),mapping,JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8')));
     // Exclusive creation: never overwrite an earlier review or its inputs.
     fs.writeFileSync(path.join(parent,path.basename(output)),JSON.stringify(result,null,2)+'\n',{flag:'wx',mode:0o600});
     console.log(JSON.stringify({...result.metadata,contains_private_data:true}));

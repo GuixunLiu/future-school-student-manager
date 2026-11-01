@@ -106,8 +106,8 @@ class EnrollmentReviewTests(unittest.TestCase):
             classes=source['classes'],students=[{k:v for k,v in source['students'][0].items() if k!='balance_units'}],
             lessons=[dict(lesson_id='lesson',class_id='class-a',starts_at=1900,charge_units=150,student_ids=['student'])])
         script="""const fs=require('fs'),crypto=require('crypto');const {data,mapping,now}=JSON.parse(fs.readFileSync(0,'utf8'));
-const raw=JSON.stringify(data),capture={format:'future-school-live-capture-v1',sha256:crypto.createHash('sha256').update(raw).digest('hex'),bytes:Buffer.byteLength(raw),captured_at:now};
-process.stdout.write(JSON.stringify(require('./server/ops/build-canonical-manifest.cjs').build(raw,mapping,capture,now)));"""
+const raw=JSON.stringify(data),capture={format:'future-school-native-capture-v1',sha256:crypto.createHash('sha256').update(raw).digest('hex'),bytes:Buffer.byteLength(raw),captured_at:now,payload_base64:Buffer.from(raw).toString('base64')};
+process.stdout.write(JSON.stringify(require('./server/ops/build-canonical-manifest.cjs').buildNative(capture,mapping,now)));"""
         before=self.f.state()
         result=subprocess.run([node,'-e',script],input=json.dumps(dict(data=data,mapping=mapping,now=self.f.now)),
                               cwd=Path(__file__).resolve().parents[2],encoding='utf-8',capture_output=True,check=True)

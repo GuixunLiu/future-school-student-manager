@@ -7,10 +7,11 @@ const adb=path.resolve(repo,'../android-toolchain/sdk/platform-tools/adb.exe'),j
 const pkg='cn.mashangchengzhang.studentmanager.synctest',daily='cn.mashangchengzhang.studentmanager',dir='/sdcard/Android/data/'+pkg+'/files/';
 const cmd=args=>execFileSync(adb,['-s','HVA13XVR',...args],{encoding:'utf8',windowsHide:true,timeout:30000}).trim();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let stageBaseline='c'.repeat(64);
 const metadata=()=>cmd(['shell','dumpsys','package',daily]).split(/\r?\n/).filter(s=>/versionCode=|versionName=|firstInstallTime=|lastUpdateTime=/.test(s)).map(s=>s.trim());
 async function phase(name){
  const ref=crypto.randomUUID();cmd(['shell','am','force-stop',pkg]);
- cmd(['shell','am','start','-n',pkg+'/cn.mashangchengzhang.studentmanager.CanonicalEnrollmentProbeActivity','--es','phase',name,'--es','run_ref',ref,'--es','baseline','c'.repeat(64)]);
+ cmd(['shell','am','start','-n',pkg+'/cn.mashangchengzhang.studentmanager.CanonicalEnrollmentProbeActivity','--es','phase',name,'--es','run_ref',ref,'--es','baseline',stageBaseline]);
  for(let i=0;i<80;i++){
   try{const r=JSON.parse(cmd(['shell','cat',dir+'canonical-probe-result.json']));if(r.run_ref===ref)return r;}catch(_){}
   await sleep(200);
@@ -23,11 +24,21 @@ async function phase(name){
  const before=metadata();let installed=false,server;
  try{
   cmd(['install',path.join(repo,'app/build/outputs/apk/debug/app-debug.apk')]);installed=true;
+  assert.equal((await phase('capture-bad-digest')).response.ok,false);assert.equal((await phase('capture-stale')).response.ok,false);
+  const captured=await phase('capture');assert.equal(captured.response.ok,true);assert.equal(captured.profile.configured,false);
+  const meta=captured.response.data;assert.match(meta.file_name,/^canonical-capture-[a-f0-9]{32}\.private\.json$/);
+  const container=JSON.parse(cmd(['shell','cat',dir+meta.file_name]));
+  const raw=Buffer.from(container.payload_base64,'base64');assert.equal(crypto.createHash('sha256').update(raw).digest('hex'),meta.sha256);assert.equal(raw.length,meta.bytes);
+  const source=JSON.parse(raw),mapping={protocol:1,org_id:'e'.repeat(32),device_id:'d'.repeat(32),generation:'a'.repeat(32),
+    classes:[{server_id:'class',local_id:2,name:'Fictional Class',teacher_id:'teacher',teacher_name:'Fictional Teacher'}],
+    students:[{server_id:'student',local_id:1,external_ref:'TEST001',name:'Fictional Student',class_id:'class',class_local_id:2}],lessons:[]};
+  const manifest=require('../ops/build-canonical-manifest.cjs').buildNative(container,mapping,Number(cmd(['shell','date','+%s'])));
+  assert.equal(manifest.body.baseline_sha256,meta.sha256);assert.equal(manifest.body.source.students[0].balance_units,1000);assert.equal(source.students.length,1);stageBaseline=meta.sha256;
   const prepared=await phase('prepare');assert.equal(prepared.response.ok,true);assert.equal(prepared.profile.configured,false);
   const req=JSON.parse(cmd(['shell','cat',dir+'canonical-sync-request.json']));assert.equal(req.protocol,1);
   const pub=path.join(base,'fictional-device-public.der');fs.writeFileSync(pub,Buffer.from(req.public_key,'base64'));
   const expires=Number(cmd(['shell','date','+%s']))+3600;
-  const plan={protocol:1,mode:'canonical_enrollment_staging',org_id:'e'.repeat(32),device_id:'d'.repeat(32),generation:'a'.repeat(32),profile_id:'f'.repeat(32),nonce:req.nonce,baseline_sha256:'c'.repeat(64),expires_at:expires,enabled:false,activation_required:true};
+  const plan={protocol:1,mode:'canonical_enrollment_staging',org_id:'e'.repeat(32),device_id:'d'.repeat(32),generation:'a'.repeat(32),profile_id:'f'.repeat(32),nonce:req.nonce,baseline_sha256:stageBaseline,expires_at:expires,enabled:false,activation_required:true};
   fs.writeFileSync(path.join(base,'public-plan.json'),JSON.stringify(plan));
   const profile={e:'https://127.0.0.1:18445',t:'wxd_'+'A'.repeat(43),d:plan.device_id,p:fs.readFileSync(path.join(repo,'app/src/main/res/raw/web_mirror_server_spki.txt'),'utf8').trim(),o:plan.org_id,g:plan.generation,id:plan.profile_id,b:plan.baseline_sha256,n:req.nonce,x:expires};
   server=spawn(path.join(repo,'server/.venv/Scripts/python.exe'),[path.join(__dirname,'serve_canonical_enrollment_fixture.py'),base,tls],{cwd:repo,windowsHide:true,stdio:['pipe','pipe','inherit']});
@@ -41,7 +52,7 @@ async function phase(name){
   const repeated=await phase('stage');assert.equal(repeated.response.ok,true);assert.equal(repeated.profile.staged,true);assert.equal(repeated.profile.configured,false);
   fs.writeFileSync(path.join(base,'revoke'),'');const revoked=await phase('stage');assert.equal(revoked.response.ok,false);assert.equal(revoked.profile.staged,true);assert.equal(revoked.profile.configured,false);fs.unlinkSync(path.join(base,'revoke'));
   assert.deepEqual(metadata(),before);
-  const result={fictional_only:true,pinned_tls_native:true,hybrid_native_decryption:true,wrong_local_baseline_rejected:true,wrong_server_baseline_rejected:true,staged_keystore_survives_restart:true,revoked_plan_rejected:true,auto_activation:false,daily_app_metadata_unchanged:true};
+  const result={fictional_only:true,native_atomic_capture:true,stale_capture_rejected:true,wrong_capture_digest_rejected:true,capture_manifest_roundtrip:true,pinned_tls_native:true,hybrid_native_decryption:true,wrong_local_baseline_rejected:true,wrong_server_baseline_rejected:true,staged_keystore_survives_restart:true,revoked_plan_rejected:true,auto_activation:false,daily_app_metadata_unchanged:true};
   fs.writeFileSync(path.join(base,'native-enrollment-acceptance.json'),JSON.stringify(result,null,2));console.log('Native encrypted enrollment passed; staged only, daily App unchanged.');
  }finally{
   if(server){server.stdin.end();await Promise.race([new Promise(r=>server.once('exit',r)),sleep(3000)]);if(server.exitCode===null)server.kill();}

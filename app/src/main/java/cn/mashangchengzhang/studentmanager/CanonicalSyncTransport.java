@@ -92,6 +92,33 @@ final class CanonicalSyncTransport {
             .setMessage("将读取已核对资料对应的加密连接，仅准备新连接；日常同步模式暂不切换。")
             .setNegativeButton("取消",null).setPositiveButton("核对连接",(dialog,which)->stage(baseline)).show());
     }
+    void captureEnrollment(String raw,String baseline,long capturedAt){
+        if(closed||raw==null||raw.length()>20*1024*1024)return;
+        activity.runOnUiThread(()->new AlertDialog.Builder(activity).setTitle("采集当前核对资料")
+            .setMessage("将在应用本机目录保存完整资料包，含学生私有资料。仅供本次迁移核对，不会上传、扣课或切换同步；请勿公开分享。")
+            .setNegativeButton("取消",null).setPositiveButton("保存核对包",(dialog,which)->capture(raw,baseline,capturedAt)).show());
+    }
+    synchronized void capture(String raw,String baseline,long capturedAt){
+        if(closed)return;
+        if(!busy.compareAndSet(false,true)){reply("capture",result(false,429,null));return;}
+        worker.execute(()->{try{
+            long now=System.currentTimeMillis()/1000;
+            if(prefs.getBoolean("enabled",false)||raw==null||raw.length()>20*1024*1024||baseline==null||!baseline.matches("[a-f0-9]{64}")||capturedAt<0||capturedAt>now+120||now-capturedAt>=120)throw new IOException("capture");
+            byte[] bytes=raw.getBytes(StandardCharsets.UTF_8);
+            if(bytes.length>20*1024*1024||!digest(bytes).equals(baseline))throw new IOException("capture digest");
+            JSONObject data=new JSONObject(raw);
+            for(String key:new String[]{"classes","students","attendance","transactions"})data.getJSONArray(key);
+            data.getJSONObject("settings");
+            JSONObject output=new JSONObject().put("format","future-school-native-capture-v1").put("captured_at",capturedAt)
+                .put("sha256",baseline).put("bytes",bytes.length).put("payload_base64",Base64.encodeToString(bytes,2));
+            File root=activity.getExternalFilesDir(null);if(root==null)throw new IOException("storage");
+            String name="canonical-capture-"+java.util.UUID.randomUUID().toString().replace("-","")+".private.json";
+            android.util.AtomicFile file=new android.util.AtomicFile(new File(root,name));FileOutputStream out=file.startWrite();
+            try{out.write(output.toString().getBytes(StandardCharsets.UTF_8));file.finishWrite(out);}catch(Exception e){file.failWrite(out);throw e;}
+            // No private payload, names, contact details or tokens in callbacks.
+            reply("capture",result(true,200,new JSONObject().put("file_name",name).put("sha256",baseline).put("bytes",bytes.length).put("captured_at",capturedAt)));
+        }catch(Exception e){reply("capture",result(false,0,null));}finally{busy.set(false);}});
+    }
     synchronized void stage(String baseline){
         if(closed||baseline==null||!baseline.matches("[a-f0-9]{64}")||!busy.compareAndSet(false,true))return;
         worker.execute(()->{try{

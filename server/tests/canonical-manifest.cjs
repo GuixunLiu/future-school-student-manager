@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto');
-const {build}=require('../ops/build-canonical-manifest.cjs');
+const {build,buildNative}=require('../ops/build-canonical-manifest.cjs');
 const now=Math.floor(Date.parse('2026-11-01T10:00:00+08:00')/1000),starts=Math.floor(Date.parse('2026-10-31T14:00:00+08:00')/1000);
 const secret='PRIVATE_FACE_CONTACT_PASSWORD_MARKER';
 function fixture(){
@@ -20,6 +20,16 @@ function input(f=fixture()){
 }
 const run=f=>{const i=input(f);return build(i.raw,i.mapping,i.capture,now);};
 const reject=(f,code)=>assert.throws(()=>run(f),e=>e.code===code);
+function native(i){return {format:'future-school-native-capture-v1',captured_at:i.capture.captured_at,sha256:i.capture.sha256,bytes:i.capture.bytes,payload_base64:Buffer.from(i.raw).toString('base64')};}
+test('native atomic container preserves exact UTF-8 bytes and feeds the same minimal request',()=>{
+  const i=input();assert.deepEqual(buildNative(native(i),i.mapping,now),build(i.raw,i.mapping,i.capture,now));
+  for(const changed of [
+    {...native(i),captured_at:now-900},{...native(i),bytes:i.capture.bytes-1},
+    {...native(i),sha256:'a'.repeat(64)},{...native(i),payload_base64:native(i).payload_base64+'='},
+    {...native(i),payload_base64:'@@@@'},{...native(i),format:'untrusted-format'},
+    {...native(i),extra:secret},{...native(i),payload_base64:Buffer.from([255,254]).toString('base64')}
+  ])assert.throws(()=>buildNative(changed,i.mapping,now));
+});
 test('minimal projection preserves distinct same names, leading zeros and balances without replay',()=>{
   const f=fixture(),before=JSON.stringify(f),out=run(f);
   assert.equal(JSON.stringify(f),before);assert(!JSON.stringify(out).includes(secret));
@@ -82,6 +92,10 @@ test('CLI keeps private output outside Git, refuses overwrites and never exposes
     const invoke=a=>spawnSync(process.execPath,[script,...a],{encoding:'utf8',windowsHide:true});
     const first=invoke(args);assert.equal(first.status,0,first.stderr);assert(!first.stdout.includes(secret));assert(!first.stdout.includes('虚构同名'));
     const original=fs.readFileSync(target);assert(!original.toString().includes(secret));
+    const container=native({...i,capture});fs.writeFileSync(path.join(dir,'native.json'),JSON.stringify(container));
+    const nativeArgs=['--native-capture',path.join(dir,'native.json'),'--mapping',path.join(dir,'mapping.json'),'--output',path.join(dir,'native-result.private.json')];
+    const projected=invoke(nativeArgs);assert.equal(projected.status,0,projected.stderr);assert.deepEqual(JSON.parse(fs.readFileSync(nativeArgs.at(-1))),JSON.parse(original));
+    assert.equal(invoke([...nativeArgs,'--backup',path.join(dir,'backup.json')]).status,1);
     const again=invoke(args);assert.equal(again.status,1);assert(again.stderr.includes('EEXIST'));assert.deepEqual(fs.readFileSync(target),original);
     const bad=[...args];bad[bad.length-1]=path.resolve(__dirname,'must-not-exist.private.json');
     const rejected=invoke(bad);assert.equal(rejected.status,1);assert(rejected.stderr.includes('private_output_must_be_outside_repository'));assert(!fs.existsSync(bad.at(-1)));

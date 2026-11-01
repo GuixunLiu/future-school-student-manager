@@ -76,3 +76,29 @@ test('state changing during baseline hash refuses staging',async()=>{
  const task=f.run('stageCanonicalEnrollment()');f.disk.raw=JSON.stringify({...f.snapshot(),newField:'changed'});await task;
  assert.equal(calls.length,0);assert.ok(f.notes.some(n=>n.includes('重新核对备份')));
 });
+test('current capture requires admin, passes exact saved bytes and acquisition time without changing state',async()=>{
+ const f=fixture(false),calls=[];f.bridge.captureCanonicalSyncEnrollment=(...args)=>calls.push(args);
+ await f.run('captureCanonicalEnrollment()');assert.equal(calls.length,0);
+ f.run('let isAdminAuthenticated=true;');const raw=f.disk.raw;
+ await f.run('captureCanonicalEnrollment()');
+ assert.equal(calls.length,1);assert.equal(calls[0][0],raw);assert.equal(calls[0][1],require('node:crypto').createHash('sha256').update(raw).digest('hex'));
+ assert.equal(calls[0][2],Date.parse('2026-11-01T14:00:00+08:00')/1000);assert.equal(f.disk.raw,raw);assert.equal(f.run('canonicalModeActive()'),false);
+});
+test('capture refuses both unsaved memory and a stale on-disk snapshot',async()=>{
+ const f=fixture(false),calls=[];f.bridge.captureCanonicalSyncEnrollment=(...args)=>calls.push(args);f.run('let isAdminAuthenticated=true;');
+ f.run('state.settings.note="unsaved"');await f.run('captureCanonicalEnrollment()');assert.equal(calls.length,0);
+ f.run('delete state.settings.note');f.disk.raw=JSON.stringify({...f.snapshot(),externalChange:true});
+ await f.run('captureCanonicalEnrollment()');await f.run('stageCanonicalEnrollment()');assert.equal(calls.length,0);
+ assert(f.notes.some(n=>n.includes('重新采集')));
+});
+test('capture refuses a new save during asynchronous digest rather than label old bytes as current',async()=>{
+ const f=fixture(false),calls=[];f.bridge.captureCanonicalSyncEnrollment=(...args)=>calls.push(args);f.run('let isAdminAuthenticated=true;');
+ const task=f.run('captureCanonicalEnrollment()');f.run('state.settings.newSave=true;persistCurrentState()');await task;
+ assert.equal(calls.length,0);assert.equal(f.snapshot().settings.newSave,true);
+});
+test('active mode cannot prepare another capture; result callback never renders native private fields',async()=>{
+ const f=fixture(),calls=[];f.bridge.captureCanonicalSyncEnrollment=(...args)=>calls.push(args);f.run('let isAdminAuthenticated=true;');
+ await f.run('captureCanonicalEnrollment()');assert.equal(calls.length,0);
+ f.run('window.onCanonicalSyncNativeResult("capture",{ok:true,data:{payload:"SECRET-MUST-NOT-RENDER"}})');
+ assert(!f.notes.some(n=>n.includes('SECRET-MUST-NOT-RENDER')));assert(f.notes.some(n=>n.includes('尚未上传')));
+});
