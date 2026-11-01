@@ -8,6 +8,7 @@ import re
 from business.store import Problem,uid
 from .approvals import digest,encoded
 from .policy import workspace,require
+from .segmented_enrollment import SegmentedEnrollmentOperations,SCHEMA as SEGMENTED_SCHEMA
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_enrollment_proofs (
@@ -31,74 +32,80 @@ CREATE TRIGGER IF NOT EXISTS management_review_no_delete
 '''
 
 
-class EnrollmentOperations:
+SCHEMA+=SEGMENTED_SCHEMA
+
+class EnrollmentOperations(SegmentedEnrollmentOperations):
     def review_enrollment(self,token,role,*,device_id,generation,baseline_sha256,source_captured_at,source):
         if not isinstance(baseline_sha256,str) or not re.fullmatch('[a-f0-9]{64}',baseline_sha256):
             raise Problem(422,'invalid_baseline','资料摘要无效')
         def run(db,actor):
-            selected=workspace(actor,role);require(actor,selected,'settings.manage')
-            if type(source_captured_at)is not int or source_captured_at<0 or source_captured_at>self.clock()+120 or self.clock()-source_captured_at>=900:
-                raise Problem(409,'source_not_fresh','资料采集时间已过期或超前，请重新读取平板当前资料')
-            device=db.execute('SELECT * FROM devices WHERE org_id=? AND id=? AND active=1 AND expires_at>?',
-                              (actor['org_id'],device_id,self.clock())).fetchone()
-            if not device:raise Problem(403,'device_not_granted','没有可核对的设备授权')
-            self.access(db,dict(kind='device',org_id=actor['org_id'],id=device_id),generation)
-            def refuse():raise Problem(409,'migration_source_differs','平板清单与服务器资料不一致，请保留差异并核对')
-            def rows(key,fields,limit):
-                value=source.get(key)
-                if not isinstance(value,list) or len(value)>limit:refuse()
-                for row in value:
-                    if not isinstance(row,dict) or set(row)!=set(fields.split()):refuse()
-                return value
-            if not isinstance(source,dict) or set(source)!={'students','classes','facts'}:refuse()
-            students=rows('students','server_id local_id external_ref name class_id class_local_id balance_units',2000)
-            classes=rows('classes','server_id local_id name teacher_id teacher_name',1000)
-            facts=rows('facts','lesson_id student_id status expected charge_units starts_at',10000)
-            if not students or not classes:refuse()
-            def local_ids(value):
-                ids=[r['local_id'] for r in value]
-                if any(type(x)is not int or not 0<x<=9007199254740991 for x in ids) or len(set(ids))!=len(ids):refuse()
-                names=[r['server_id'] for r in value]
-                if any(not isinstance(x,str) or not x for x in names) or len(set(names))!=len(names):refuse()
-            local_ids(students);local_ids(classes)
-            bound=list(db.execute('SELECT * FROM management_device_students WHERE org_id=? AND device_id=? ORDER BY student_id',
-                                  (actor['org_id'],device_id)))
-            if {r['server_id'] for r in students}!={r['student_id'] for r in bound}:refuse()
-            class_map={r['server_id']:r for r in classes}
-            if set(class_map)!={r['class_id'] for r in bound}:refuse()
-            bound_map={r['student_id']:r['class_id'] for r in bound}
-            for c in classes:
-                remote=db.execute('SELECT * FROM classes WHERE org_id=? AND id=?',(actor['org_id'],c['server_id'])).fetchone()
-                teachers=list(db.execute('''SELECT u.id,u.display_name FROM teacher_classes t JOIN users u ON u.org_id=t.org_id AND u.id=t.user_id
-                  JOIN roles r ON r.org_id=u.org_id AND r.user_id=u.id AND r.role='teacher'
-                  WHERE t.org_id=? AND t.class_id=? AND u.active=1''',(actor['org_id'],c['server_id'])))
-                if not remote or remote['name']!=c['name'] or len(teachers)!=1 or teachers[0]['id']!=c['teacher_id'] or teachers[0]['display_name']!=c['teacher_name']:refuse()
-                if not db.execute('SELECT 1 FROM device_classes WHERE org_id=? AND device_id=? AND class_id=?',(actor['org_id'],device_id,c['server_id'])).fetchone():refuse()
-            refs=[]
-            for s in students:
-                remote=db.execute('''SELECT s.*,b.units FROM students s JOIN management_balances b ON b.org_id=s.org_id AND b.student_id=s.id
-                  WHERE s.org_id=? AND s.id=?''',(actor['org_id'],s['server_id'])).fetchone()
-                if (not remote or not remote['active'] or s['class_id']!=bound_map[s['server_id']] or remote['class_id']!=s['class_id']
-                    or s['class_local_id']!=class_map[s['class_id']]['local_id'] or type(s['class_local_id'])is not int
-                    or remote['name']!=s['name'] or not s['external_ref'] or remote['external_ref']!=s['external_ref']
-                    or type(s['balance_units'])is not int or remote['units']!=s['balance_units']):refuse()
-                refs.append(s['external_ref'])
-            if len(set(refs))!=len(refs):refuse()
-            actual=[dict(r) for r in db.execute('''SELECT a.lesson_id,a.student_id,a.status,a.expected,a.charge_units,a.starts_at FROM management_attendance a
-              JOIN management_device_students b ON b.org_id=a.org_id AND b.student_id=a.student_id
-              WHERE b.org_id=? AND b.device_id=? ORDER BY a.lesson_id,a.student_id''',(actor['org_id'],device_id))]
-            for f in facts:
-                if type(f['expected'])is not bool or type(f['charge_units'])is not int or type(f['starts_at'])is not int:refuse()
-            normalized=[dict(f,expected=int(f['expected'])) for f in facts]
-            if sorted(encoded(r) for r in normalized)!=sorted(encoded(r) for r in actual):refuse()
-            checksum=self.enrollment_ledger_digest(db,actor['org_id'],device_id)
-            key=uid();expires=min(self.clock()+900,source_captured_at+900)
-            db.execute('INSERT INTO management_enrollment_reviews VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                       (key,actor['org_id'],device_id,generation,baseline_sha256,checksum,encoded(source),actor['id'],source_captured_at,self.clock(),expires))
-            self.record_audit(db,actor,selected,'enrollment_reviewed',key,device_id=device_id,students=len(students),classes=len(classes),facts=len(facts))
-            return dict(review_id=key,baseline_sha256=baseline_sha256,server_sha256=checksum,expires_at=expires,
-                        ready_for_enrollment=True,students=len(students),classes=len(classes),facts=len(facts))
+            return self._record_enrollment_review(db,actor,role=role,device_id=device_id,generation=generation,
+                baseline_sha256=baseline_sha256,source_captured_at=source_captured_at,source=source)
         return self.command(token,run)
+
+    def _record_enrollment_review(self,db,actor,*,role,device_id,generation,baseline_sha256,source_captured_at,source):
+        selected=workspace(actor,role);require(actor,selected,'settings.manage')
+        if type(source_captured_at)is not int or source_captured_at<0 or source_captured_at>self.clock()+120 or self.clock()-source_captured_at>=900:
+            raise Problem(409,'source_not_fresh','资料采集时间已过期或超前，请重新读取平板当前资料')
+        device=db.execute('SELECT * FROM devices WHERE org_id=? AND id=? AND active=1 AND expires_at>?',
+                          (actor['org_id'],device_id,self.clock())).fetchone()
+        if not device:raise Problem(403,'device_not_granted','没有可核对的设备授权')
+        self.access(db,dict(kind='device',org_id=actor['org_id'],id=device_id),generation)
+        def refuse():raise Problem(409,'migration_source_differs','平板清单与服务器资料不一致，请保留差异并核对')
+        def rows(key,fields,limit):
+            value=source.get(key)
+            if not isinstance(value,list) or len(value)>limit:refuse()
+            for row in value:
+                if not isinstance(row,dict) or set(row)!=set(fields.split()):refuse()
+            return value
+        if not isinstance(source,dict) or set(source)!={'students','classes','facts'}:refuse()
+        students=rows('students','server_id local_id external_ref name class_id class_local_id balance_units',2000)
+        classes=rows('classes','server_id local_id name teacher_id teacher_name',1000)
+        facts=rows('facts','lesson_id student_id status expected charge_units starts_at',10000)
+        if not students or not classes:refuse()
+        def local_ids(value):
+            ids=[r['local_id'] for r in value]
+            if any(type(x)is not int or not 0<x<=9007199254740991 for x in ids) or len(set(ids))!=len(ids):refuse()
+            names=[r['server_id'] for r in value]
+            if any(not isinstance(x,str) or not x for x in names) or len(set(names))!=len(names):refuse()
+        local_ids(students);local_ids(classes)
+        bound=list(db.execute('SELECT * FROM management_device_students WHERE org_id=? AND device_id=? ORDER BY student_id',
+                              (actor['org_id'],device_id)))
+        if {r['server_id'] for r in students}!={r['student_id'] for r in bound}:refuse()
+        class_map={r['server_id']:r for r in classes}
+        if set(class_map)!={r['class_id'] for r in bound}:refuse()
+        bound_map={r['student_id']:r['class_id'] for r in bound}
+        for c in classes:
+            remote=db.execute('SELECT * FROM classes WHERE org_id=? AND id=?',(actor['org_id'],c['server_id'])).fetchone()
+            teachers=list(db.execute('''SELECT u.id,u.display_name FROM teacher_classes t JOIN users u ON u.org_id=t.org_id AND u.id=t.user_id
+              JOIN roles r ON r.org_id=u.org_id AND r.user_id=u.id AND r.role='teacher'
+              WHERE t.org_id=? AND t.class_id=? AND u.active=1''',(actor['org_id'],c['server_id'])))
+            if not remote or remote['name']!=c['name'] or len(teachers)!=1 or teachers[0]['id']!=c['teacher_id'] or teachers[0]['display_name']!=c['teacher_name']:refuse()
+            if not db.execute('SELECT 1 FROM device_classes WHERE org_id=? AND device_id=? AND class_id=?',(actor['org_id'],device_id,c['server_id'])).fetchone():refuse()
+        refs=[]
+        for s in students:
+            remote=db.execute('''SELECT s.*,b.units FROM students s JOIN management_balances b ON b.org_id=s.org_id AND b.student_id=s.id
+              WHERE s.org_id=? AND s.id=?''',(actor['org_id'],s['server_id'])).fetchone()
+            if (not remote or not remote['active'] or s['class_id']!=bound_map[s['server_id']] or remote['class_id']!=s['class_id']
+                or s['class_local_id']!=class_map[s['class_id']]['local_id'] or type(s['class_local_id'])is not int
+                or remote['name']!=s['name'] or not s['external_ref'] or remote['external_ref']!=s['external_ref']
+                or type(s['balance_units'])is not int or remote['units']!=s['balance_units']):refuse()
+            refs.append(s['external_ref'])
+        if len(set(refs))!=len(refs):refuse()
+        actual=[dict(r) for r in db.execute('''SELECT a.lesson_id,a.student_id,a.status,a.expected,a.charge_units,a.starts_at FROM management_attendance a
+          JOIN management_device_students b ON b.org_id=a.org_id AND b.student_id=a.student_id
+          WHERE b.org_id=? AND b.device_id=? ORDER BY a.lesson_id,a.student_id''',(actor['org_id'],device_id))]
+        for f in facts:
+            if type(f['expected'])is not bool or type(f['charge_units'])is not int or type(f['starts_at'])is not int:refuse()
+        normalized=[dict(f,expected=int(f['expected'])) for f in facts]
+        if sorted(encoded(r) for r in normalized)!=sorted(encoded(r) for r in actual):refuse()
+        checksum=self.enrollment_ledger_digest(db,actor['org_id'],device_id)
+        key=uid();expires=min(self.clock()+900,source_captured_at+900)
+        db.execute('INSERT INTO management_enrollment_reviews VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                   (key,actor['org_id'],device_id,generation,baseline_sha256,checksum,encoded(source),actor['id'],source_captured_at,self.clock(),expires))
+        self.record_audit(db,actor,selected,'enrollment_reviewed',key,device_id=device_id,students=len(students),classes=len(classes),facts=len(facts))
+        return dict(review_id=key,baseline_sha256=baseline_sha256,server_sha256=checksum,expires_at=expires,
+                    ready_for_enrollment=True,students=len(students),classes=len(classes),facts=len(facts))
 
     def authorize_enrollment(self,token,role,*,review_id,profile_id,nonce):
         if any(not isinstance(v,str) or not re.fullmatch('[a-f0-9]{32}',v) for v in (profile_id,nonce)):

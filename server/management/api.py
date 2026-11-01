@@ -118,6 +118,28 @@ class EnrollmentAuthorizeInput(Input):
     nonce: str = Field(pattern=r'^[a-f0-9]{32}$')
 
 
+class EnrollmentBatchInput(Input):
+    workspace_role: Role
+    device_id: str = Field(min_length=1,max_length=80)
+    generation: str = Field(min_length=1,max_length=80)
+    baseline_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_captured_at: int = Field(ge=0)
+    manifest: dict
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
+class EnrollmentPageInput(Input):
+    workspace_role: Role
+    section: Literal['classes','students','facts']
+    page_index: int = Field(ge=0,le=499)
+    rows: list[dict] = Field(min_length=1,max_length=100)
+    sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class EnrollmentBatchFinalizeInput(Input):
+    workspace_role: Role
+
+
 class MigrationPrepareInput(Input):
     workspace_role: Role
     review_id: str = Field(min_length=1,max_length=80)
@@ -141,7 +163,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
                 'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
                 'assessment_scores', 'assessment_commands', 'management_device_access',
-                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews', 'management_migration_holds'} <= tables:
+                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews', 'management_migration_holds',
+                'management_enrollment_batches','management_enrollment_pages'} <= tables:
             raise ValueError('Explicit candidate migration required; no automatic production migration')
     app = base_app(database, clock, allow_test_client=allow_test_client)
     app.router.routes[:] = [r for r in app.router.routes if r.path in {'/v1/auth/login', '/v1/auth/logout'}]
@@ -180,6 +203,18 @@ def create_app(database, clock=None, *, allow_test_client=False):
     @app.post('/v1/management/enrollment-authorizations')
     def enrollment_authorize(data: EnrollmentAuthorizeInput, token: Token):
         return store.authorize_enrollment(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-batches')
+    def enrollment_batch(data: EnrollmentBatchInput, token: Token):
+        return store.begin_enrollment_batch(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-batches/{batch_id}/pages')
+    def enrollment_page(batch_id: str, data: EnrollmentPageInput, token: Token):
+        return store.put_enrollment_page(token,data.workspace_role,batch_id=batch_id,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-batches/{batch_id}/finalize')
+    def enrollment_batch_finalize(batch_id: str, data: EnrollmentBatchFinalizeInput, token: Token):
+        return store.finalize_enrollment_batch(token,data.workspace_role,batch_id=batch_id)
 
     @app.get('/v1/management/device/next')
     def device_next(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):

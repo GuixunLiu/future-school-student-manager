@@ -9,7 +9,7 @@ const integer=Number.isSafeInteger;
 const day=t=>new Date((t+28800)*1000).toISOString().slice(0,10);
 function exact(x,keys){if(!object(x)||Object.keys(x).sort().join('|')!==keys.split(' ').sort().join('|'))fail('invalid_mapping');}
 function unique(rows,key){const m=new Map();for(const r of rows){if(m.has(r[key]))fail('ambiguous_mapping');m.set(r[key],r);}return m;}
-function build(raw,mapping,capture,now=Math.floor(Date.now()/1000)){
+function project(raw,mapping,capture,now=Math.floor(Date.now()/1000),segmented=false){
   if(typeof raw!=='string'||Buffer.byteLength(raw)>50000000)fail('invalid_backup');
   const bytes=Buffer.from(raw,'utf8'),sha=crypto.createHash('sha256').update(bytes).digest('hex');
   exact(capture,'format sha256 bytes captured_at');
@@ -39,6 +39,10 @@ function build(raw,mapping,capture,now=Math.floor(Date.now()/1000)){
     return {...s,balance_units:units};
   });
   const byLocal=unique(students,'local_id'),byStudent=unique(students,'server_id');unique(students,'external_ref');
+  // The current App switches its writer globally. Segmented full-school review
+  // must not silently leave active students using an unbound check-in path.
+  if(segmented){const active=checked.students.filter(s=>s.status==='active').map(s=>s.local_id);
+    if(active.length!==students.length||active.some(x=>!byLocal.has(x)))fail('whole_device_scope_required');}
   if(classes.some(c=>!students.some(s=>s.class_id===c.server_id)))fail('unused_class_mapping');
   unique(mapping.lessons,'lesson_id');
   const matchedAttendance=new Set(),matchedLeaves=new Set(),pairs=new Set(),facts=[];
@@ -79,28 +83,40 @@ function build(raw,mapping,capture,now=Math.floor(Date.now()/1000)){
   classes.sort((a,b)=>a.server_id.localeCompare(b.server_id));students.sort((a,b)=>a.server_id.localeCompare(b.server_id));facts.sort((a,b)=>a.lesson_id.localeCompare(b.lesson_id)||a.student_id.localeCompare(b.student_id));
   const body={workspace_role:'admin',device_id:mapping.device_id,generation:mapping.generation,baseline_sha256:sha,source_captured_at:capture.captured_at,source:{classes,students,facts}};
   const wire=JSON.stringify(body);
-  if(Buffer.byteLength(wire)>16384)fail('single_class_request_limit');
+  if(!segmented&&Buffer.byteLength(wire)>16384)fail('single_class_request_limit');
+  if(Buffer.byteLength(wire)>6*1024*1024)fail('review_total_limit');
   return {body,metadata:{format:'future-school-canonical-manifest-v1',org_id:mapping.org_id,source_sha256:sha,source_bytes:bytes.length,request_bytes:Buffer.byteLength(wire),classes:classes.length,students:students.length,facts:facts.length,offline_only:true,server_written:false,tablet_modified:false}};
 }
-function buildNative(envelope,mapping,now=Math.floor(Date.now()/1000)){
+function build(raw,mapping,capture,now){return project(raw,mapping,capture,now);}
+function buildSegmented(raw,mapping,capture,commandRef,now){
+  const result=project(raw,mapping,capture,now,true);
+  const packed=require('./pack-enrollment-review.cjs').pack(result.body,commandRef);
+  return{...packed,metadata:{...result.metadata,...packed.metadata}};
+}
+function nativePayload(envelope){
   exact(envelope,'format captured_at sha256 bytes payload_base64');
   if(envelope.format!=='future-school-native-capture-v1'||typeof envelope.payload_base64!=='string'||envelope.payload_base64.length>28000000||envelope.payload_base64.length%4||!/^[A-Za-z0-9+/]*={0,2}$/.test(envelope.payload_base64))fail('invalid_native_capture');
   const bytes=Buffer.from(envelope.payload_base64,'base64'),raw=bytes.toString('utf8');
   if(bytes.toString('base64')!==envelope.payload_base64||bytes.length>20*1024*1024||!Buffer.from(raw,'utf8').equals(bytes))fail('invalid_native_capture');
-  return build(raw,mapping,{format:'future-school-live-capture-v1',sha256:envelope.sha256,bytes:envelope.bytes,captured_at:envelope.captured_at},now);
+  return{raw,capture:{format:'future-school-live-capture-v1',sha256:envelope.sha256,bytes:envelope.bytes,captured_at:envelope.captured_at}};
 }
-module.exports={build,buildNative};
+function buildNative(envelope,mapping,now){const {raw,capture}=nativePayload(envelope);return build(raw,mapping,capture,now);}
+function buildNativeSegmented(envelope,mapping,commandRef,now){const {raw,capture}=nativePayload(envelope);return buildSegmented(raw,mapping,capture,commandRef,now);}
+module.exports={build,buildNative,buildSegmented,buildNativeSegmented};
 if(require.main===module){
   const fs=require('node:fs'),path=require('node:path');
   try{
     const args=process.argv.slice(2),options={};
-    if(!args.length){console.log('Offline manifest builder. Use --native-capture --mapping --output, or --backup --capture-receipt --mapping --output. Never sends a request.');process.exit(0);}
-    for(let n=0;n<args.length;n+=2){if(!['--backup','--mapping','--capture-receipt','--native-capture','--output'].includes(args[n])||!args[n+1]||options[args[n]])fail('invalid_arguments');options[args[n]]=args[n+1];}
-    if(!options['--mapping']||!options['--output']||(options['--native-capture']?Object.keys(options).length!==3:Object.keys(options).length!==4||!options['--backup']||!options['--capture-receipt']))fail('invalid_arguments');
+    if(!args.length){console.log('Offline manifest builder. Use --native-capture --mapping --output, or --backup --capture-receipt --mapping --output. Optional --segmented-ref creates full-active-scope pages. Never sends a request.');process.exit(0);}
+    for(let n=0;n<args.length;n+=2){if(!['--backup','--mapping','--capture-receipt','--native-capture','--output','--segmented-ref'].includes(args[n])||!args[n+1]||options[args[n]])fail('invalid_arguments');options[args[n]]=args[n+1];}
+    const extra=options['--segmented-ref']?1:0;
+    if(!options['--mapping']||!options['--output']||(options['--native-capture']?Object.keys(options).length!==3+extra:Object.keys(options).length!==4+extra||!options['--backup']||!options['--capture-receipt']))fail('invalid_arguments');
     const output=path.resolve(options['--output']),parent=fs.realpathSync(path.dirname(output)),repo=fs.realpathSync(path.resolve(__dirname,'../..'));
     const relative=path.relative(repo,parent);if(!relative||relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))fail('private_output_must_be_outside_repository');
     const mapping=JSON.parse(fs.readFileSync(options['--mapping'],'utf8'));
-    const result=options['--native-capture']?buildNative(JSON.parse(fs.readFileSync(options['--native-capture'],'utf8')),mapping):build(fs.readFileSync(options['--backup'],'utf8'),mapping,JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8')));
+    const result=options['--segmented-ref']?
+      options['--native-capture']?buildNativeSegmented(JSON.parse(fs.readFileSync(options['--native-capture'],'utf8')),mapping,options['--segmented-ref']):buildSegmented(fs.readFileSync(options['--backup'],'utf8'),mapping,JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8')),options['--segmented-ref']):
+      options['--native-capture']?buildNative(JSON.parse(fs.readFileSync(options['--native-capture'],'utf8')),mapping):build(fs.readFileSync(options['--backup'],'utf8'),mapping,JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8')));
     // Exclusive creation: never overwrite an earlier review or its inputs.
     fs.writeFileSync(path.join(parent,path.basename(output)),JSON.stringify(result,null,2)+'\n',{flag:'wx',mode:0o600});
     console.log(JSON.stringify({...result.metadata,contains_private_data:true}));
