@@ -43,6 +43,21 @@ CONFLICTS = frozenset({'mapping_changed', 'local_changes', 'attendance_changed',
 
 
 class DeliveryStore(AssessmentStore):
+    def delivery_status(self, db, org, request_id, request_status):
+        if request_status != 'approved':
+            return 'not_created'
+        row = db.execute('''SELECT d.status FROM management_requests r
+          JOIN management_outbox o ON o.request_id=r.id AND o.org_id=r.org_id
+          JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND b.class_id=r.class_id
+          JOIN management_device_access a ON a.org_id=b.org_id AND a.device_id=b.device_id
+          JOIN devices v ON v.org_id=a.org_id AND v.id=a.device_id
+          JOIN device_classes c ON c.org_id=b.org_id AND c.device_id=b.device_id AND c.class_id=b.class_id
+          LEFT JOIN management_deliveries d ON d.org_id=a.org_id AND d.device_id=a.device_id
+            AND d.generation=a.generation AND d.event_id=o.id
+          WHERE r.org_id=? AND r.id=? AND a.enabled=1 AND a.expires_at>? AND v.active=1 AND v.expires_at>?''',
+          (org, request_id, self.clock(), self.clock())).fetchone()
+        return (row['status'] or 'pending') if row else 'unassigned'
+
     def initialize(self):
         super().initialize()
         db = self.connect()

@@ -181,6 +181,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
             rows = db.execute('SELECT r.id,r.lesson_id,r.student_id,r.class_id,r.kind,r.reason,r.status,r.requested_by,r.created_at,r.decided_at,r.decided_by,r.decision_reason,s.name AS student_name,c.name AS class_name FROM management_requests r JOIN students s ON s.org_id=r.org_id AND s.id=r.student_id JOIN classes c ON c.org_id=r.org_id AND c.id=r.class_id WHERE '
                               + ' AND '.join(where) + ' ORDER BY r.rowid DESC LIMIT ?', (*params, limit + 1)).fetchall()
             items = [dict(r) for r in rows[:limit]]
+            for item in items:
+                item['tablet_delivery'] = store.delivery_status(db, actor['org_id'], item['id'], item['status'])
             return {'workspace_role': role, 'items': items,
                     'next_before': items[-1]['id'] if len(rows) > limit else None}
         return store.command(token, run)

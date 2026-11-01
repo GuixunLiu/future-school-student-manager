@@ -132,6 +132,25 @@ class DeliveryTests(unittest.TestCase):
         r = self.client.get('/v1/management/attendance?workspace_role=admin&on=1970-01-01', headers=headers)
         self.assertEqual(r.status_code, 403)
 
+    def test_request_list_distinguishes_effective_and_device_saved(self):
+        key = self.approve()['id']
+        def status():
+            response = self.client.get('/v1/management/requests?workspace_role=teacher',
+                headers={'Authorization': 'Bearer ' + self.f.tokens['teacher']})
+            self.assertEqual(response.status_code, 200, response.text)
+            item = next(r for r in response.json()['items'] if r['id'] == key)
+            self.assertEqual(item['status'], 'approved')
+            return item['tablet_delivery']
+        self.assertEqual(status(), 'pending')
+        receipt = self.receipt()
+        self.store.acknowledge(self.token, **(receipt | {'status':'conflict','conflict_code':'local_changes'}))
+        self.assertEqual(status(), 'conflict')
+        self.store.acknowledge(self.token, **receipt)
+        self.assertEqual(status(), 'applied')
+        with self.store.transaction() as db:
+            db.execute('UPDATE management_device_access SET enabled=0')
+        self.assertEqual(status(), 'unassigned')
+
 
 if __name__ == '__main__':
     unittest.main()
