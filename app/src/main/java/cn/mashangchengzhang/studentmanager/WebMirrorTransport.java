@@ -78,6 +78,7 @@ final class WebMirrorTransport {
     private void status(String value){prefs.edit().putString("state",value).commit();notifyChanged();}
     private void notifyChanged(){if(!closed)activity.runOnUiThread(()->{if(!closed)changed.run();});}
     void configure(){
+        if(activity.getSharedPreferences(CanonicalSyncTransport.PREFS,0).getBoolean("enabled",false))return;
         activity.runOnUiThread(()->{
             if(closed||importing)return;
             String message=prefs.contains("secret")?"重新验证连接后，将继续以平板资料更新网页。签到和课时只在平板记一次。":"连接后，签到、请假、课时及班级任课变更会自动更新网页。只发送教学所需资料，不发送人脸、照片和联系方式。";
@@ -168,6 +169,7 @@ final class WebMirrorTransport {
         }
     }
     void submit(String raw){
+        if(activity.getSharedPreferences(CanonicalSyncTransport.PREFS,0).getBoolean("enabled",false))return;
         if(closed||!prefs.getBoolean("enabled",false)||raw==null)return;
         if(raw.length()>4*1024*1024){status("同步资料超出范围，请联系管理员");return;}
         worker.execute(()->{
@@ -185,6 +187,7 @@ final class WebMirrorTransport {
         });
     }
     private void flush(){
+        if(activity.getSharedPreferences(CanonicalSyncTransport.PREFS,0).getBoolean("enabled",false))return;
         if(closed||!prefs.getBoolean("enabled",false)||!pending.getBaseFile().exists())return;
         try{
             byte[] raw=pending.readFully();JSONObject envelope=new JSONObject(new String(raw,StandardCharsets.UTF_8));

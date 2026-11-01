@@ -35,6 +35,8 @@ android {
         checkReleaseBuilds false
     }
     buildFeatures { buildConfig true }
+    // Same candidate JS sources in Node tests and Android assets; no copied fork.
+    sourceSets.main.assets.srcDir(rootProject.file('server/management/tablet'))
 }
 
 dependencies {

@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private DeviceSyncTransport deviceSyncTransport;
     private WebMirrorTransport webMirrorTransport;
+    private CanonicalSyncTransport canonicalSyncTransport;
     private ProgressBar progressBar;
     private PermissionRequest pendingCameraRequest;
     private ValueCallback<Uri[]> pendingFileChooser;
@@ -112,6 +113,9 @@ public class MainActivity extends Activity {
     }
 
     private void configureWebView() {
+        canonicalSyncTransport=new CanonicalSyncTransport(this,(id,result)->{
+            if(webView!=null)webView.evaluateJavascript("window.onCanonicalSyncNativeResult && window.onCanonicalSyncNativeResult("+JSONObject.quote(id)+","+JSONObject.quote(result.toString())+")",null);
+        });
         webMirrorTransport = new WebMirrorTransport(this, () -> {
             if (pageReady && webView != null) webView.evaluateJavascript("window.onWebMirrorChanged && window.onWebMirrorChanged()", null);
         });
@@ -214,6 +218,8 @@ public class MainActivity extends Activity {
     }
 
     private class AppBridge {
+        @JavascriptInterface public String getCanonicalSyncProfile(){return canonicalSyncTransport.overview();}
+        @JavascriptInterface public void requestCanonicalSync(String id,String profileId,String kind,String payload){canonicalSyncTransport.request(id,profileId,kind,payload);}
         @JavascriptInterface public String getWebMirrorStatus() { return webMirrorTransport.overview(); }
         @JavascriptInterface public void configureWebMirror() { webMirrorTransport.configure(); }
         @JavascriptInterface public void submitWebMirror(String data) { webMirrorTransport.submit(data); }
@@ -560,6 +566,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (webMirrorTransport != null) webMirrorTransport.close();
+        if (canonicalSyncTransport != null) canonicalSyncTransport.close();
         if (deviceSyncTransport != null) deviceSyncTransport.close();
         synchronized (sfaceLock) {
             sfaceNet = null;

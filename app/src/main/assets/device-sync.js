@@ -82,11 +82,13 @@ window.onDeviceSyncNativeResult=(id,raw)=>{
   const task=deviceSyncRequests.get(id);if(!task)return;clearTimeout(task.timer);deviceSyncRequests.delete(id);task.resolve(result);
 };
 function scheduleDeviceSync(){
+  if(typeof canonicalModeActive==='function'&&canonicalModeActive())return;
   if(deviceSyncTimer!==null||typeof window.setTimeout!=='function')return;
   const s=state.deviceSync;if(!s||!s.captureEnabled||s.paused)return;
   deviceSyncTimer=window.setTimeout(()=>{deviceSyncTimer=null;pumpDeviceSync()},400);
 }
 async function pumpDeviceSync(){
+  if(typeof canonicalModeActive==='function'&&canonicalModeActive())return;
   const s=state.deviceSync,profile=nativeSyncProfile();if(deviceSyncFlight||!s||!s.captureEnabled||s.paused||!profile.configured||profile.deviceId!==s.deviceId||profile.profileId!==s.profileId)return;
   deviceSyncFlight=true;const generation=s.generation;
   try{
