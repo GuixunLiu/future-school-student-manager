@@ -20,7 +20,9 @@ async function phase(name){
 (async()=>{
  fs.mkdirSync(base,{recursive:true});assert(fs.existsSync(path.join(tls,'server.crt'))&&fs.existsSync(path.join(tls,'server.key')),'Existing private local test TLS fixture required');
  for(const marker of ['wrong-baseline','revoke']){const p=path.join(base,marker);if(fs.existsSync(p))fs.unlinkSync(p);}
- assert.equal(cmd(['shell','pm','path',pkg]),'','Refuse to replace a preexisting test application');
+ // Some Android builds return exit 1 for pm path on a missing package.
+ // list packages returns a successful empty inventory without masking errors.
+ assert.equal(cmd(['shell','pm','list','packages',pkg]),'','Refuse to replace a preexisting test application');
  const before=metadata();let installed=false,server;
  try{
   cmd(['install',path.join(repo,'app/build/outputs/apk/debug/app-debug.apk')]);installed=true;
