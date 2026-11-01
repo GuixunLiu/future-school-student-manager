@@ -114,6 +114,14 @@ def receive(database,token,raw,clock=None):
         try:
             device=authenticate(db,token,clock)
             if device['id']!=envelope['device_id']:raise MirrorError(403,'different_device')
+            # The old dataset/assignments are database-wide. Even an exact old
+            # retry must not claim successful mirror synchronization while a
+            # canonical migration is held. No import from candidate modules.
+            tables={r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+            if 'management_balances' in tables and 'management_migration_holds' not in tables:
+                raise MirrorError(409,'migration_guard_missing')
+            if 'management_migration_holds' in tables and db.execute("SELECT 1 FROM management_migration_holds WHERE state='held' LIMIT 1").fetchone():
+                raise MirrorError(409,'migration_in_progress')
             old=db.execute('SELECT * FROM web_mirror_receipts WHERE device_id=? AND (revision=? OR request_ref=?)',(device['id'],envelope['revision'],envelope['request_ref'])).fetchone()
             if old:
                 if old['digest']!=digest:raise MirrorError(409,'snapshot_reference_reused')

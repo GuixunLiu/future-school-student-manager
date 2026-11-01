@@ -59,5 +59,25 @@ class WebMirrorTests(unittest.TestCase):
         with self.f.client() as c:
             h=self.f.login(c);self.assertEqual(c.get('/v1/web/requests',headers=h).json()['items'][0]['status'],'observed_arrived')
 
+    def test_migration_pause_blocks_new_snapshot_and_identical_retry_database_wide(self):
+        raw=self.payload();receive(self.db,TOKEN,raw,self.f.now)
+        with closing(fixture.sqlite3.connect(self.db)) as db,db:
+            before=db.execute('SELECT * FROM web_dataset').fetchall()
+            db.execute('CREATE TABLE management_migration_holds(org_id TEXT,state TEXT)')
+            db.execute("INSERT INTO management_migration_holds VALUES('another-org','held')")
+        for body in (raw,self.payload(2)):
+            with self.assertRaises(MirrorError) as error:receive(self.db,TOKEN,body,self.f.now)
+            self.assertEqual(error.exception.code,'migration_in_progress')
+        with closing(fixture.sqlite3.connect(self.db)) as db,db:
+            self.assertEqual(before,db.execute('SELECT * FROM web_dataset').fetchall());self.assertEqual(db.execute('SELECT revision FROM web_mirror_devices').fetchone()[0],1)
+            db.execute("UPDATE management_migration_holds SET state='cancelled'")
+        self.assertTrue(receive(self.db,TOKEN,raw,self.f.now)['duplicate'])
+        self.assertEqual(receive(self.db,TOKEN,self.payload(2),self.f.now)['revision'],2)
+
+    def test_partial_canonical_schema_without_guard_refuses_legacy_write(self):
+        with closing(fixture.sqlite3.connect(self.db)) as db,db:db.execute('CREATE TABLE management_balances(org_id TEXT,units INTEGER)')
+        with self.assertRaises(MirrorError) as error:receive(self.db,TOKEN,self.payload(),self.f.now)
+        self.assertEqual(error.exception.code,'migration_guard_missing')
+
 
 if __name__=='__main__':unittest.main()

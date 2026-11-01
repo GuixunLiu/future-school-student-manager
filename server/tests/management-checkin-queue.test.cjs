@@ -21,6 +21,14 @@ function receipt(f,index=0){const e=JSON.parse(f.storage.raw).managementSync.que
  return{protocol:1,org_id:'org',device_id:'device',generation:'generation',event_ref:e.eventRef,student_id:p.student_id,lesson_id:p.lesson_id,
  digest:createHash('sha256').update(wire).digest('hex'),accepted:true,status:'arrived',apply_local_debit:false,
  attendance_revision:p.attendance_revision+1,balance_revision:p.balance_revision+1,balance_units:p.remaining_units};}
+
+test('migration hold preserves pending wire and resumes without a second local debit',async()=>{
+ const f=fixture();queue.record(f.storage,f.input,f.now);const raw=f.storage.raw,wire=queue.next(f.storage).item.wire;
+ const paused=await queue.pump(f.storage,async()=>({ok:false,status:409,data:{error:{code:'migration_in_progress'}}}));
+ assert.equal(paused.paused,true);assert.equal(paused.retry,true);assert.equal(f.storage.raw,raw);assert.equal(queue.next(f.storage).item.wire,wire);
+ const resumed=await queue.pump(f.storage,async payload=>{assert.equal(JSON.stringify(payload),wire);return{ok:true,data:receipt(f)};});
+ assert.equal(resumed.ok,true);assert.equal(resumed.uploaded,1);assert.equal(JSON.parse(f.storage.raw).students[0].hours,9);
+});
 test('check-in, debit and queue persist together; same ref retry is free',()=>{
  const f=fixture();assert.equal(queue.record(f.storage,f.input,f.now).ok,true);
  assert.equal(queue.record(f.storage,{eventRef:'local-1',occurredAt:f.now,lessonId:'lesson',studentId:'student'},f.now).duplicate,true);

@@ -10,6 +10,7 @@ from datetime import datetime
 from business.store import Problem
 from .approvals import digest, encoded, label
 from .deadlines import TZ
+from .migration_guard import require_not_held
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_uploads (
@@ -44,6 +45,7 @@ class UplinkOperations:
         hashed = digest(payload)
         def run(db, actor):
             self.access(db, actor, generation)
+            require_not_held(db,actor['org_id'])
             fact = self.fact(db, actor['org_id'], lesson_id, student_id)
             binding = db.execute('''SELECT b.* FROM management_device_students b
               JOIN device_classes c ON c.org_id=b.org_id AND c.device_id=b.device_id AND c.class_id=b.class_id

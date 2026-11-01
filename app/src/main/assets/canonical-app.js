@@ -104,7 +104,7 @@ function scheduleCanonicalSync(){
     try{
       if(!canonicalRuntime)canonicalRuntime=ManagementSyncRuntime.create({store:canonicalGuardedStore(),profile:canonicalProfile,request:canonicalNativeRequest});
       const result=await canonicalRuntime.tick();
-      const node=document.getElementById('canonicalSyncStatus');if(node)node.textContent=result.ok?'网页同步已核对':result.retry?'同步暂未完成，本机记录已保留':'同步资料需核对，本机记录已保留';
+      const node=document.getElementById('canonicalSyncStatus');if(node)node.textContent=result.paused?'管理员正在核对迁移，本机记录已保留':result.ok?'网页同步已核对':result.retry?'同步暂未完成，本机记录已保留':'同步资料需核对，本机记录已保留';
     }catch(_){}
   },600);
 }

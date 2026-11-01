@@ -26,6 +26,22 @@ test('download persists once, lost server acknowledgement retries receipt withou
  const restarted=snapshots.create({storage:f.disk,key:'test'}),second=runtime.create({store:restarted,profile:()=>f.profile,request});
  assert.equal((await second.tick()).ok,true);assert.equal(restarted.snapshot().students[0].hours,9);assert.equal(restarted.snapshot().transactions.length,1);assert.equal(acks,2);
 });
+test('migration pause during download keeps state intact and can retry normally',async()=>{
+ const f=fixture(),raw=f.disk.raw;let paused=true;
+ const sync=runtime.create({store:f.store,profile:()=>f.profile,request:async()=>paused?{ok:false,status:409,data:{error:{code:'migration_in_progress'}}}:{ok:true,data:f.empty}});
+ const result=await sync.tick();assert.equal(result.paused,true);assert.equal(result.retry,true);assert.equal(f.disk.raw,raw);
+ paused=false;assert.equal((await sync.tick()).ok,true);
+});
+test('migration pause after local apply retries acknowledgement without repeating the debit',async()=>{
+ const f=fixture();let paused=true,done=false;
+ const sync=runtime.create({store:f.store,profile:()=>f.profile,request:async(kind,body)=>{
+   if(kind==='next')return{ok:true,data:done?f.empty:f.envelope};
+   if(paused)return{ok:false,status:409,data:{error:{code:'migration_in_progress'}}};
+   done=true;return{ok:true,data:{event_id:body.event_id,status:'applied'}};
+ }});
+ assert.equal((await sync.tick()).paused,true);assert.equal(f.store.snapshot().students[0].hours,9);
+ paused=false;assert.equal((await sync.tick()).ok,true);assert.equal(f.store.snapshot().students[0].hours,9);assert.equal(f.store.snapshot().transactions.length,1);
+});
 test('pending local check-in uploads first; receipt never debits locally',async()=>{
  const f=fixture();queue.record(f.store,{studentId:'student',lessonId:'lesson',occurredAt:f.starts,eventRef:'local-one'},f.starts);const order=[];
  const request=async(kind,p)=>{order.push(kind);if(kind==='next')return{ok:true,data:f.empty};

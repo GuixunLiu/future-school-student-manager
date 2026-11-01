@@ -118,6 +118,21 @@ class EnrollmentAuthorizeInput(Input):
     nonce: str = Field(pattern=r'^[a-f0-9]{32}$')
 
 
+class MigrationPrepareInput(Input):
+    workspace_role: Role
+    review_id: str = Field(min_length=1,max_length=80)
+    profile_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+    accept_database_mirror_pause: bool
+
+
+class MigrationCancelInput(Input):
+    workspace_role: Role
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
 def create_app(database, clock=None, *, allow_test_client=False):
     store = DeliveryStore(database, clock)
     with store.transaction() as db:
@@ -126,7 +141,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
                 'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
                 'assessment_scores', 'assessment_commands', 'management_device_access',
-                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews'} <= tables:
+                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews', 'management_migration_holds'} <= tables:
             raise ValueError('Explicit candidate migration required; no automatic production migration')
     app = base_app(database, clock, allow_test_client=allow_test_client)
     app.router.routes[:] = [r for r in app.router.routes if r.path in {'/v1/auth/login', '/v1/auth/logout'}]
@@ -190,6 +205,22 @@ def create_app(database, clock=None, *, allow_test_client=False):
             store.require_user(actor)
             return store.me(db, actor)
         return store.command(token, run)
+
+    @app.get('/v1/management/migration-holds')
+    def migration_holds(token: Token,workspace_role: Annotated[Role,Query()]):
+        def run(db,actor):
+            require(actor,workspace(actor,workspace_role),'settings.manage')
+            rows=db.execute('SELECT * FROM management_migration_holds WHERE org_id=? ORDER BY rowid DESC LIMIT 50',(actor['org_id'],))
+            return {'items':[store.hold_receipt(r,db=db)|{'reason':r['reason'],'prepared_by':r['prepared_by']} for r in rows]}
+        return store.command(token,run)
+
+    @app.post('/v1/management/migration-holds')
+    def prepare_migration(data: MigrationPrepareInput,token: Token):
+        return store.prepare_migration(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/migration-holds/{hold_id}/cancel')
+    def cancel_migration(hold_id: str,data: MigrationCancelInput,token: Token):
+        return store.cancel_migration(token,data.workspace_role,hold_id=hold_id,**data.model_dump(exclude={'workspace_role'}))
 
     @app.get('/v1/management/workspace')
     def current(token: Token, workspace_role: Annotated[Role, Query()]):

@@ -14,6 +14,8 @@ from business.store import Problem, uid
 from .assessments import AssessmentStore
 from .uplink import UplinkOperations, SCHEMA as UPLINK_SCHEMA
 from .enrollment import EnrollmentOperations, SCHEMA as ENROLLMENT_SCHEMA
+from .migration import MigrationOperations, SCHEMA as MIGRATION_SCHEMA
+from .migration_guard import require_not_held
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_device_access (
@@ -44,7 +46,7 @@ CONFLICTS = frozenset({'mapping_changed', 'local_changes', 'attendance_changed',
                       'balance_changed', 'invalid_event', 'storage_failed'})
 
 
-class DeliveryStore(EnrollmentOperations, UplinkOperations, AssessmentStore):
+class DeliveryStore(MigrationOperations, EnrollmentOperations, UplinkOperations, AssessmentStore):
     def delivery_status(self, db, org, request_id, request_status):
         if request_status != 'approved':
             return 'not_created'
@@ -64,7 +66,7 @@ class DeliveryStore(EnrollmentOperations, UplinkOperations, AssessmentStore):
         super().initialize()
         db = self.connect()
         try:
-            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + UPLINK_SCHEMA + '\n' + ENROLLMENT_SCHEMA + '\nCOMMIT;')
+            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + UPLINK_SCHEMA + '\n' + ENROLLMENT_SCHEMA + '\n' + MIGRATION_SCHEMA + '\nCOMMIT;')
         finally:
             db.close()
 
@@ -90,6 +92,7 @@ class DeliveryStore(EnrollmentOperations, UplinkOperations, AssessmentStore):
     def poll(self, token, generation):
         def run(db, actor):
             self.access(db, actor, generation)
+            require_not_held(db,actor['org_id'])
             # SQL excludes completed delivery, so an institution's complete
             # history is not materialized into memory on every poll.
             event = db.execute('''SELECT o.* FROM management_outbox o
@@ -125,6 +128,7 @@ class DeliveryStore(EnrollmentOperations, UplinkOperations, AssessmentStore):
             raise Problem(422, 'invalid_conflict', '同步冲突类型无效')
         def run(db, actor):
             self.access(db, actor, generation)
+            require_not_held(db,actor['org_id'])
             event = self.eligible_event(db, actor, event_id).fetchone()
             row = db.execute('SELECT * FROM management_deliveries WHERE org_id=? AND device_id=? AND generation=? AND event_id=?',
                              (actor['org_id'], actor['id'], generation, event_id)).fetchone()

@@ -25,7 +25,10 @@
         let received=0;
         for(let i=0;i<10;i++){
           const response=await send('next',{generation:initial.generation});
-          if(!response?.ok)return{ok:false,phase:'download',code:'connection_failed',received,retry:true};
+          if(!response?.ok){
+            const paused=response?.status===409&&response?.data?.error?.code==='migration_in_progress';
+            return{ok:false,phase:'download',code:paused?'migration_in_progress':'connection_failed',received,retry:true,...(paused?{paused:true}:{})};
+          }
           const envelope=response.data;
           if(!envelope||envelope.org_id!==initial.orgId||envelope.device_id!==initial.deviceId||envelope.generation!==initial.generation)return{ok:false,code:'profile_changed',received};
           if(envelope.item===null)return{ok:true,uploaded:uploaded.uploaded,received};
@@ -41,6 +44,7 @@
             return{...result,phase:'apply',received};
           }
           const ack=await send('receipt',result.receipt);
+          if(ack?.status===409&&ack?.data?.error?.code==='migration_in_progress')return{ok:false,phase:'receipt',code:'migration_in_progress',received,retry:true,paused:true};
           if(!ack?.ok||ack.data?.event_id!==result.receipt.event_id||ack.data.status!=='applied')return{ok:false,phase:'receipt',code:'receipt_unconfirmed',received,retry:true};
           received++;
         }

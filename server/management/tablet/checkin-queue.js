@@ -102,6 +102,7 @@
         const status=response?.status;
         if(!status||status===429||status>=500)return{ok:false,code:'offline',uploaded,retry:true};
         const code=status===401||status===403?'delivery_not_granted':response?.data?.error?.code;
+        if(status===409&&code==='migration_in_progress')return{ok:false,code,uploaded,retry:true,paused:true};
         const blocked=block(storage,eventRef,code);
         return blocked.ok?{ok:false,code,uploaded,blocked:true}:{...blocked,uploaded};
       }
