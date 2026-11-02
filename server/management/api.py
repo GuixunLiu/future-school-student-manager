@@ -390,33 +390,12 @@ def create_app(database, clock=None, *, allow_test_client=False):
     def attendance(token: Token, workspace_role: Annotated[Role, Query()],
                    on: Annotated[str, Query(min_length=10, max_length=10)],
                    limit: Annotated[int, Query(ge=1, le=100)] = 100,
-                   before: Annotated[int | None, Query(ge=1)] = None):
-        from datetime import date, datetime, time, timedelta
-        from .deadlines import TZ
-        try:
-            day = date.fromisoformat(on)
-            if day.isoformat() != on:
-                raise ValueError('noncanonical date')
-            start = int(datetime.combine(day, time(), TZ).timestamp())
-            end = int(datetime.combine(day + timedelta(days=1), time(), TZ).timestamp())
-        except (ValueError, OverflowError):
-            raise Problem(422, 'invalid_date', '上课日期不正确')
-        def run(db, actor):
-            selected = workspace(actor, workspace_role)
-            if selected not in {'admin', 'principal', 'teacher'}:
-                raise Problem(403, 'permission_denied', '此身份请在审批列表查看管辖范围申请')
-            where, params = ['a.org_id=?', 'a.starts_at>=?', 'a.starts_at<?'], [actor['org_id'], start, end]
-            if selected == 'teacher':
-                where.append('EXISTS(SELECT 1 FROM teacher_classes t WHERE t.org_id=a.org_id AND t.class_id=a.class_id AND t.user_id=?)')
-                params.append(actor['id'])
-            if before is not None:
-                where.append('a.rowid<?')
-                params.append(before)
-            rows = db.execute('SELECT a.*,a.rowid AS cursor,s.name AS student_name,c.name AS class_name,b.units AS balance_units,EXISTS(SELECT 1 FROM management_requests r WHERE r.org_id=a.org_id AND r.lesson_id=a.lesson_id AND r.student_id=a.student_id AND r.status=\'pending\') AS has_pending_request FROM management_attendance a JOIN students s ON s.org_id=a.org_id AND s.id=a.student_id JOIN classes c ON c.org_id=a.org_id AND c.id=a.class_id JOIN management_balances b ON b.org_id=a.org_id AND b.student_id=a.student_id WHERE '
-                              + ' AND '.join(where) + ' ORDER BY a.rowid DESC LIMIT ?', (*params, limit + 1)).fetchall()
-            items = [dict(r) for r in rows[:limit]]
-            return {'items': items, 'next_before': items[-1]['cursor'] if len(rows) > limit else None, 'server_time': store.clock()}
-        return store.command(token, run)
+                   before: Annotated[int | None, Query(ge=1)] = None,
+                   lesson_id: Annotated[str | None, Query(min_length=1,max_length=200)] = None,
+                   status: Literal['all','arrived','missing','leave'] = 'all',
+                   q: Annotated[str, Query(max_length=80)] = ''):
+        return store.attendance_day(token,workspace_role,on=on,limit=limit,before=before,
+                                    lesson_id=lesson_id,status=status,q=q)
 
     @app.get('/v1/management/weekly-reports')
     def weekly_report(token: Token, workspace_role: Annotated[Role,Query()],
