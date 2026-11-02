@@ -40,6 +40,7 @@ class InitializationTests(unittest.TestCase):
             attendance=[dict(id=100,studentId=21,classId=99,className='已删除班',date='2026-10-24',time='14:00',method='manual')],
             transactions=[dict(id=101,studentId=21,classId=99,className='已删除班',date='2026-10-24',amount=-1,attendanceId=100)],settings={})
         initial=self.node("const v=JSON.parse(require('fs').readFileSync(0,'utf8'));const h=require('./server/ops/build-legacy-history-archive.cjs'),raw=JSON.stringify(v);console.log(JSON.stringify({raw,archive:h.encoded(h.build(raw).artifact),data:require('./server/ops/build-teacher-web-data.cjs').build(v,{asOfDate:'2026-11-01',sourceSha256:'f'.repeat(64),sourceCapturedAt:'Fictional source',mirror:true})}));",self.raw)
+        self.source_raw=initial['raw']
         with store.transaction() as db:
             self.org=db.execute('SELECT id FROM organizations').fetchone()[0]
             for key,name in [('d'*32,'虚构老师'),('e'*32,'旧任课老师')]:
@@ -196,7 +197,7 @@ class InitializationTests(unittest.TestCase):
         self.review_raw=json.dumps(self.helper.snapshot(self.source,'fictional'),separators=(',',':')).encode()
         self.archive_raw=projected['archive'].encode()
         plan=self.node("const v=JSON.parse(require('fs').readFileSync(0,'utf8')),h=require('./server/ops/build-legacy-history-archive.cjs');console.log(JSON.stringify(h.encoded(require('./server/ops/build-management-initialization-plan.cjs').build(v.raw,v.review,{organization:'fictional',newId:()=> '9'.repeat(32)}).plan)));",dict(raw=projected['raw'],review=self.review_raw.decode()))
-        self.plan_raw=plan.encode();source_before=self.source.read_bytes()
+        self.plan_raw=plan.encode();self.plan=json.loads(plan);self.source_raw=projected['raw'];source_before=self.source.read_bytes()
         result=self.run_copy()
         self.assertEqual(result['scope']['active_students'],366);self.assertEqual(result['scope']['current_classes'],43)
         with closing(self.open_copy()) as db:

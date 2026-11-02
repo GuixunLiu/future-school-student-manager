@@ -17,6 +17,7 @@ import time
 
 from . import approvals, assessments, delivery, uplink, enrollment, migration
 from .approvals import encoded
+from .history_boundary import next_day
 
 SCHEMA = '''
 CREATE TABLE management_initializations (
@@ -227,7 +228,9 @@ def populate(db, plan_raw, plan_sha256, archive_raw, review_raw, now):
             scope=plan['scope'],history_counts={k:len(v) for k,v in archive['sections'].items()},
             reserved_id_rows=sum(s['identity_action']=='reserve_new_base_id' for s in plan['students']),
             teacher_grants_aligned=sorted(original_grants,key=encoded)!=sorted(expected_grants,key=encoded),
-            plan_sha256=plan_sha256,archive_sha256=sha(archive_raw),before_table_hashes=before)
+            plan_sha256=plan_sha256,archive_sha256=sha(archive_raw),before_table_hashes=before,
+            canonical_from_day=next_day(now)[0],
+            openings_sha256=sha(encoded(sorted(plan['canonical_openings'],key=lambda r:r['student_id'])).encode()))
         db.execute('INSERT INTO management_initializations VALUES(?,?,?,?,?,?,?,?,?,?)',
             (key,org,'rehearsal_only',plan_sha256,sha(review_raw),plan['baseline']['tablet_sha256'],sha(archive_raw),archive_raw.decode('utf-8'),encoded(receipt),now))
         for section,values in archive['sections'].items():

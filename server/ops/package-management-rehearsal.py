@@ -9,14 +9,14 @@ import zipfile
 
 SERVER=Path(__file__).resolve().parents[1]
 MODULES=('__init__','initialization','approvals','assessments','deadlines','delivery',
-         'uplink','enrollment','segmented_enrollment','migration','migration_guard','policy')
+         'uplink','enrollment','segmented_enrollment','migration','migration_guard','history_boundary','policy')
 
 
 def build():
     files={f'server/management/{name}.py':(SERVER/'management'/f'{name}.py').read_bytes() for name in MODULES}
     for name in ('__init__','store','security'):
         files[f'server/business/{name}.py']=(SERVER/'business'/f'{name}.py').read_bytes()
-    for name in ('export-management-review.py','rehearse-management-initialization.py'):
+    for name in ('export-management-review.py','rehearse-management-initialization.py','export-history-boundary.py'):
         files[f'server/ops/{name}']=(SERVER/'ops'/name).read_bytes()
     files['README.md']=(SERVER.parent/'docs/management-initialization-rehearsal.md').read_bytes()
     manifest=dict(format='future-school-rehearsal-code-v1',data_included=False,service_installer=False,

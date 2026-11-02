@@ -9,7 +9,7 @@ const integer=Number.isSafeInteger;
 const day=t=>new Date((t+28800)*1000).toISOString().slice(0,10);
 function exact(x,keys){if(!object(x)||Object.keys(x).sort().join('|')!==keys.split(' ').sort().join('|'))fail('invalid_mapping');}
 function unique(rows,key){const m=new Map();for(const r of rows){if(m.has(r[key]))fail('ambiguous_mapping');m.set(r[key],r);}return m;}
-function project(raw,mapping,capture,now=Math.floor(Date.now()/1000),segmented=false){
+function project(raw,mapping,capture,now=Math.floor(Date.now()/1000),segmented=false,boundary=null){
   if(typeof raw!=='string'||Buffer.byteLength(raw)>50000000)fail('invalid_backup');
   const bytes=Buffer.from(raw,'utf8'),sha=crypto.createHash('sha256').update(bytes).digest('hex');
   exact(capture,'format sha256 bytes captured_at');
@@ -46,7 +46,8 @@ function project(raw,mapping,capture,now=Math.floor(Date.now()/1000),segmented=f
   if(classes.some(c=>!students.some(s=>s.class_id===c.server_id)))fail('unused_class_mapping');
   unique(mapping.lessons,'lesson_id');
   const matchedAttendance=new Set(),matchedLeaves=new Set(),pairs=new Set(),facts=[];
-  const allAttendance=data.attendance,allLeaves=data.settings?.studentLeaves||[];
+  const allAttendance=boundary?data.attendance.filter(a=>a.date>=boundary.canonical_from_day):data.attendance;
+  const allLeaves=boundary?(data.settings?.studentLeaves||[]).filter(l=>l.date>=boundary.canonical_from_day):(data.settings?.studentLeaves||[]);
   unique(allLeaves,'id');
   const attendanceByDay=new Map(),leavesByDay=new Map(),transactionsByAttendance=new Map();
   function index(map,key,value){if(!map.has(key))map.set(key,[]);map.get(key).push(value);}
@@ -56,6 +57,7 @@ function project(raw,mapping,capture,now=Math.floor(Date.now()/1000),segmented=f
   for(const lesson of mapping.lessons){
     exact(lesson,'lesson_id class_id starts_at charge_units student_ids');
     if(!id(lesson.lesson_id)||!byClass.has(lesson.class_id)||!integer(lesson.starts_at)||lesson.starts_at<0||lesson.starts_at>253402185599||!integer(lesson.charge_units)||lesson.charge_units<=0||!Array.isArray(lesson.student_ids)||!lesson.student_ids.length||lesson.student_ids.length>2000||new Set(lesson.student_ids).size!==lesson.student_ids.length)fail('invalid_lesson_mapping');
+    if(boundary&&lesson.starts_at<boundary.canonical_from)fail('legacy_lesson_read_only');
     const date=day(lesson.starts_at),course=byClass.get(lesson.class_id);
     for(const studentId of lesson.student_ids){
       const s=byStudent.get(studentId);
@@ -102,19 +104,48 @@ function nativePayload(envelope){
 }
 function buildNative(envelope,mapping,now){const {raw,capture}=nativePayload(envelope);return build(raw,mapping,capture,now);}
 function buildNativeSegmented(envelope,mapping,commandRef,now){const {raw,capture}=nativePayload(envelope);return buildSegmented(raw,mapping,capture,commandRef,now);}
-module.exports={build,buildNative,buildSegmented,buildNativeSegmented};
+function boundaryProjection(raw,mapping,capture,boundary,now=Math.floor(Date.now()/1000)){
+  exact(boundary,'format org_id initialization_id baseline_sha256 archive_sha256 canonical_from_day canonical_from openings_sha256 rehearsal_only activation_authorized boundary_sha256');
+  const {boundary_sha256,...claim}=boundary,packing=require('./pack-enrollment-review.cjs'),history=require('./build-legacy-history-archive.cjs');
+  if(boundary.format!=='future-school-history-boundary-v1'||boundary.org_id!==mapping.org_id||boundary.rehearsal_only!==true||boundary.activation_authorized!==false
+    ||['initialization_id','baseline_sha256','archive_sha256','openings_sha256','boundary_sha256'].some(k=>typeof boundary[k]!=='string'||!/^[a-f0-9]{64}$/.test(boundary[k]))
+    ||packing.digest(claim)!==boundary_sha256||boundary.baseline_sha256!==capture.sha256
+    ||typeof boundary.canonical_from_day!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(boundary.canonical_from_day)||!integer(boundary.canonical_from)
+    ||Date.parse(boundary.canonical_from_day+'T00:00:00+08:00')/1000!==boundary.canonical_from
+    ||now>=boundary.canonical_from||capture.captured_at>=boundary.canonical_from)fail('history_boundary_differs');
+  const archived=history.build(raw);
+  if(archived.archive_sha256!==boundary.archive_sha256)fail('history_boundary_differs');
+  for(const section of ['attendance','transactions','leaves'])if(archived.artifact.sections[section].some(r=>typeof r.date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(r.date)||r.date>=boundary.canonical_from_day))fail('future_legacy_admission_required');
+  const result=project(raw,mapping,capture,now,true,boundary);
+  const openings=result.body.source.students.map(s=>({student_id:s.server_id,class_id:s.class_id,units:s.balance_units,revision:0})).sort((a,b)=>a.student_id<b.student_id?-1:a.student_id>b.student_id?1:0);
+  if(packing.digest(openings)!==boundary.openings_sha256)fail('history_openings_differ');
+  result.metadata={...result.metadata,history_boundary_sha256:boundary_sha256,legacy_read_only:true,legacy_replayed:false,activation_authorized:false};
+  return result;
+}
+function buildBoundary(raw,mapping,capture,boundary,now){const result=boundaryProjection(raw,mapping,capture,boundary,now);if(result.metadata.request_bytes>16384)fail('single_class_request_limit');return result;}
+function buildBoundarySegmented(raw,mapping,capture,boundary,commandRef,now){
+  const result=boundaryProjection(raw,mapping,capture,boundary,now),packed=require('./pack-enrollment-review.cjs').pack(result.body,commandRef);
+  return{...packed,metadata:{...result.metadata,...packed.metadata}};
+}
+function buildNativeBoundarySegmented(envelope,mapping,boundary,commandRef,now){const{raw,capture}=nativePayload(envelope);return buildBoundarySegmented(raw,mapping,capture,boundary,commandRef,now);}
+module.exports={build,buildNative,buildSegmented,buildNativeSegmented,buildBoundary,buildBoundarySegmented,buildNativeBoundarySegmented};
 if(require.main===module){
   const fs=require('node:fs'),path=require('node:path');
   try{
     const args=process.argv.slice(2),options={};
     if(!args.length){console.log('Offline manifest builder. Use --native-capture --mapping --output, or --backup --capture-receipt --mapping --output. Optional --segmented-ref creates full-active-scope pages. Never sends a request.');process.exit(0);}
-    for(let n=0;n<args.length;n+=2){if(!['--backup','--mapping','--capture-receipt','--native-capture','--output','--segmented-ref'].includes(args[n])||!args[n+1]||options[args[n]])fail('invalid_arguments');options[args[n]]=args[n+1];}
-    const extra=options['--segmented-ref']?1:0;
+    for(let n=0;n<args.length;n+=2){if(!['--backup','--mapping','--capture-receipt','--native-capture','--output','--segmented-ref','--history-boundary'].includes(args[n])||!args[n+1]||options[args[n]])fail('invalid_arguments');options[args[n]]=args[n+1];}
+    const extra=(options['--segmented-ref']?1:0)+(options['--history-boundary']?1:0);
     if(!options['--mapping']||!options['--output']||(options['--native-capture']?Object.keys(options).length!==3+extra:Object.keys(options).length!==4+extra||!options['--backup']||!options['--capture-receipt']))fail('invalid_arguments');
     const output=path.resolve(options['--output']),parent=fs.realpathSync(path.dirname(output)),repo=fs.realpathSync(path.resolve(__dirname,'../..'));
     const relative=path.relative(repo,parent);if(!relative||relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))fail('private_output_must_be_outside_repository');
     const mapping=JSON.parse(fs.readFileSync(options['--mapping'],'utf8'));
-    const result=options['--segmented-ref']?
+    let result;
+    if(options['--history-boundary']){
+      const boundary=JSON.parse(fs.readFileSync(options['--history-boundary'],'utf8'));
+      const input=options['--native-capture']?nativePayload(JSON.parse(fs.readFileSync(options['--native-capture'],'utf8'))):{raw:fs.readFileSync(options['--backup'],'utf8'),capture:JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8'))};
+      result=options['--segmented-ref']?buildBoundarySegmented(input.raw,mapping,input.capture,boundary,options['--segmented-ref']):buildBoundary(input.raw,mapping,input.capture,boundary);
+    }else result=options['--segmented-ref']?
       options['--native-capture']?buildNativeSegmented(JSON.parse(fs.readFileSync(options['--native-capture'],'utf8')),mapping,options['--segmented-ref']):buildSegmented(fs.readFileSync(options['--backup'],'utf8'),mapping,JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8')),options['--segmented-ref']):
       options['--native-capture']?buildNative(JSON.parse(fs.readFileSync(options['--native-capture'],'utf8')),mapping):build(fs.readFileSync(options['--backup'],'utf8'),mapping,JSON.parse(fs.readFileSync(options['--capture-receipt'],'utf8')));
     // Exclusive creation: never overwrite an earlier review or its inputs.

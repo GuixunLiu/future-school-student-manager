@@ -9,6 +9,7 @@ from business.store import Problem,uid
 from .approvals import digest,encoded
 from .policy import workspace,require
 from .segmented_enrollment import SegmentedEnrollmentOperations,SCHEMA as SEGMENTED_SCHEMA
+from .history_boundary import load as history_boundary, validate_review as validate_history_boundary
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_enrollment_proofs (
@@ -62,6 +63,7 @@ class EnrollmentOperations(SegmentedEnrollmentOperations):
         students=rows('students','server_id local_id external_ref name class_id class_local_id balance_units',2000)
         classes=rows('classes','server_id local_id name teacher_id teacher_name',1000)
         facts=rows('facts','lesson_id student_id status expected charge_units starts_at',10000)
+        boundary=validate_history_boundary(db,actor['org_id'],baseline_sha256,source_captured_at,self.clock(),source)
         if not students or not classes:refuse()
         def local_ids(value):
             ids=[r['local_id'] for r in value]
@@ -101,8 +103,9 @@ class EnrollmentOperations(SegmentedEnrollmentOperations):
         if sorted(encoded(r) for r in normalized)!=sorted(encoded(r) for r in actual):refuse()
         checksum=self.enrollment_ledger_digest(db,actor['org_id'],device_id)
         key=uid();expires=min(self.clock()+900,source_captured_at+900)
+        recorded=source if boundary is None else source|dict(history_boundary=boundary)
         db.execute('INSERT INTO management_enrollment_reviews VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                   (key,actor['org_id'],device_id,generation,baseline_sha256,checksum,encoded(source),actor['id'],source_captured_at,self.clock(),expires))
+                   (key,actor['org_id'],device_id,generation,baseline_sha256,checksum,encoded(recorded),actor['id'],source_captured_at,self.clock(),expires))
         self.record_audit(db,actor,selected,'enrollment_reviewed',key,device_id=device_id,students=len(students),classes=len(classes),facts=len(facts))
         return dict(review_id=key,baseline_sha256=baseline_sha256,server_sha256=checksum,expires_at=expires,
                     ready_for_enrollment=True,students=len(students),classes=len(classes),facts=len(facts))
@@ -160,7 +163,10 @@ class EnrollmentOperations(SegmentedEnrollmentOperations):
           JOIN users u ON u.org_id=t.org_id AND u.id=t.user_id
           JOIN management_device_students b ON b.org_id=t.org_id AND b.class_id=t.class_id
           WHERE b.org_id=? AND b.device_id=? ORDER BY t.class_id,t.user_id''',args)]
-        return digest(dict(bindings=bindings,balances=balances,facts=facts,scopes=scopes,students=students,classes=classes,teachers=teachers))
+        ledger=dict(bindings=bindings,balances=balances,facts=facts,scopes=scopes,students=students,classes=classes,teachers=teachers)
+        boundary=history_boundary(db,org)
+        if boundary is not None:ledger['history_boundary']=boundary
+        return digest(ledger)
 
     def enrollment_plan(self, token, generation):
         def run(db, actor):
