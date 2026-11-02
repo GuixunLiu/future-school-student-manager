@@ -24,6 +24,7 @@ class ClassroomUpdateTests(unittest.TestCase):
             p=self.release/name;p.parent.mkdir(parents=True,exist_ok=True);old=b'# old code\n' if name.endswith('.py') else b'/* old code */';new=old+b'\n';p.write_bytes(old);self.old[name]=old
             self.payload['files'][name]=dict(previous_sha256=update.sha(old),sha256=update.sha(new),base64=base64.b64encode(new).decode())
         files={n:update.sha(b) for n,b in self.old.items()}
+        self.payload['previous_runtime_sha256']=update.sha(json.dumps(files,sort_keys=True,separators=(',',':')).encode())
         (self.work/'runtime.private.json').write_text(json.dumps(dict(database=str(self.db),files=files)))
         (self.release/'MANIFEST.json').write_text(json.dumps(dict(contains_data=False,files=files)))
         self.calls=[]
@@ -46,6 +47,13 @@ class ClassroomUpdateTests(unittest.TestCase):
         self.payload['files']['business/passwords.json']={}
         with self.assertRaises(ValueError):update.install(self.payload)
         self.assertEqual(self.calls,[])
+
+    def test_first_production_layout_without_manifest_uses_exact_full_runtime_fingerprint(self):
+        (self.release/'MANIFEST.json').unlink()
+        bad=dict(self.payload,previous_runtime_sha256='0'*64)
+        with self.assertRaises(ValueError):update.install(bad)
+        self.assertEqual(self.calls,[])
+        result=update.install(self.payload);self.assertTrue(result['updated']);self.assertTrue((self.release/'MANIFEST.json').exists())
 
     def test_poststart_failure_restores_only_code_and_keeps_new_business(self):
         def start(action):

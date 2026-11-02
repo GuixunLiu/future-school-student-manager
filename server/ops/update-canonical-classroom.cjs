@@ -5,10 +5,11 @@ const root=path.resolve(__dirname,'../..'),names=['management/api.py','managemen
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
 function pinned(item,max){if(!item||!path.isAbsolute(item.path)||fs.lstatSync(item.path).isSymbolicLink()||fs.statSync(item.path).size>max)throw Error('Pinned ordinary source required');const bytes=fs.readFileSync(item.path);if(sha(bytes)!==item.sha256)throw Error('Reviewed update source changed');return bytes;}
 function load(file){const cfg=JSON.parse(fs.readFileSync(file,'utf8'));if(cfg.format!=='future-school-classroom-operator-v1'||Object.keys(cfg.files||{}).sort().join('|')!==names.join('|'))throw Error('Exact classroom update required');
+ if(!/^[a-f0-9]{64}$/.test(cfg.previous_runtime_sha256))throw Error('Original complete runtime manifest required');
  const files={};for(const name of names){const v=cfg.files[name];if(path.resolve(v.path)!==path.resolve(root,'server',name)||!/^[a-f0-9]{64}$/.test(v.previous_sha256))throw Error('Only reviewed classroom sources allowed');const raw=pinned(v,200000);files[name]={previous_sha256:v.previous_sha256,sha256:v.sha256,base64:raw.toString('base64')};}
  if(path.resolve(cfg.broker.path)!==path.join(root,'server/ops/update-canonical-classroom.py'))throw Error('Fixed update broker required');const code=pinned(cfg.broker,100000);
  const output=path.resolve(cfg.output);if(!path.isAbsolute(cfg.output)||!path.relative(root,output).startsWith('..'+path.sep)||fs.existsSync(output)||fs.lstatSync(path.dirname(output)).isSymbolicLink())throw Error('New private receipt path outside Git required');
- return{code,payload:{format:'future-school-classroom-update-v1',files},output};
+ return{code,payload:{format:'future-school-classroom-update-v1',files,previous_runtime_sha256:cfg.previous_runtime_sha256},output};
 }
 async function run(file){const c=load(file),hash=sha(c.code),loader="import sys,json,base64,hashlib; v=json.loads(sys.stdin.readline(200000)); b=base64.b64decode(v['code'],validate=True); assert hashlib.sha256(b).hexdigest()=='"+hash+"'; exec(compile(b,'classroom-update','exec'))";
  const command="python3 -u -c '"+loader.replaceAll("'","'\\''")+"'";

@@ -71,11 +71,19 @@ def database_digest(db):
 
 
 def install(payload):
-    if set(payload)!={'format','files'} or payload['format']!='future-school-classroom-update-v1' or set(payload['files'])!=FILES:raise ValueError('Exact classroom code bundle required')
+    if set(payload)!={'format','files','previous_runtime_sha256'} or payload['format']!='future-school-classroom-update-v1' or set(payload['files'])!=FILES:raise ValueError('Exact classroom code bundle required')
     private(WORK,True);release=WORK/'release';private(release,True)
     config=WORK/'runtime.private.json';database=WORK/'business.sqlite';manifest_file=release/'MANIFEST.json'
-    for p in (config,database,manifest_file):private(p)
-    config_raw=config.read_bytes();manifest_raw=manifest_file.read_bytes();cfg=json.loads(config_raw);manifest=json.loads(manifest_raw)
+    for p in (config,database):private(p)
+    config_raw=config.read_bytes();cfg=json.loads(config_raw)
+    if sha(json.dumps(cfg.get('files'),sort_keys=True,separators=(',',':')).encode())!=payload['previous_runtime_sha256']:raise ValueError('Original complete runtime manifest differs')
+    # The first production extractor kept the complete manifest in runtime
+    # configuration but did not create a separate MANIFEST.json. Verify that
+    # exact original manifest instead of guessing or weakening file checks.
+    manifest_raw=None
+    if manifest_file.exists():
+        private(manifest_file);manifest_raw=manifest_file.read_bytes();manifest=json.loads(manifest_raw)
+    else:manifest=dict(format='future-school-management-release-v1',contains_data=False,files=cfg['files'])
     if set(cfg)!={'database','files'} or cfg['database']!=str(database) or cfg['files']!=manifest['files'] or manifest.get('contains_data')is not False:raise ValueError('Current admitted runtime differs')
     incoming={};saved={}
     for name in FILES:
@@ -94,7 +102,8 @@ def install(payload):
     health();backup=Path(tempfile.mkdtemp(prefix='.classroom-update-',dir=WORK));os.chmod(backup,0o700)
     for name,raw in saved.items():
         p=backup/name;p.parent.mkdir(parents=True,mode=0o700,exist_ok=True);atomic(p,raw)
-    atomic(backup/'runtime.private.json',config_raw);atomic(backup/'MANIFEST.json',manifest_raw)
+    atomic(backup/'runtime.private.json',config_raw)
+    if manifest_raw is not None:atomic(backup/'MANIFEST.json',manifest_raw)
     stopped=False
     try:
         service('stop');stopped=True
@@ -122,7 +131,10 @@ def install(payload):
             # replaced by the backup, even if writes resumed before a failure.
             service('stop')
             for name,raw in saved.items():atomic(release/name,raw)
-            atomic(config,config_raw);atomic(manifest_file,manifest_raw);service('start');wait_ready()
+            atomic(config,config_raw)
+            if manifest_raw is not None:atomic(manifest_file,manifest_raw)
+            elif manifest_file.exists():manifest_file.unlink()
+            service('start');wait_ready()
         raise
 
 
