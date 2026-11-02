@@ -24,6 +24,12 @@ test('stale boundary, balance differences and oversized future windows stop with
  const changed=structuredClone(f.plan);changed.students[0].opening_balance_units=900;assert.throws(()=>build(f.raw,changed,f.boundary,{now:f.now}));
  const corrupt={...f.boundary,boundary_sha256:'0'.repeat(64)};assert.throws(()=>build(f.raw,f.plan,corrupt,{now:f.now}));
 });
+test('an empty class is preserved but does not create an unbound device-enrollment class',()=>{
+ const f=fixture(),state=JSON.parse(f.raw);state.classes.push({...state.classes[1],id:13,name:'虚构空班'});const raw=JSON.stringify(state);
+ const plan=structuredClone(f.plan);plan.baseline.tablet_sha256=sha(raw);plan.classes.push({...plan.classes[1],local_id:13,server_id:'class-13',name:'虚构空班'});
+ const {boundary_sha256,...header}=f.boundary;header.baseline_sha256=sha(raw);const boundary={...header,boundary_sha256:digest(header)};
+ const result=build(raw,plan,boundary,{now:f.now});assert.equal(result.summary.classes,3);assert.equal(result.source.classes.length,2);assert.equal(state.classes.length,3);assert(!result.source.classes.some(c=>c.server_id==='class-13'));
+});
 test('a future leave or already recorded arrival cannot be silently converted to missing',()=>{
  const f=fixture(),state=JSON.parse(f.raw);state.attendance.push({id:1,studentId:21,classId:11,className:state.classes[0].name,date:'2026-11-07',time:'14:00',method:'manual'});
  const raw=JSON.stringify(state),plan=structuredClone(f.plan);plan.baseline.tablet_sha256=sha(raw);

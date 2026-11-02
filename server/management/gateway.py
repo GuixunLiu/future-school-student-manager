@@ -31,7 +31,7 @@ def ready(data):
 
 
 base.backend_ready=ready
-GETS={'/','/workspace.js','/workspace.css','/health/ready','/v1/me','/v1/management/attendance','/v1/management/weekly-reports',
+GETS={'/','/workspace.js','/workspace.css','/future-school-logo.png','/health/ready','/v1/me','/v1/management/attendance','/v1/management/weekly-reports',
       '/v1/management/requests','/v1/management/legacy-requests','/v1/management/materials','/v1/management/assessment-rules',
       '/v1/management/assessment-teachers','/v1/management/workspace','/v1/management/migration-holds','/v1/management/device/plan','/v1/management/device/activation','/v1/management/device/next'}
 POSTS={'/v1/auth/login','/v1/auth/logout','/v1/management/requests','/v1/management/assessment-rules',

@@ -50,7 +50,10 @@ function build(raw,plan,boundary,{now,days=14}={}){
  }
  if(facts.length>10000)fail('schedule_scope_limit');
  facts.sort((a,b)=>a.lesson_id.localeCompare(b.lesson_id)||a.student_id.localeCompare(b.student_id));lessons.sort((a,b)=>a.starts_at-b.starts_at||a.lesson_id.localeCompare(b.lesson_id));
- const source={classes,students,facts};
+ // Empty classes stay in the original state, sealed history and lesson
+ // metadata. Device enrollment covers only classes with canonical students.
+ const occupied=new Set(students.map(s=>s.class_id));
+ const source={classes:classes.filter(c=>occupied.has(c.server_id)),students,facts};
  return{format:'future-school-canonical-schedule-v1',org_id:plan.org_id,baseline_sha256:hash,initialization_id:boundary.initialization_id,boundary_sha256,
   canonical_from:boundary.canonical_from,until,source,source_sha256:digest(source),lessons,
   summary:{students:students.length,classes:classes.length,lessons:lessons.length,expected:facts.length,days,charge_units_per_lesson:100},

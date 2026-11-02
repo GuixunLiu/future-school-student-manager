@@ -5,11 +5,13 @@ uses existing account hashes; this factory neither resets nor creates users.
 """
 from typing import Annotated, Literal
 
-from fastapi import Depends, Header, Query
+from fastapi import Depends, Header, Query, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import Field
 
-from business.api import create_app as base_app
-from business.models import Input
+from business.api import LocalGuard
+from business.models import Input, Login
 from business.store import Problem
 from .delivery import DeliveryStore
 from .policy import permits, require, workspace
@@ -199,8 +201,24 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews', 'management_migration_holds',
                 'management_enrollment_batches','management_enrollment_pages','management_activations','management_activation_commands','management_runtime_admissions'} <= tables:
             raise ValueError('Explicit candidate migration required; no automatic production migration')
-    app = base_app(database, clock, allow_test_client=allow_test_client)
-    app.router.routes[:] = [r for r in app.router.routes if r.path in {'/v1/auth/login', '/v1/auth/logout'}]
+    # Reuse the frozen authentication implementation and request guard without
+    # loading legacy workflow/portal routes only to discard them afterwards.
+    import sqlite3
+    app=FastAPI(title='Future School management',docs_url=None,redoc_url=None,openapi_url=None,redirect_slashes=False)
+    app.state.store=store
+    app.add_middleware(LocalGuard,allow_test_client=allow_test_client)
+    @app.exception_handler(Problem)
+    async def problem(request,error):
+        return JSONResponse({'error':{'code':error.code,'message':error.message}},status_code=error.status,headers={'WWW-Authenticate':'Bearer'} if error.status==401 else {})
+    @app.exception_handler(RequestValidationError)
+    async def invalid(request,error):
+        return JSONResponse({'error':{'code':'invalid_request','message':'字段格式不正确或包含未支持的字段'}},status_code=422)
+    @app.exception_handler(sqlite3.IntegrityError)
+    async def conflict(request,error):
+        return JSONResponse({'error':{'code':'conflict','message':'记录冲突，未保存任何更改'}},status_code=409)
+    @app.exception_handler(sqlite3.OperationalError)
+    async def storage_busy(request,error):
+        return JSONResponse({'error':{'code':'storage_unavailable','message':'暂时无法保存，请稍后重试'}},status_code=503)
     app.state.management_store = store
 
     from pathlib import Path
@@ -219,11 +237,25 @@ def create_app(database, clock=None, *, allow_test_client=False):
     def styles():
         return FileResponse(assets / 'workspace.css', media_type='text/css')
 
+    @app.get('/future-school-logo.png')
+    def logo():
+        return FileResponse(assets / 'future-school-logo.png',media_type='image/png')
+
     def authorization(value: Annotated[str | None, Header(alias='Authorization')] = None):
         if not value or not value.startswith('Bearer ') or len(value) > 128:
             raise Problem(401, 'unauthorized', '请先登录')
         return value[7:]
     Token = Annotated[str, Depends(authorization)]
+
+    @app.post('/v1/auth/login')
+    def login(data: Login,request: Request):
+        return store.login(data.organization,data.login,data.password,request.client.host)
+
+    @app.post('/v1/auth/logout')
+    def logout(token: Token):
+        def run(db,actor):
+            store.require_user(actor);db.execute('DELETE FROM sessions WHERE digest=?',(actor['session_digest'],));return {'logged_out':True}
+        return store.command(token,run)
 
     @app.get('/v1/management/device/plan')
     def device_plan(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):
