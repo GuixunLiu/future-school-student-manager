@@ -63,6 +63,12 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(before,self.f.state());self.assertIsNotNone(self.store.poll(self.token,'fixture-generation')['item'])
         with self.assertRaises(Problem):self.cancel(self.held['hold_id'])
 
+    def test_revoked_device_stops_further_approval_effects_until_reconciled(self):
+        self.offer();self.commit();request=self.f.submit();before=self.f.state()
+        with self.store.transaction() as db:db.execute('UPDATE management_device_access SET enabled=0')
+        with self.assertRaises(Problem) as error:self.f.decide(request['id'])
+        self.assertEqual(error.exception.code,'migration_in_progress');self.assertEqual(before,self.f.state())
+
     def test_wrong_profile_digest_nonce_device_and_role_cannot_activate(self):
         self.offer()
         for changes in (dict(profile_id='f'*32),dict(nonce='f'*32),dict(bootstrap_sha256='f'*64),dict(source_map_sha256='f'*64)):

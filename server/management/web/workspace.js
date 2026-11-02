@@ -27,8 +27,13 @@ function choose(){generation++;tab='materials';$('dialog').close();const held=me
 async function dashboard(){
   const run=++generation;$('dialog').close();$('identity').replaceChildren(el('span',me.display_name),el('span',roles[role],'badge'),button('切换身份',choose,'secondary'),button('退出',async()=>{await api('/v1/auth/logout',{});token='';me=null;login();},'secondary'));
   const nav=el('nav',undefined,'toolbar');nav.append(button('考核材料',()=>{tab='materials';return dashboard();},tab==='materials'?'gold':'secondary'));if(role!=='principal')nav.append(button('请假与补签审批',()=>{tab='requests';return dashboard();},tab==='requests'?'gold':'secondary'));if(['admin','teacher','principal'].includes(role))nav.append(button('课堂名单',()=>{tab='attendance';return dashboard();},tab==='attendance'?'gold':'secondary'));if(role==='principal'&&tab==='requests')tab='materials';
+  nav.append(button('周报与历史周报',()=>{tab='reports';return dashboard();},tab==='reports'?'gold':'secondary'));
+  if(role!=='principal')nav.append(button('接入前补签申请',()=>{tab='legacyRequests';return dashboard();},tab==='legacyRequests'?'gold':'secondary'));
   const tools=el('div',undefined,'toolbar');tools.append(button('刷新',dashboard,'secondary'));if(role==='admin'&&tab==='materials')tools.append(button('安排考核周期',openPeriod),button('截止时间规则',ruleEditor,'secondary'));
-  const list=el('div',undefined,'list');list.append(el('p','正在读取资料…'));$('main').replaceChildren(el('h1',tab==='materials'?'计划与考核材料':tab==='attendance'?'课堂签到名单':'请假与补签审批'),el('p',tab==='materials'?'截止时间均为北京时间。提交后保留版本，补交保留实际提交时间。':'审批会更新候选业务库。当前验收版尚未向日常平板下发结果。'),nav,tools,list);
+  const titles={materials:'计划与考核材料',attendance:'课堂签到名单',reports:'周报与历史周报',legacyRequests:'接入前补签申请',requests:'请假与补签审批'};
+  const list=el('div',undefined,'list');list.append(el('p','正在读取资料…'));$('main').replaceChildren(el('h1',titles[tab]),el('p',tab==='materials'?'截止时间均为北京时间。提交后保留版本，补交保留实际提交时间。':tab==='reports'?'请假保留在应到人数中。接入前历史与接入后课次按边界分开列示。':tab==='legacyRequests'?'查阅并核对接入前保存的原申请。':'请假和补签经网页审批后生效，平板收到后显示结果。'),nav,tools,list);
+  if(tab==='reports'){await weeklyReportsView(list,run);return;}
+  if(tab==='legacyRequests'){await legacyRequestsView(list,run);return;}
   if(tab==='attendance'){await attendanceView(list,run);return;}
   const path=tab==='materials'?'/v1/management/materials':'/v1/management/requests';
   async function load(before){const data=await api(query(path)+(before?'&before='+encodeURIComponent(before):''));if(run!==generation)return;if(!before)list.replaceChildren();if(!data.items.length&&!before)list.append(el('div','当前没有资料','empty'));for(const row of data.items)list.append(tab==='materials'?materialCard(row):requestCard(row));if(data.next_before){const more=button('继续加载',async()=>{more.disabled=true;try{await load(data.next_before);more.remove();}catch(e){more.disabled=false;throw e;}},'secondary');list.append(more);}}
@@ -58,4 +63,33 @@ async function attendanceView(list,run){
   }
   form.addEventListener('submit',async e=>{e.preventDefault();search.disabled=true;try{await load();}catch(error){fail(error);}finally{search.disabled=false;}});await load();
 }
+async function legacyRequestsView(list,run){
+ list.replaceChildren(el('h2','接入前补签申请'),el('p','这些是旧系统保存的申请，需结合原签到历史核对。此列表只供查阅，不会自动补签或扣课时。','hint'));
+ async function load(before){const data=await api(query('/v1/management/legacy-requests')+(before?'&before='+before:''));if(run!==generation)return;
+  if(!data.items.length&&!before)list.append(el('div','没有当前身份可查看的原申请','empty'));
+  for(const row of data.items){const card=el('article',undefined,'item');card.append(el('h3',row.student_name),el('p',row.class_name+' · '+row.date),el('p',row.reason),badge(row.status),el('p',stamp(row.created_at)+(row.requires_review?' · 待核对原始记录':'')));list.append(card);}
+  if(data.next_before){const more=button('继续加载',async()=>{more.disabled=true;try{await load(data.next_before);more.remove();}catch(e){more.disabled=false;throw e;}},'secondary');list.append(more);}
+ }await load();
+}
+async function weeklyReportsView(list,run){
+ const form=el('form',undefined,'panel'),week=select(form,'选择周次',[]),submit=el('button','查看周报');submit.type='submit';form.append(submit);
+ const results=el('div',undefined,'list');list.replaceChildren(form,results);
+ async function load(start){
+  const data=await api(query('/v1/management/weekly-reports')+(start?'&start='+encodeURIComponent(start):''));if(run!==generation)return;
+  week.replaceChildren();for(const value of data.weeks){const option=el('option',value+' 起');option.value=value;week.append(option);}week.value=data.start;
+  results.replaceChildren(el('p',data.start+' 至 '+data.end+(role==='teacher'?' · 仅本人任课班级':'')));
+  if(data.transition_week)results.append(el('p','本周跨越系统接入日期。两部分分别统计，不相加为一个到课率。','hint'));
+  if(!data.sections.length)results.append(el('div','这周尚无可显示的资料','empty'));
+  for(const section of data.sections){
+   const report=section.report,card=el('article',undefined,'item');card.append(el('h2',section.label),el('p','应到 '+Number(report.expected).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 人次 · 已到 '+report.arrived+' 人次 · 请假 '+report.leave_count+' 人次 · 到课率 '+report.rate));
+   if(section.detail_scope_only)card.append(el('p','只汇总接入前有课堂明细的部分；旧系统估算总数可在完整历史周查看。','hint'));
+   for(const [key,title]of [['classes','班级'],['teachers','教师']]){
+    const table=el('table'),head=el('tr');for(const titleText of [title,'应到人次','已到人次','请假人次','到课率'])head.append(el('th',titleText));table.append(head);
+    for(const r of report[key]||[]){const tr=el('tr');for(const v of [r.name+(r.historical_class_name?'（历史班名）':''),Number(r.expected).toLocaleString('zh-CN',{maximumFractionDigits:2}),r.arrived,r.leave_count,r.rate])tr.append(el('td',String(v)));table.append(tr);}const wrap=el('div',undefined,'table-scroll');wrap.append(table);card.append(wrap);
+   }results.append(card);
+  }
+ }
+ form.addEventListener('submit',async e=>{e.preventDefault();submit.disabled=true;try{await load(week.value);}catch(error){fail(error);}finally{submit.disabled=false;}});await load();
+}
+api('/health/ready').then(data=>{const banner=document.querySelector('.preview');if(!banner)return;if(data.runtime_admitted)banner.textContent=data.tablet_delivery_enabled?'网页主管理 · 已连接平板':'网页主管理 · 等待平板确认连接';}).catch(()=>{});
 login();

@@ -14,6 +14,7 @@ from business.store import Problem
 from .delivery import DeliveryStore
 from .policy import permits, require, workspace
 from .staging import runtime_admitted
+from .migration_guard import has_active_writer
 
 Role = Literal['principal', 'admin', 'teacher', 'assessor']
 
@@ -282,9 +283,12 @@ def create_app(database, clock=None, *, allow_test_client=False):
 
     @app.get('/health/ready')
     def health():
-        return {'status': 'ready', 'mode': 'management_candidate',
-                'approval_mode': 'web_approval', 'tablet_delivery_enabled': False,
-                'production_ready': False, 'wechat_sending_enabled': False}
+        with store.transaction() as db:
+            admission=db.execute('SELECT org_id FROM management_runtime_admissions LIMIT 1').fetchone();admitted=bool(admission)
+            active=admitted and has_active_writer(db,admission['org_id'],store.clock())
+        return {'status': 'ready', 'mode': ('management_active' if active else 'management_staged') if admitted else 'management_candidate',
+                'approval_mode': 'web_approval', 'tablet_delivery_enabled': active,
+                'runtime_admitted': admitted,'production_ready': False, 'wechat_sending_enabled': False}
 
     @app.get('/v1/me')
     def me(token: Token):
@@ -381,6 +385,17 @@ def create_app(database, clock=None, *, allow_test_client=False):
             items = [dict(r) for r in rows[:limit]]
             return {'items': items, 'next_before': items[-1]['cursor'] if len(rows) > limit else None, 'server_time': store.clock()}
         return store.command(token, run)
+
+    @app.get('/v1/management/weekly-reports')
+    def weekly_report(token: Token, workspace_role: Annotated[Role,Query()],
+                      start: Annotated[str | None,Query(min_length=10,max_length=10)] = None):
+        return store.weekly_report(token,workspace_role,start=start)
+
+    @app.get('/v1/management/legacy-requests')
+    def legacy_requests(token: Token, workspace_role: Annotated[Role,Query()],
+                        limit: Annotated[int,Query(ge=1,le=100)] = 50,
+                        before: Annotated[int | None,Query(ge=1)] = None):
+        return store.legacy_requests(token,workspace_role,limit=limit,before=before)
 
     @app.post('/v1/management/requests', status_code=201)
     def submit(data: RequestInput, token: Token):

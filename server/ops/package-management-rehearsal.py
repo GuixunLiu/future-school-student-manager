@@ -9,7 +9,7 @@ import zipfile
 
 SERVER=Path(__file__).resolve().parents[1]
 MODULES=('__init__','initialization','approvals','assessments','deadlines','delivery',
-         'uplink','enrollment','segmented_enrollment','migration','migration_guard','history_boundary','activation','staging','policy')
+         'uplink','enrollment','segmented_enrollment','migration','migration_guard','history_boundary','activation','staging','reports','policy')
 
 
 def build():

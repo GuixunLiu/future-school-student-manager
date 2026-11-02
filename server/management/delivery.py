@@ -18,6 +18,7 @@ from .migration import MigrationOperations, SCHEMA as MIGRATION_SCHEMA
 from .migration_guard import require_not_held
 from .activation import ActivationOperations,SCHEMA as ACTIVATION_SCHEMA
 from .staging import StagingOperations,SCHEMA as STAGING_SCHEMA
+from .reports import ReportOperations
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_device_access (
@@ -48,7 +49,7 @@ CONFLICTS = frozenset({'mapping_changed', 'local_changes', 'attendance_changed',
                       'balance_changed', 'invalid_event', 'storage_failed'})
 
 
-class DeliveryStore(StagingOperations, ActivationOperations, MigrationOperations, EnrollmentOperations, UplinkOperations, AssessmentStore):
+class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, MigrationOperations, EnrollmentOperations, UplinkOperations, AssessmentStore):
     def delivery_status(self, db, org, request_id, request_status):
         if request_status != 'approved':
             return 'not_created'
