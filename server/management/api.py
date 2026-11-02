@@ -159,6 +159,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
     store = DeliveryStore(database, clock)
     with store.transaction() as db:
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        if 'management_initializations' in tables and db.execute("SELECT 1 FROM management_initializations WHERE phase='rehearsal_only' LIMIT 1").fetchone():
+            raise ValueError('Offline rehearsal database cannot serve management or device requests')
         if not {'management_roles', 'management_approval_scopes', 'management_requests',
                 'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
                 'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
