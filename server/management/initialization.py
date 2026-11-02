@@ -15,7 +15,7 @@ import re
 import sqlite3
 import time
 
-from . import approvals, assessments, delivery, uplink, enrollment, migration
+from . import approvals, assessments, delivery, uplink, enrollment, migration, activation, staging
 from .approvals import encoded
 from .history_boundary import next_day
 
@@ -196,7 +196,7 @@ def populate(db, plan_raw, plan_sha256, archive_raw, review_raw, now):
     original_students=rows(db,'students');original_grants=rows(db,'teacher_classes')
     org=plan['org_id'];key=sha(plan_raw)
     # All schemas and business changes roll back together, including the DDL.
-    db.executescript('BEGIN IMMEDIATE;\n'+approvals.SCHEMA+assessments.SCHEMA+delivery.SCHEMA+uplink.SCHEMA+enrollment.SCHEMA+migration.SCHEMA+SCHEMA)
+    db.executescript('BEGIN IMMEDIATE;\n'+approvals.SCHEMA+assessments.SCHEMA+delivery.SCHEMA+uplink.SCHEMA+enrollment.SCHEMA+migration.SCHEMA+activation.SCHEMA+staging.SCHEMA+SCHEMA)
     try:
         expected_students={s['id']:dict(s) for s in original_students}
         expected_grants=[r for r in original_grants if r['org_id']!=org or r['class_id'] not in {c['server_id'] for c in plan['classes']}]

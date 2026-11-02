@@ -23,7 +23,8 @@ function canonicalGuardedStore(){
 }
 function canonicalOrdinarySave(){
   try{
-    const store=canonicalStoreForApp(),edit=store.beginEdit();
+    const store=canonicalStoreForApp();if(!canonicalProfile().configured)throw Error('activation_pending');
+    const edit=store.beginEdit();
     try{
       Object.keys(edit.value).forEach(k=>delete edit.value[k]);Object.assign(edit.value,JSON.parse(JSON.stringify(state)));
       store.saveEdit(edit.token);scheduleCanonicalSync();return true;
@@ -60,6 +61,14 @@ function canonicalNativeRequest(kind,payload){
   });
 }
 window.onCanonicalSyncNativeResult=(id,raw)=>{
+  if(id==='activation'){
+    try{const r=typeof raw==='string'?JSON.parse(raw):raw;
+      if(r.ok&&r.data?.prepared){finishCanonicalActivation();return;}
+      const message=r.ok&&r.data?.activated?'网页与平板同步已启用':'连接尚未完成，当前资料已保留，请点“启用／完成同步”重试';
+      toast(message,!r.ok);const el=document.getElementById('canonicalEnrollmentStatus');if(el)el.textContent=message;
+      if(r.ok&&r.data?.activated){canonicalRuntime=null;scheduleCanonicalSync();}
+    }catch(_){}return;
+  }
   if(id==='capture'){
     try{const r=typeof raw==='string'?JSON.parse(raw):raw;const message=r.ok?'当前资料核对包已保存到本机，尚未上传或切换同步':'资料采集未完成，请重新保存并核对';toast(message,!r.ok);const el=document.getElementById('canonicalEnrollmentStatus');if(el)el.textContent=message;}catch(_){}return;
   }
@@ -71,9 +80,26 @@ window.onCanonicalSyncNativeResult=(id,raw)=>{
 };
 function canonicalEnrollmentSettingsMarkup(){
   const p=canonicalProfile(),active=canonicalModeActive();
-  return `<details class="settings-card"><summary>网页主管理连接（准备）</summary><p id="canonicalEnrollmentStatus">${active?'已启用网页主管理':p.staged?'新连接已暂存，尚未切换资料':'尚未准备新连接'}</p><p>先采集当前已保存资料，再由管理员核对并准备连接文件。资料包仅保存在本机；这一步不会切换同步或修改课时。</p><button class="secondary-btn" data-canonical-enrollment="capture" ${active?'disabled':''}>采集当前核对资料</button> <button class="secondary-btn" data-canonical-enrollment="prepare" ${active?'disabled':''}>准备连接申请</button> <button class="secondary-btn" data-canonical-enrollment="stage" ${active?'disabled':''}>核对加密连接</button></details>`;
+  return `<details class="settings-card"><summary>网页主管理连接</summary><p id="canonicalEnrollmentStatus">${active?(p.configured?'已启用网页主管理':'新资料已保存，连接确认尚未完成'):p.staged?'新连接已暂存，尚未切换资料':'尚未准备新连接'}</p><p>先采集当前资料，再由管理员核对并准备加密连接和完整名单。两端确认成功后，网页负责管理，平板负责签到。</p><button class="secondary-btn" data-canonical-enrollment="capture" ${active?'disabled':''}>采集当前核对资料</button> <button class="secondary-btn" data-canonical-enrollment="prepare" ${active?'disabled':''}>准备连接申请</button> <button class="secondary-btn" data-canonical-enrollment="stage" ${active?'disabled':''}>核对加密连接</button> <button class="secondary-btn" data-canonical-enrollment="activate" ${!p.staged&&!p.activationPending||p.configured?'disabled':''}>启用／完成同步</button></details>`;
 }
-document.addEventListener('click',event=>{const action=event.target?.closest?.('[data-canonical-enrollment]')?.getAttribute('data-canonical-enrollment');if(action==='capture')captureCanonicalEnrollment();if(action==='prepare')prepareCanonicalEnrollment();if(action==='stage')stageCanonicalEnrollment();});
+document.addEventListener('click',event=>{const action=event.target?.closest?.('[data-canonical-enrollment]')?.getAttribute('data-canonical-enrollment');if(action==='capture')captureCanonicalEnrollment();if(action==='prepare')prepareCanonicalEnrollment();if(action==='stage')stageCanonicalEnrollment();if(action==='activate')startCanonicalActivation();});
+async function startCanonicalActivation(){
+  if(typeof isAdminAuthenticated==='undefined'||!isAdminAuthenticated)return toast('请先解锁后台',true);
+  if(canonicalProfile().configured)return toast('网页主管理连接已启用');
+  try{
+    const raw=localStorage.getItem(STORAGE_KEY);if(!raw||raw!==committedStateSnapshot||JSON.stringify(state)!==raw)throw Error('unsaved');
+    const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
+    if(localStorage.getItem(STORAGE_KEY)!==raw||committedStateSnapshot!==raw||JSON.stringify(state)!==raw)throw Error('changed');
+    AndroidBridge.prepareCanonicalActivation(Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join(''));
+  }catch(_){toast('资料已变化或尚未保存，请保留原记录并重新核对',true);}
+}
+async function finishCanonicalActivation(){
+  try{
+    const payload=JSON.parse(AndroidBridge.getCanonicalActivationBootstrap());
+    const result=await ManagementActivation.persist(canonicalGuardedStore(),payload,canonicalProfile());
+    AndroidBridge.commitCanonicalActivation(result.bootstrapSha256);
+  }catch(_){toast('新连接尚未完成，当前资料已保留，请核对后重试',true);}
+}
 async function captureCanonicalEnrollment(){
   if(typeof isAdminAuthenticated==='undefined'||!isAdminAuthenticated)return toast('请先解锁后台',true);
   if(canonicalModeActive())return toast('新模式已启用，不能重新准备迁移资料',true);

@@ -13,6 +13,7 @@ from business.models import Input
 from business.store import Problem
 from .delivery import DeliveryStore
 from .policy import permits, require, workspace
+from .staging import runtime_admitted
 
 Role = Literal['principal', 'admin', 'teacher', 'assessor']
 
@@ -155,18 +156,47 @@ class MigrationCancelInput(Input):
     command_ref: str = Field(min_length=1,max_length=80)
 
 
+class ActivationOfferInput(Input):
+    workspace_role: Role
+    hold_id: str = Field(min_length=1,max_length=80)
+    bootstrap_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_map_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
+class ActivationCommitInput(Input):
+    generation: str = Field(min_length=1,max_length=80)
+    activation_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    profile_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    nonce: str = Field(pattern=r'^[a-f0-9]{32}$')
+    bootstrap_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_map_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class ActivationChangeInput(Input):
+    workspace_role: Role
+    action: Literal['pause','resume']
+    expected_revision: int = Field(ge=0)
+    ledger_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
 def create_app(database, clock=None, *, allow_test_client=False):
     store = DeliveryStore(database, clock)
     with store.transaction() as db:
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
-        if 'management_initializations' in tables and db.execute("SELECT 1 FROM management_initializations WHERE phase='rehearsal_only' LIMIT 1").fetchone():
-            raise ValueError('Offline rehearsal database cannot serve management or device requests')
+        if 'management_initializations' in tables:
+            for marker in db.execute("SELECT org_id FROM management_initializations WHERE phase='rehearsal_only'"):
+                if not runtime_admitted(db,marker['org_id']):
+                    raise ValueError('Offline rehearsal database cannot serve management or device requests')
         if not {'management_roles', 'management_approval_scopes', 'management_requests',
                 'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
                 'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
                 'assessment_scores', 'assessment_commands', 'management_device_access',
                 'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews', 'management_migration_holds',
-                'management_enrollment_batches','management_enrollment_pages'} <= tables:
+                'management_enrollment_batches','management_enrollment_pages','management_activations','management_activation_commands','management_runtime_admissions'} <= tables:
             raise ValueError('Explicit candidate migration required; no automatic production migration')
     app = base_app(database, clock, allow_test_client=allow_test_client)
     app.router.routes[:] = [r for r in app.router.routes if r.path in {'/v1/auth/login', '/v1/auth/logout'}]
@@ -197,6 +227,26 @@ def create_app(database, clock=None, *, allow_test_client=False):
     @app.get('/v1/management/device/plan')
     def device_plan(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):
         return store.enrollment_plan(token, generation)
+
+    @app.get('/v1/management/device/activation')
+    def activation_plan(token: Token, generation: str, profile_id: str):
+        return store.activation_plan(token,generation,profile_id=profile_id)
+
+    @app.post('/v1/management/device/activation-commit')
+    def activation_commit(data: ActivationCommitInput, token: Token):
+        return store.commit_activation(token,**data.model_dump())
+
+    @app.post('/v1/management/activations',status_code=201)
+    def activation_offer(data: ActivationOfferInput, token: Token):
+        return store.offer_activation(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.get('/v1/management/activations/{activation_id}')
+    def activation_status(activation_id: str, token: Token, workspace_role: Annotated[Role,Query()]):
+        return store.activation_status(token,workspace_role,activation_id)
+
+    @app.post('/v1/management/activations/{activation_id}/state')
+    def activation_change(activation_id: str, data: ActivationChangeInput, token: Token):
+        return store.change_activation(token,data.workspace_role,activation_id=activation_id,**data.model_dump(exclude={'workspace_role'}))
 
     @app.post('/v1/management/enrollment-reviews')
     def enrollment_review(data: EnrollmentReviewInput, token: Token):

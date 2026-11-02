@@ -190,7 +190,7 @@ class ApprovalStore(Store):
                 raise Problem(409, 'already_decided', '申请已处理，请刷新查看结果')
             now = self.clock()
             if approve:
-                require_not_held(db,actor['org_id'])
+                require_not_held(db,actor['org_id'],self.clock())
                 fact = self.fact(db, actor['org_id'], row['lesson_id'], row['student_id'])
                 if fact['class_id'] != row['class_id'] or fact['revision'] != row['expected_revision'] or fact['status'] != 'missing' or not fact['expected']:
                     raise Problem(409, 'attendance_changed', '申请后课堂记录已变化，需重新核对；本次未生效')

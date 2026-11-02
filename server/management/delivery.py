@@ -16,6 +16,8 @@ from .uplink import UplinkOperations, SCHEMA as UPLINK_SCHEMA
 from .enrollment import EnrollmentOperations, SCHEMA as ENROLLMENT_SCHEMA
 from .migration import MigrationOperations, SCHEMA as MIGRATION_SCHEMA
 from .migration_guard import require_not_held
+from .activation import ActivationOperations,SCHEMA as ACTIVATION_SCHEMA
+from .staging import StagingOperations,SCHEMA as STAGING_SCHEMA
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_device_access (
@@ -46,7 +48,7 @@ CONFLICTS = frozenset({'mapping_changed', 'local_changes', 'attendance_changed',
                       'balance_changed', 'invalid_event', 'storage_failed'})
 
 
-class DeliveryStore(MigrationOperations, EnrollmentOperations, UplinkOperations, AssessmentStore):
+class DeliveryStore(StagingOperations, ActivationOperations, MigrationOperations, EnrollmentOperations, UplinkOperations, AssessmentStore):
     def delivery_status(self, db, org, request_id, request_status):
         if request_status != 'approved':
             return 'not_created'
@@ -66,7 +68,7 @@ class DeliveryStore(MigrationOperations, EnrollmentOperations, UplinkOperations,
         super().initialize()
         db = self.connect()
         try:
-            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + UPLINK_SCHEMA + '\n' + ENROLLMENT_SCHEMA + '\n' + MIGRATION_SCHEMA + '\nCOMMIT;')
+            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + UPLINK_SCHEMA + '\n' + ENROLLMENT_SCHEMA + '\n' + MIGRATION_SCHEMA + '\n' + ACTIVATION_SCHEMA + '\n' + STAGING_SCHEMA + '\nCOMMIT;')
         finally:
             db.close()
 
@@ -92,7 +94,7 @@ class DeliveryStore(MigrationOperations, EnrollmentOperations, UplinkOperations,
     def poll(self, token, generation):
         def run(db, actor):
             self.access(db, actor, generation)
-            require_not_held(db,actor['org_id'])
+            require_not_held(db,actor['org_id'],self.clock())
             # SQL excludes completed delivery, so an institution's complete
             # history is not materialized into memory on every poll.
             event = db.execute('''SELECT o.* FROM management_outbox o
@@ -128,7 +130,7 @@ class DeliveryStore(MigrationOperations, EnrollmentOperations, UplinkOperations,
             raise Problem(422, 'invalid_conflict', '同步冲突类型无效')
         def run(db, actor):
             self.access(db, actor, generation)
-            require_not_held(db,actor['org_id'])
+            require_not_held(db,actor['org_id'],self.clock())
             event = self.eligible_event(db, actor, event_id).fetchone()
             row = db.execute('SELECT * FROM management_deliveries WHERE org_id=? AND device_id=? AND generation=? AND event_id=?',
                              (actor['org_id'], actor['id'], generation, event_id)).fetchone()

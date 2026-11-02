@@ -12,10 +12,10 @@ function fixture(active=true){
  const disk={raw:JSON.stringify(state),getItem(){return this.raw;},setItem(k,v){this.raw=v;}},notes=[];
  const bridge={getCanonicalSyncProfile:()=>JSON.stringify({configured:true,orgId:'org',deviceId:'device',generation:'generation',profileId:'profile'})};
  class FixedDate extends Date{static now(){return now;}}
- const c=vm.createContext({console,crypto:webcrypto,TextEncoder,Date:FixedDate,localStorage:disk,AndroidBridge:bridge,notes,initial:state,
+ const c=vm.createContext({console,crypto:webcrypto,TextEncoder,TextDecoder,atob,Date:FixedDate,localStorage:disk,AndroidBridge:bridge,notes,initial:state,
  setTimeout:()=>1,setInterval:()=>1,clearTimeout:()=>{},document:{hidden:false,addEventListener(){},getElementById(){return null;}}});
  vm.runInContext("globalThis.window=globalThis;window.addEventListener=()=>{};let state=initial;const STORAGE_KEY='fixture';let committedStateSnapshot=JSON.stringify(state);let nonce=0;function syncNonce(){return String(++nonce).padStart(32,'0');}function invalidatePageCache(){}function toast(s){notes.push(s);}function localDate(){return '2026-11-01';}function studentById(id){return state.students.find(s=>s.id===id);}const listPages={attendance:1};",c);
- for(const file of ['snapshot-store.js','checkin-queue.js','approval-receiver.js','sync-runtime.js'])vm.runInContext(fs.readFileSync(path.join(repo,'server/management/tablet',file),'utf8'),c);
+ for(const file of ['snapshot-store.js','checkin-queue.js','approval-receiver.js','sync-runtime.js','activation-commit.js'])vm.runInContext(fs.readFileSync(path.join(repo,'server/management/tablet',file),'utf8'),c);
  vm.runInContext(fs.readFileSync(path.join(repo,'app/src/main/assets/canonical-app.js'),'utf8'),c);
  vm.runInContext(fn('function persistCurrentState(){','function rollbackUnsavedState'),c);
  vm.runInContext(fn('function saveState(){','async function optimizeExistingFacePhotos'),c);
@@ -101,4 +101,18 @@ test('active mode cannot prepare another capture; result callback never renders 
  await f.run('captureCanonicalEnrollment()');assert.equal(calls.length,0);
  f.run('window.onCanonicalSyncNativeResult("capture",{ok:true,data:{payload:"SECRET-MUST-NOT-RENDER"}})');
  assert(!f.notes.some(n=>n.includes('SECRET-MUST-NOT-RENDER')));assert(f.notes.some(n=>n.includes('尚未上传')));
+});
+
+test('actual activation entry persists bootstrap before native commit and keeps check-ins blocked until acknowledgement',async()=>{
+ const f=fixture(false),sha=s=>require('node:crypto').createHash('sha256').update(s).digest('hex'),raw=f.disk.raw,next=JSON.parse(raw),commits=[],prepared=[];
+ next.managementSync.enabled=true;next.deviceSync={captureEnabled:false};const nextRaw=JSON.stringify(next);
+ const p={configured:false,staged:true,orgId:'org',deviceId:'device',generation:'generation',profileId:'profile'};
+ f.bridge.getCanonicalSyncProfile=()=>JSON.stringify(p);f.bridge.prepareCanonicalActivation=h=>prepared.push(h);
+ f.bridge.getCanonicalActivationBootstrap=()=>JSON.stringify({format:'future-school-canonical-bootstrap-v1',org_id:'org',device_id:'device',generation:'generation',profile_id:'profile',baseline_sha256:sha(raw),bootstrap_sha256:sha(nextRaw),source_map_sha256:'b'.repeat(64),snapshot_base64:Buffer.from(nextRaw).toString('base64')});
+ f.bridge.commitCanonicalActivation=h=>{assert.equal(f.disk.raw,nextRaw);commits.push(h);};
+ f.run('let isAdminAuthenticated=true;');await f.run('startCanonicalActivation()');assert.deepEqual(prepared,[sha(raw)]);
+ await f.run('finishCanonicalActivation()');assert.deepEqual(commits,[sha(nextRaw)]);assert.equal(f.run('canonicalModeActive()'),true);
+ assert.equal(f.run("recordStudentAttendance(1,'manual')").ok,false);assert.equal(f.disk.raw,nextRaw);
+ f.run("state.settings.note='pending edit';saveState()");assert.equal(f.disk.raw,nextRaw);
+ p.configured=true;p.staged=false;assert.equal(f.run("recordStudentAttendance(1,'manual')").ok,true);assert.equal(f.snapshot().students[0].hours,9);
 });

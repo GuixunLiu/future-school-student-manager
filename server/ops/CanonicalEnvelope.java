@@ -12,10 +12,13 @@ import javax.crypto.spec.*;
  */
 public final class CanonicalEnvelope {
     static byte[][] seal(PublicKey publicKey,String nonce,byte[] plain)throws Exception{
-        if(!(publicKey instanceof RSAPublicKey)||((RSAPublicKey)publicKey).getModulus().bitLength()<3072||!nonce.matches("[a-f0-9]{32}")||plain.length>8192)throw new Exception("input");
+        return seal(publicKey,nonce,plain,"future-school-canonical-v1:",8192);
+    }
+    static byte[][] seal(PublicKey publicKey,String nonce,byte[] plain,String context,int limit)throws Exception{
+        if(!(publicKey instanceof RSAPublicKey)||((RSAPublicKey)publicKey).getModulus().bitLength()<3072||!nonce.matches("[a-f0-9]{32}")||plain.length>limit)throw new Exception("input");
         KeyGenerator generator=KeyGenerator.getInstance("AES");generator.init(256);SecretKey session=generator.generateKey();
         byte[] iv=new byte[12];new SecureRandom().nextBytes(iv);
-        Cipher content=Cipher.getInstance("AES/GCM/NoPadding");content.init(Cipher.ENCRYPT_MODE,session,new GCMParameterSpec(128,iv));content.updateAAD(("future-school-canonical-v1:"+nonce).getBytes(StandardCharsets.UTF_8));
+        Cipher content=Cipher.getInstance("AES/GCM/NoPadding");content.init(Cipher.ENCRYPT_MODE,session,new GCMParameterSpec(128,iv));content.updateAAD((context+nonce).getBytes(StandardCharsets.UTF_8));
         Cipher wrap=Cipher.getInstance("RSA/ECB/OAEPPadding");wrap.init(Cipher.ENCRYPT_MODE,publicKey,new OAEPParameterSpec("SHA-256","MGF1",MGF1ParameterSpec.SHA1,PSource.PSpecified.DEFAULT));
         return new byte[][]{wrap.doFinal(session.getEncoded()),iv,content.doFinal(plain)};
     }
@@ -34,9 +37,11 @@ public final class CanonicalEnvelope {
     }
     public static void main(String[] args)throws Exception{
         if(args.length==1&&args[0].equals("selftest")){selftest();return;}
-        if(args.length!=2)throw new IllegalArgumentException("public-key.der nonce; plaintext JSON on stdin");
-        byte[] der=Files.readAllBytes(Path.of(args[0]));if(der.length>2048)throw new Exception("key size");
-        byte[] plain=System.in.readNBytes(8193);byte[][] values=seal(KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der)),args[1],plain);
-        Base64.Encoder encoder=Base64.getEncoder();System.out.print("{\"protocol\":1,\"nonce\":\""+args[1]+"\",\"wrapped_key\":\""+encoder.encodeToString(values[0])+"\",\"iv\":\""+encoder.encodeToString(values[1])+"\",\"ciphertext\":\""+encoder.encodeToString(values[2])+"\"}");
+        boolean bootstrap=args.length==3&&args[0].equals("--bootstrap");int offset=bootstrap?1:0;
+        if(args.length!=2+offset)throw new IllegalArgumentException("[--bootstrap] public-key.der nonce; plaintext JSON on stdin");
+        byte[] der=Files.readAllBytes(Path.of(args[offset]));if(der.length>2048)throw new Exception("key size");
+        int limit=bootstrap?14*1024*1024:8192;byte[] plain=System.in.readNBytes(limit+1);
+        byte[][] values=seal(KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der)),args[1+offset],plain,bootstrap?"future-school-canonical-bootstrap-v1:":"future-school-canonical-v1:",limit);
+        Base64.Encoder encoder=Base64.getEncoder();System.out.print("{\"protocol\":1,\"nonce\":\""+args[1+offset]+"\",\"wrapped_key\":\""+encoder.encodeToString(values[0])+"\",\"iv\":\""+encoder.encodeToString(values[1])+"\",\"ciphertext\":\""+encoder.encodeToString(values[2])+"\"}");
     }
 }

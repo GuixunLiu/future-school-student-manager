@@ -51,7 +51,7 @@ final class CanonicalSyncTransport {
     }
     private JSONObject profile()throws Exception{return profile(true);}
     private JSONObject profile(boolean requireEnabled)throws Exception{
-        if(requireEnabled&&!prefs.getBoolean("enabled",false))throw new IOException("disabled");
+        if(requireEnabled&&(!prefs.getBoolean("enabled",false)||prefs.getBoolean("activation_pending",false)))throw new IOException("disabled");
         KeyStore keys=KeyStore.getInstance("AndroidKeyStore");keys.load(null);
         SecretKey key=(SecretKey)keys.getKey(AES,null);if(key==null)throw new IOException("unprovisioned");
         Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
@@ -68,6 +68,7 @@ final class CanonicalSyncTransport {
         if(!endpoint.equals("https://47.97.226.219:18083")&&!(BuildConfig.DEBUG&&endpoint.matches("https://127\\.0\\.0\\.1:[0-9]{4,5}")))throw new IOException("endpoint");
     }
     String overview(){
+        if(prefs.getBoolean("activation_pending",false))try{JSONObject p=profile(false);return new JSONObject().put("configured",false).put("staged",true).put("activationPending",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d")).put("generation",p.getString("g")).put("profileId",p.getString("id")).put("baselineSha256",p.getString("b")).toString();}catch(Exception ignored){}
         if(!prefs.getBoolean("enabled",false)&&prefs.getBoolean("staged",false))try{JSONObject p=profile(false);return new JSONObject().put("configured",false).put("staged",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d")).put("generation",p.getString("g")).put("profileId",p.getString("id")).put("baselineSha256",p.getString("b")).toString();}catch(Exception ignored){}
         try{JSONObject p=profile();return new JSONObject().put("configured",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d"))
             .put("generation",p.getString("g")).put("profileId",p.getString("id")).toString();}catch(Exception e){return "{\"configured\":false}";}
@@ -145,6 +146,77 @@ final class CanonicalSyncTransport {
             if(!prefs.edit().putString("secret",secret).putString("iv",Base64.encodeToString(save.getIV(),2)).putBoolean("staged",true).putBoolean("enabled",false).commit())throw new IOException("save");
             reply("enrollment",result(true,200,new JSONObject().put("staged",true).put("activated",false)));
         }catch(Exception e){reply("enrollment",result(false,0,null));}finally{busy.set(false);}});
+    }
+    private File activationFile()throws IOException{File root=activity.getFilesDir();if(root==null)throw new IOException("storage");return new File(root,"canonical-activation-staged.enc");}
+    private void saveActivation(JSONObject value)throws Exception{
+        Cipher save=Cipher.getInstance("AES/GCM/NoPadding");save.init(Cipher.ENCRYPT_MODE,(SecretKey)keys().getKey(AES,null));
+        byte[] bytes=save.doFinal(value.toString().getBytes(StandardCharsets.UTF_8));
+        android.util.AtomicFile file=new android.util.AtomicFile(activationFile());FileOutputStream out=file.startWrite();
+        try{out.write(save.getIV());out.write(bytes);file.finishWrite(out);}catch(Exception e){file.failWrite(out);throw e;}
+    }
+    private JSONObject loadActivation()throws Exception{
+        if(!prefs.getBoolean("activation_ready",false))throw new IOException("not prepared");
+        byte[] bytes=read(new android.util.AtomicFile(activationFile()).openRead(),20*1024*1024);
+        if(bytes.length<29)throw new IOException("activation storage");
+        Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.DECRYPT_MODE,(SecretKey)keys().getKey(AES,null),new GCMParameterSpec(128,java.util.Arrays.copyOfRange(bytes,0,12)));
+        return new JSONObject(new String(cipher.doFinal(java.util.Arrays.copyOfRange(bytes,12,bytes.length)),StandardCharsets.UTF_8));
+    }
+    String activationBootstrap(){try{return loadActivation().getJSONObject("payload").toString();}catch(Exception e){return "{}";}}
+    private JSONObject activationPlan(JSONObject p,JSONObject payload)throws Exception{
+        JSONObject response=http(p,"/v1/management/device/activation?generation="+p.getString("g")+"&profile_id="+p.getString("id"),null);
+        if(!response.getBoolean("ok"))throw new IOException("activation authorization");JSONObject plan=response.getJSONObject("data");
+        long now=System.currentTimeMillis()/1000;
+        if(plan.getInt("protocol")!=1||!plan.getString("mode").equals("canonical_activation")||plan.getBoolean("old_mirror_writable")||!plan.getString("activation_id").matches("[a-f0-9]{32}")||!plan.getString("nonce").matches("[a-f0-9]{32}")||!java.util.Arrays.asList("offered","active").contains(plan.getString("phase"))||plan.getLong("active_until")<=now||plan.getLong("active_until")>now+31L*86400)throw new IOException("activation plan");
+        if(plan.getString("phase").equals("offered")&&(plan.getLong("offer_expires_at")<=now||plan.getLong("offer_expires_at")>now+900))throw new IOException("activation offer expired");
+        for(String[] pair:new String[][]{{"org_id","o"},{"device_id","d"},{"generation","g"},{"profile_id","id"},{"baseline_sha256","b"}})if(!plan.getString(pair[0]).equals(p.getString(pair[1]))||!payload.getString(pair[0]).equals(p.getString(pair[1])))throw new IOException("activation identity");
+        for(String key:new String[]{"bootstrap_sha256","source_map_sha256"})if(!plan.getString(key).matches("[a-f0-9]{64}")||!plan.getString(key).equals(payload.getString(key)))throw new IOException("activation digest");
+        return plan;
+    }
+    void prepareActivation(String currentSha){
+        if(closed)return;activity.runOnUiThread(()->new AlertDialog.Builder(activity).setTitle("启用网页主管理")
+            .setMessage("将核对完整资料及新连接，保存成功后由网页管理学生、班级和课时；平板继续负责签到。")
+            .setNegativeButton("取消",null).setPositiveButton("核对并启用",(dialog,which)->prepareActivationNow(currentSha)).show());
+    }
+    synchronized void prepareActivationNow(String currentSha){
+        if(closed||!busy.compareAndSet(false,true))return;
+        worker.execute(()->{try{
+            JSONObject p=profile(false);File root=activity.getExternalFilesDir(null);if(root==null)throw new IOException("storage");
+            JSONObject envelope=new JSONObject(new String(read(new FileInputStream(new File(root,"canonical-bootstrap.enc.json")),20*1024*1024),StandardCharsets.UTF_8));
+            fields(envelope,"protocol nonce wrapped_key iv ciphertext");String nonce=prefs.getString("nonce","");
+            if(envelope.getInt("protocol")!=1||!nonce.equals(envelope.getString("nonce"))||!nonce.equals(p.getString("n")))throw new IOException("bootstrap device");
+            Cipher unwrap=Cipher.getInstance("RSA/ECB/OAEPPadding");unwrap.init(Cipher.DECRYPT_MODE,rsa(),new OAEPParameterSpec("SHA-256","MGF1",MGF1ParameterSpec.SHA1,PSource.PSpecified.DEFAULT));
+            byte[] session=unwrap.doFinal(Base64.decode(envelope.getString("wrapped_key"),2)),iv=Base64.decode(envelope.getString("iv"),2);
+            if(session.length!=32||iv.length!=12)throw new IOException("bootstrap envelope");
+            Cipher decrypt=Cipher.getInstance("AES/GCM/NoPadding");decrypt.init(Cipher.DECRYPT_MODE,new SecretKeySpec(session,"AES"),new GCMParameterSpec(128,iv));decrypt.updateAAD(("future-school-canonical-bootstrap-v1:"+nonce).getBytes(StandardCharsets.UTF_8));
+            JSONObject payload=new JSONObject(new String(decrypt.doFinal(Base64.decode(envelope.getString("ciphertext"),2)),StandardCharsets.UTF_8));
+            fields(payload,"format org_id device_id generation profile_id baseline_sha256 source_map_sha256 bootstrap_sha256 snapshot_base64");
+            if(!payload.getString("format").equals("future-school-canonical-bootstrap-v1"))throw new IOException("bootstrap format");
+            byte[] snapshot=Base64.decode(payload.getString("snapshot_base64"),2);
+            if(snapshot.length>10*1024*1024||!digest(snapshot).equals(payload.getString("bootstrap_sha256"))||currentSha==null||(!currentSha.equals(p.getString("b"))&&!currentSha.equals(payload.getString("bootstrap_sha256"))))throw new IOException("local baseline");
+            JSONObject plan=activationPlan(p,payload);saveActivation(new JSONObject().put("payload",payload).put("plan",plan));
+            if(!prefs.edit().putBoolean("activation_ready",true).commit())throw new IOException("save bootstrap");
+            reply("activation",result(true,200,new JSONObject().put("prepared",true)));
+        }catch(Exception e){reply("activation",result(false,0,null));}finally{busy.set(false);}});
+    }
+    private void activationProfile(JSONObject p)throws Exception{
+        Cipher save=Cipher.getInstance("AES/GCM/NoPadding");save.init(Cipher.ENCRYPT_MODE,(SecretKey)keys().getKey(AES,null));
+        String secret=Base64.encodeToString(save.doFinal(p.toString().getBytes(StandardCharsets.UTF_8)),2);
+        if(!prefs.edit().putString("secret",secret).putString("iv",Base64.encodeToString(save.getIV(),2)).putBoolean("enabled",true).putBoolean("staged",true).putBoolean("activation_pending",true).commit())throw new IOException("save activation profile");
+    }
+    synchronized void commitActivation(String savedSha){
+        if(closed||!busy.compareAndSet(false,true))return;
+        worker.execute(()->{try{
+            JSONObject stored=loadActivation(),payload=stored.getJSONObject("payload"),p=profile(false);
+            if(savedSha==null||!savedSha.equals(payload.getString("bootstrap_sha256")))throw new IOException("saved snapshot");
+            JSONObject plan=activationPlan(p,payload);p.put("x",plan.getLong("active_until"));activationProfile(p);
+            JSONObject body=new JSONObject().put("generation",p.getString("g")).put("activation_id",plan.getString("activation_id")).put("profile_id",p.getString("id")).put("nonce",plan.getString("nonce")).put("bootstrap_sha256",savedSha).put("source_map_sha256",payload.getString("source_map_sha256"));
+            JSONObject response=http(p,"/v1/management/device/activation-commit",body.toString().getBytes(StandardCharsets.UTF_8));
+            if(!response.getBoolean("ok"))throw new IOException("activation commit");JSONObject receipt=response.getJSONObject("data");
+            for(String key:new String[]{"generation","activation_id","profile_id","bootstrap_sha256","source_map_sha256"})if(!receipt.getString(key).equals(body.getString(key)))throw new IOException("activation receipt");
+            if(receipt.getInt("protocol")!=1||!receipt.getString("org_id").equals(p.getString("o"))||!receipt.getString("device_id").equals(p.getString("d"))||!receipt.getString("phase").equals("active")||receipt.getBoolean("old_mirror_writable")||receipt.getBoolean("balances_changed")||receipt.getLong("active_until")!=p.getLong("x"))throw new IOException("activation receipt state");
+            if(!prefs.edit().putBoolean("activation_pending",false).putBoolean("staged",false).commit())throw new IOException("save activation receipt");
+            reply("activation",result(true,200,new JSONObject().put("activated",true)));
+        }catch(Exception e){reply("activation",result(false,0,null));}finally{busy.set(false);}});
     }
     synchronized void request(String id,String profileId,String kind,String text){
         if(closed||id==null||!id.matches("canonical:[a-f0-9]{32}")||text==null||text.length()>16000)return;

@@ -222,6 +222,9 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void prepareCanonicalSyncEnrollment(){canonicalSyncTransport.prepareEnrollment();}
         @JavascriptInterface public void captureCanonicalSyncEnrollment(String raw,String baselineSha256,long capturedAt){canonicalSyncTransport.captureEnrollment(raw,baselineSha256,capturedAt);}
         @JavascriptInterface public void stageCanonicalSyncEnrollment(String baselineSha256){canonicalSyncTransport.stageEnrollment(baselineSha256);}
+        @JavascriptInterface public void prepareCanonicalActivation(String currentSha256){canonicalSyncTransport.prepareActivation(currentSha256);}
+        @JavascriptInterface public String getCanonicalActivationBootstrap(){return canonicalSyncTransport.activationBootstrap();}
+        @JavascriptInterface public void commitCanonicalActivation(String savedSha256){canonicalSyncTransport.commitActivation(savedSha256);}
         @JavascriptInterface public void requestCanonicalSync(String id,String profileId,String kind,String payload){canonicalSyncTransport.request(id,profileId,kind,payload);}
         @JavascriptInterface public String getWebMirrorStatus() { return webMirrorTransport.overview(); }
         @JavascriptInterface public void configureWebMirror() { webMirrorTransport.configure(); }

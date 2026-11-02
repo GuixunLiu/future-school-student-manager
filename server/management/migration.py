@@ -97,6 +97,8 @@ class MigrationOperations:
                 if old['cancel_digest']!=hashed:raise Problem(409,'idempotency_conflict','同一取消编号不能改变内容')
                 return self.hold_receipt(old,True,db)
             if row['state']!='held':raise Problem(409,'migration_not_held','迁移准备已结束')
+            if db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='management_activations'").fetchone() and db.execute('SELECT 1 FROM management_activations WHERE hold_id=?',(hold_id,)).fetchone():
+                raise Problem(409,'activation_recovery_required','平板可能已保存新配置，只能暂停并核对恢复，不能重新开放旧写入')
             if self.migration_snapshot_digest(db,actor['org_id'])!=row['frozen_sha256']:
                 raise Problem(409,'migration_frozen_data_changed','暂停后资料发生变化，保留暂停并人工核对，不能恢复旧写入')
             db.execute("UPDATE management_migration_holds SET state='cancelled',cancelled_by=?,cancelled_at=?,cancel_ref=?,cancel_digest=?,cancel_reason=? WHERE id=?",
