@@ -230,11 +230,14 @@ final class CanonicalSyncTransport {
                 switch(kind){
                     case "checkin":route="/v1/management/device/checkin";fields(body,"generation event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units remaining_units occurred_at");break;
                     case "next":route="/v1/management/device/next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8");fields(body,"generation");break;
+                    case "class-ready":route="/v1/management/device/class-ready";fields(body,"generation");break;
+                    case "class-next":route="/v1/management/device/class-next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8");fields(body,"generation");break;
+                    case "class-receipt":route="/v1/management/device/class-receipt";fields(body,"generation class_id revision receipt_token sha256 status");break;
                     case "receipt":route="/v1/management/device/receipt";
                         fields(body,body.optString("status").equals("applied")?"generation event_id receipt_token sha256 status attendance_revision balance_revision balance_units":"generation event_id receipt_token sha256 status conflict_code");break;
                     default:throw new IOException("route");
                 }
-                JSONObject response=http(p,route,kind.equals("next")?null:text.getBytes(StandardCharsets.UTF_8));
+                JSONObject response=http(p,route,kind.equals("next")||kind.equals("class-next")?null:text.getBytes(StandardCharsets.UTF_8));
                 if(!profile().getString("id").equals(profileId))throw new IOException("profile changed");
                 reply(id,response);
             }catch(Exception e){reply(id,result(false,0,null));}

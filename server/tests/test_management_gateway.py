@@ -53,6 +53,11 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.call('/v1/management/device/plan?generation=fictional',headers=auth)[0],403)
         self.assertEqual(self.call('/v1/management/device/plan?generation=fictional',tls=True,headers=auth)[0],200)
         self.assertEqual(self.call('/v1/tablet-mirror/plan',tls=True,headers=auth)[0],409)
+        self.assertEqual(self.call('/v1/management/device/class-next?generation=fictional',headers=auth)[0],403)
+        self.assertEqual(self.call('/v1/management/device/class-next?generation=fictional',tls=True,headers=auth)[0],200)
+        for route in ('class-ready','class-receipt'):
+            self.assertEqual(self.call('/v1/management/device/'+route,method='POST',headers=auth|{'Content-Type':'application/json'},body='{}')[0],403)
+            self.assertEqual(self.call('/v1/management/device/'+route,tls=True,method='POST',headers=auth|{'Content-Type':'application/json'},body='{}')[0],200)
         for i in range(55):self.assertEqual(self.call('/viewer/health',tls=bool(i%2))[0],200)
         health=json.loads(self.call('/viewer/health')[1]);self.assertFalse(health['legacy_mirror_writable']);self.assertTrue(health['encrypted_device_transport'])
         # An entire class can upload its new arrivals; device commits are not

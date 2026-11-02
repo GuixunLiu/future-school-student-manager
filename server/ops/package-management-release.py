@@ -7,9 +7,9 @@ from pathlib import Path
 import zipfile
 
 SERVER=Path(__file__).resolve().parents[1]
-MANAGEMENT=('__init__','api','runtime','gateway','initialization','approvals','assessments','deadlines','delivery','uplink','enrollment','segmented_enrollment','migration','migration_guard','history_boundary','activation','staging','reports','policy','personnel','personnel_api')
+MANAGEMENT=('__init__','api','runtime','gateway','initialization','approvals','assessments','deadlines','delivery','uplink','enrollment','segmented_enrollment','migration','migration_guard','history_boundary','activation','staging','reports','policy','personnel','personnel_api','class_teachers','class_teachers_api')
 FILES={*(f'management/{n}.py' for n in MANAGEMENT),*(f'business/{n}.py' for n in ('__init__','api','models','store','security')),
-       'ops/export-management-review.py','ops/temporary-http-viewer.py',*(f'management/web/{n}' for n in ('index.html','workspace.js','workspace.css','future-school-logo.png','personnel.html','personnel.js'))}
+       'ops/export-management-review.py','ops/temporary-http-viewer.py',*(f'management/web/{n}' for n in ('index.html','workspace.js','workspace.css','future-school-logo.png','personnel.html','personnel.js','class-teachers.js'))}
 
 
 def build():

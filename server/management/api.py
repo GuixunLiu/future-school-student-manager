@@ -321,7 +321,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
         return {'status': 'ready', 'mode': ('management_active' if active else 'management_staged') if admitted else 'management_candidate',
                 'approval_mode': 'web_approval', 'tablet_delivery_enabled': active,
                 'runtime_admitted': admitted,'production_ready': False, 'wechat_sending_enabled': False,
-                'personnel_api_enabled':getattr(app.state,'personnel_store',None)is not None}
+                'personnel_api_enabled':getattr(app.state,'personnel_store',None)is not None,
+                'class_teachers_enabled':getattr(app.state,'class_teacher_store',None)is not None}
 
     @app.get('/v1/me')
     def me(token: Token):
@@ -357,7 +358,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
                     'can_score': permits(actor, role, 'scores.record'),
                     'can_manage': permits(actor, role, 'accounts.manage'),
                     'can_unlock': permits(actor, role, 'submissions.unlock'),
-                    'personnel_api_enabled':role=='admin' and getattr(app.state,'personnel_store',None)is not None}
+                    'personnel_api_enabled':role=='admin' and getattr(app.state,'personnel_store',None)is not None,
+                    'class_teachers_enabled':role in ('admin','principal') and getattr(app.state,'class_teacher_store',None)is not None}
         return store.command(token, run)
 
     @app.get('/v1/management/requests')
@@ -483,4 +485,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
     if {'management_staff_versions','management_staff_commands'}<=tables:
         from .personnel_api import install_personnel_routes
         install_personnel_routes(app,database,clock)
+    if {'management_class_versions','management_class_commands','management_lesson_teacher_snapshots','management_metadata_clients','management_class_teacher_events'}<=tables:
+        from .class_teachers_api import install_class_teacher_routes
+        install_class_teacher_routes(app,database,clock)
     return app

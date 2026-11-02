@@ -32,9 +32,9 @@ OLD=('wxnotify-http-viewer.service','wxnotify-teacher-web.service')
 NEW=('wxnotify-canonical-gateway.service','wxnotify-canonical-management.service')
 EXPIRY=1794391683
 PIN='0bd32cee02e66ae18e98f708bd88cc5a8f889afe0305921ec16be8b223d220a0'
-MODULES=('__init__','api','runtime','gateway','initialization','approvals','assessments','deadlines','delivery','uplink','enrollment','segmented_enrollment','migration','migration_guard','history_boundary','activation','staging','reports','policy','personnel','personnel_api')
+MODULES=('__init__','api','runtime','gateway','initialization','approvals','assessments','deadlines','delivery','uplink','enrollment','segmented_enrollment','migration','migration_guard','history_boundary','activation','staging','reports','policy','personnel','personnel_api','class_teachers','class_teachers_api')
 FILES={*(f'management/{n}.py' for n in MODULES),*(f'business/{n}.py' for n in ('__init__','api','models','store','security')),
-       'ops/export-management-review.py','ops/temporary-http-viewer.py',*(f'management/web/{n}' for n in ('index.html','workspace.js','workspace.css','future-school-logo.png','personnel.html','personnel.js'))}
+       'ops/export-management-review.py','ops/temporary-http-viewer.py',*(f'management/web/{n}' for n in ('index.html','workspace.js','workspace.css','future-school-logo.png','personnel.html','personnel.js','class-teachers.js'))}
 sha=lambda b:hashlib.sha256(b).hexdigest()
 
 

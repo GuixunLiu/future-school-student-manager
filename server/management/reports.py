@@ -185,8 +185,9 @@ class ReportOperations:
                 if own is not None:
                     where+=' AND EXISTS(SELECT 1 FROM teacher_classes t WHERE t.org_id=a.org_id AND t.class_id=a.class_id AND t.user_id=?)';params.append(actor['id'])
                 rows=[]
-                for r in db.execute("SELECT a.class_id,c.name AS class_name,COUNT(*) AS expected,SUM(a.status='arrived') AS arrived,SUM(a.status='leave') AS leave_count FROM management_attendance a JOIN classes c ON c.org_id=a.org_id AND c.id=a.class_id WHERE "+where+' AND a.expected=1 GROUP BY a.class_id,c.name',params):
-                    teachers=list(db.execute('SELECT u.id,u.display_name FROM teacher_classes t JOIN users u ON u.org_id=t.org_id AND u.id=t.user_id WHERE t.org_id=? AND t.class_id=? ORDER BY u.id',(actor['org_id'],r['class_id'])))
+                for r in db.execute("SELECT a.lesson_id,a.class_id,c.name AS class_name,COUNT(*) AS expected,SUM(a.status='arrived') AS arrived,SUM(a.status='leave') AS leave_count FROM management_attendance a JOIN classes c ON c.org_id=a.org_id AND c.id=a.class_id WHERE "+where+' AND a.expected=1 GROUP BY a.lesson_id,a.class_id,c.name',params):
+                    sealed=db.execute('SELECT teachers_json FROM management_lesson_teacher_snapshots WHERE org_id=? AND lesson_id=?',(actor['org_id'],r['lesson_id'])).fetchone() if 'management_lesson_teacher_snapshots' in tables else None
+                    teachers=json.loads(sealed['teachers_json']) if sealed else list(db.execute('SELECT u.id,u.display_name FROM teacher_classes t JOIN users u ON u.org_id=t.org_id AND u.id=t.user_id WHERE t.org_id=? AND t.class_id=? ORDER BY u.id',(actor['org_id'],r['class_id'])))
                     rows.append(dict(r,teacher_id=':'.join(t['id'] for t in teachers) or 'unassigned:'+r['class_id'],teacher_name='、'.join(t['display_name'] for t in teachers) or '未分配教师'))
                 sections.append(dict(kind='canonical',label='网页接入后的实际课次',read_only=True,report=aggregate(rows),original_totals_preserved=False))
             today=datetime.fromtimestamp(self.clock(),TZ).date();this_week=today-timedelta(days=today.weekday())

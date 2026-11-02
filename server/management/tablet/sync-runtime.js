@@ -6,7 +6,8 @@
   'use strict';
   const queue=typeof module!=='undefined'&&module.exports?require('./checkin-queue.js'):root.ManagementCheckinQueue;
   const receiver=typeof module!=='undefined'&&module.exports?require('./approval-receiver.js'):root.ManagementApprovalReceiver;
-  function create({store,profile,request}){
+  const classTeachers=typeof module!=='undefined'&&module.exports?require('./class-teacher-receiver.js'):root.ManagementClassTeacherReceiver;
+  function create({store,profile,request,metadata=false}){
     let busy=false;
     function identity(){
       const s=store.snapshot().managementSync,p=profile();
@@ -22,6 +23,26 @@
         const send=async(kind,body)=>{check();const response=await request(kind,body);check();return response;};
         const uploaded=await queue.pump(guarded,body=>send('checkin',body));
         if(!uploaded.ok||uploaded.blocked||uploaded.more)return{...uploaded,phase:'upload'};
+        if(metadata){
+          const ready=await send('class-ready',{generation:initial.generation});
+          if(ready?.status!==404){
+            const r=ready?.data;if(!ready?.ok||r?.org_id!==initial.orgId||r?.device_id!==initial.deviceId||r?.generation!==initial.generation||r?.class_teacher_protocol!==1)return{ok:false,phase:'class-ready',retry:true};
+            for(let n=0;n<10;n++){
+              const next=await send('class-next',{generation:initial.generation}),v=next?.data;
+              if(!next?.ok||v?.org_id!==initial.orgId||v?.device_id!==initial.deviceId||v?.generation!==initial.generation)return{ok:false,phase:'class-download',retry:true};
+              if(v.item===null)break;
+              const applied=await classTeachers.receive(guarded,v);if(!applied.ok){
+                if(['mapping_changed','local_changes','storage_failed'].includes(applied.code)){
+                  const e=JSON.parse(v.item.event_json);await send('class-receipt',{generation:initial.generation,class_id:e.class_id,revision:e.revision,sha256:v.item.sha256,receipt_token:v.item.receipt_token,status:'conflict'});
+                }
+                return{...applied,phase:'class-apply',retry:true};
+              }
+              const ack=await send('class-receipt',applied.receipt);
+              if(!ack?.ok||ack.data?.class_id!==applied.receipt.class_id||ack.data?.revision!==applied.receipt.revision||ack.data?.status!=='applied')return{ok:false,phase:'class-receipt',retry:true};
+              if(n===9)return{ok:true,phase:'class-download',more:true};
+            }
+          }
+        }
         let received=0;
         for(let i=0;i<10;i++){
           const response=await send('next',{generation:initial.generation});
