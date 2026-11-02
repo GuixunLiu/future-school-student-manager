@@ -31,15 +31,16 @@ def ready(data):
 
 
 base.backend_ready=ready
-GETS={'/','/workspace.js','/workspace.css','/future-school-logo.png','/health/ready','/v1/me','/v1/management/attendance','/v1/management/weekly-reports',
+GETS={'/','/workspace.js','/workspace.css','/future-school-logo.png','/people','/personnel.js','/v1/management/people','/health/ready','/v1/me','/v1/management/attendance','/v1/management/weekly-reports',
       '/v1/management/requests','/v1/management/legacy-requests','/v1/management/materials','/v1/management/assessment-rules',
       '/v1/management/assessment-teachers','/v1/management/workspace','/v1/management/migration-holds','/v1/management/device/plan','/v1/management/device/activation','/v1/management/device/next'}
-POSTS={'/v1/auth/login','/v1/auth/logout','/v1/management/requests','/v1/management/assessment-rules',
+POSTS={'/v1/auth/login','/v1/auth/logout','/v1/management/people','/v1/management/requests','/v1/management/assessment-rules',
        '/v1/management/assessment-periods','/v1/management/enrollment-reviews','/v1/management/enrollment-authorizations',
        '/v1/management/enrollment-batches','/v1/management/migration-holds','/v1/management/activations',
        '/v1/management/device/activation-commit','/v1/management/device/receipt','/v1/management/device/checkin'}
 GET_PATTERNS=(r'/v1/management/activations/[a-f0-9]{32}',r'/v1/management/materials/[a-f0-9]{32}')
 POST_PATTERNS=(r'/v1/management/requests/[a-f0-9]{32}/decision',r'/v1/management/materials/[a-f0-9]{32}',
+               r'/v1/management/people/[a-f0-9]{32}',
                r'/v1/management/materials/[a-f0-9]{32}/scores',r'/v1/management/enrollment-batches/[a-f0-9]{32}/(?:pages|finalize)',
                r'/v1/management/migration-holds/[a-f0-9]{32}/cancel',r'/v1/management/activations/[a-f0-9]{32}/state')
 

@@ -320,7 +320,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
             active=admitted and has_active_writer(db,admission['org_id'],store.clock())
         return {'status': 'ready', 'mode': ('management_active' if active else 'management_staged') if admitted else 'management_candidate',
                 'approval_mode': 'web_approval', 'tablet_delivery_enabled': active,
-                'runtime_admitted': admitted,'production_ready': False, 'wechat_sending_enabled': False}
+                'runtime_admitted': admitted,'production_ready': False, 'wechat_sending_enabled': False,
+                'personnel_api_enabled':getattr(app.state,'personnel_store',None)is not None}
 
     @app.get('/v1/me')
     def me(token: Token):
@@ -355,7 +356,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
                     'approval_class_ids': sorted(scope.approval_classes) if role == 'assessor' else [],
                     'can_score': permits(actor, role, 'scores.record'),
                     'can_manage': permits(actor, role, 'accounts.manage'),
-                    'can_unlock': permits(actor, role, 'submissions.unlock')}
+                    'can_unlock': permits(actor, role, 'submissions.unlock'),
+                    'personnel_api_enabled':role=='admin' and getattr(app.state,'personnel_store',None)is not None}
         return store.command(token, run)
 
     @app.get('/v1/management/requests')
@@ -476,4 +478,9 @@ def create_app(database, clock=None, *, allow_test_client=False):
     def record_score(material_id: str, data: ScoreInput, token: Token):
         return store.record_score(token, data.workspace_role, material_id=material_id, **data.model_dump(exclude={'workspace_role'}))
 
+    # Only an explicit schema upgrade may enable personnel routes. No tables,
+    # identities or grants are created by startup or ordinary HTTP requests.
+    if {'management_staff_versions','management_staff_commands'}<=tables:
+        from .personnel_api import install_personnel_routes
+        install_personnel_routes(app,database,clock)
     return app

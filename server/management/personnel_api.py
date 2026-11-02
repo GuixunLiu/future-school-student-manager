@@ -36,6 +36,10 @@ class PersonInput(Input):
 
 
 def install_personnel_routes(app,database,clock=None):
+    existing=getattr(app.state,'personnel_store',None)
+    if existing is not None:
+        if existing.path.resolve()!=Path(database).resolve():raise ValueError('Personnel database differs')
+        return existing
     store=PersonnelStore(database,clock)
     with store.transaction() as db:
         tables={r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
