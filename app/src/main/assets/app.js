@@ -1408,6 +1408,7 @@ bindClassSpaceShell();
 $('#quickAddBtn').onclick=()=>openStudentModal();
 render();
 window.__futureSchoolAppStarted=true;
+setTimeout(()=>createNativeBackup('每日自动备份',false),1800);
 if(typeof window.finishAppStartup==='function')window.finishAppStartup();
 if(window.__pendingAdminEntry){window.__pendingAdminEntry=false;setTimeout(openAdminLogin,80)}
 function refreshScreenLayout(){

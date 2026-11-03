@@ -112,8 +112,20 @@ async function pumpDeviceSync(){
     }
   }finally{deviceSyncFlight=false;refreshDeviceSyncStatus();}
 }
-function deviceSyncSummary(){const s=state.deviceSync;if(!s)return'尚未启用 · 不上传资料';const waiting=s.queue.filter(e=>e.status==='pending').length,blocked=s.queue.filter(e=>e.status==='blocked').length;return`${s.paused?'已暂停':'已启用'} · 待同步 ${waiting} 条 · 待核对 ${blocked} 条${s.skipped?` · 未完整生成 ${s.skipped} 次`:''}`}
-function deviceSyncSettingsMarkup(){return `<section class="panel"><div class="panel-head"><div><h2>平板与服务器同步</h2><p>本机先保存，后台再提交；默认关闭</p></div><span class="tag">微信仍未接通</span></div><div class="setting-row"><div><b id="deviceSyncStatus">${esc(deviceSyncSummary())}</b><small>只同步核对后的签到、课时及获委托的代办请假，不上传照片、人脸、联系方式或整库。</small></div><button type="button" class="primary-btn" id="openDeviceSync">管理同步</button></div></section>`}
+function deviceSyncSummary(){
+  const canonical=state.managementSync;
+  if(canonical?.enabled===true&&canonical.mode==='server_authoritative'){
+    const rows=Array.isArray(canonical.queue)?canonical.queue:[],waiting=rows.filter(e=>e.status==='pending').length,blocked=rows.filter(e=>e.status==='blocked').length;
+    return `网页主管理已启用 · 待上传 ${waiting} 条 · 待核对 ${blocked} 条`;
+  }
+  const s=state.deviceSync;if(!s||s.captureEnabled!==true)return'尚未启用 · 不上传资料';
+  const rows=Array.isArray(s.queue)?s.queue:[],waiting=rows.filter(e=>e.status==='pending').length,blocked=rows.filter(e=>e.status==='blocked').length;
+  return`${s.paused?'已暂停':'已启用'} · 待同步 ${waiting} 条 · 待核对 ${blocked} 条${s.skipped?` · 未完整生成 ${s.skipped} 次`:''}`;
+}
+function deviceSyncSettingsMarkup(){
+  if(state.managementSync?.enabled===true&&state.managementSync.mode==='server_authoritative')return `<section class="panel"><div class="panel-head"><div><h2>网页与平板同步</h2><p>学生、班级和课时由网页管理，平板负责签到</p></div></div><div class="setting-row"><div><b id="canonicalSyncStatus">${esc(deviceSyncSummary())}</b><small>签到先保存在平板，联网后核对上传；网页审批和任课变更保存到平板后生效。</small></div></div></section>`;
+  return `<section class="panel"><div class="panel-head"><div><h2>平板与服务器同步</h2><p>本机先保存，后台再提交；默认关闭</p></div><span class="tag">微信仍未接通</span></div><div class="setting-row"><div><b id="deviceSyncStatus">${esc(deviceSyncSummary())}</b><small>只同步核对后的签到、课时及获委托的代办请假，不上传照片、人脸、联系方式或整库。</small></div><button type="button" class="primary-btn" id="openDeviceSync">管理同步</button></div></section>`;
+}
 function refreshDeviceSyncStatus(){const n=$('#deviceSyncStatus');if(n)n.textContent=deviceSyncSummary();const m=$('#syncQueueSummary');if(m)m.textContent=deviceSyncSummary()}
 function showDeviceSyncPlan(plan){
   if(!isAdminAuthenticated)return;
