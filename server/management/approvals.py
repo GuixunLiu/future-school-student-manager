@@ -142,6 +142,9 @@ class ApprovalStore(Store):
         hashed = digest(payload)
         def run(db, actor):
             selected = workspace(actor, role)
+            if lesson_id.startswith('legacy:'):
+                from .historical import prepare_request
+                prepare_request(self,db,actor,selected,lesson_id,student_id)
             fact = self.fact(db, actor['org_id'], lesson_id, student_id)
             require(actor, selected, 'attendance.request', scope=self.scope(db, actor),
                     target_org=fact['org_id'], class_id=fact['class_id'])
@@ -196,6 +199,10 @@ class ApprovalStore(Store):
                     raise Problem(409, 'attendance_changed', '申请后课堂记录已变化，需重新核对；本次未生效')
                 if row['kind'] == 'makeup' and now < fact['starts_at']:
                     raise Problem(409, 'future_makeup', '课程尚未开始，不能补签')
+                historical=None
+                if row['lesson_id'].startswith('legacy:'):
+                    from .historical import approve_context
+                    historical=approve_context(db,actor['org_id'],row['lesson_id'],row['student_id'],now)
                 balance = db.execute('SELECT * FROM management_balances WHERE org_id=? AND student_id=?',
                                      (actor['org_id'], row['student_id'])).fetchone()
                 delta = -fact['charge_units'] if row['kind'] == 'makeup' else 0
@@ -217,8 +224,10 @@ class ApprovalStore(Store):
                              previous_balance_units=balance['units'],
                              balance_units=balance['units'] + delta, balance_delta=delta,
                              decided_by=actor['id'], effective_at=now)
+                if historical:event['historical']=historical
                 db.execute('INSERT INTO management_outbox(id,org_id,request_id,payload,created_at) VALUES(?,?,?,?,?)',
                            (event['event_id'], actor['org_id'], row['id'], encoded(event), now))
+                if historical:db.execute('INSERT INTO management_historical_events VALUES(?,?,?)',(event['event_id'],actor['org_id'],historical['delivery_class_id']))
             db.execute('UPDATE management_requests SET status=?,decided_at=?,decided_by=?,decision_reason=?,decision_ref=?,decision_digest=? WHERE id=?',
                        ('approved' if approve else 'rejected', now, actor['id'], reason, decision_ref, hashed, row['id']))
             self.record_audit(db, actor, selected, 'attendance_approved' if approve else 'attendance_rejected', row['id'], reason=reason)

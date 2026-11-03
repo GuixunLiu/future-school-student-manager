@@ -17,6 +17,14 @@ function fixture(){
  const wire=JSON.stringify(event),envelope={org_id:'org',device_id:'device',generation:'generation',item:{event_json:wire,sha256:createHash('sha256').update(wire).digest('hex'),receipt_token:'a'.repeat(32)}};
  return{store,disk,profile,envelope,starts,empty:{...envelope,item:null}};
 }
+
+test('new historical receiver advertises the exact profile before polling; old server 404 remains compatible',async()=>{
+ for(const status of [200,404]){
+  const f=fixture(),order=[];const request=async(kind,body)=>{order.push(kind);assert.equal(body.generation,'generation');if(kind==='history-ready')return status===404?{ok:false,status:404}:{ok:true,status:200,data:{org_id:'org',device_id:'device',generation:'generation',historical_protocol:1}};if(kind==='next')return{ok:true,data:f.empty};throw Error('unexpected');};
+  assert.equal((await runtime.create({store:f.store,profile:()=>f.profile,request,historical:true}).tick()).ok,true);assert.deepEqual(order,['history-ready','next']);
+ }
+ const f=fixture();let polled=false;const result=await runtime.create({store:f.store,profile:()=>f.profile,historical:true,request:async kind=>{if(kind==='next')polled=true;return{ok:true,data:{org_id:'wrong'}};}}).tick();assert.equal(result.phase,'history-ready');assert.equal(polled,false);
+});
 test('download persists once, lost server acknowledgement retries receipt without duplicate debit',async()=>{
  const f=fixture();let lost=true,done=false,acks=0;
  const request=async(kind,body)=>{if(kind==='next')return{ok:true,data:done?f.empty:f.envelope};

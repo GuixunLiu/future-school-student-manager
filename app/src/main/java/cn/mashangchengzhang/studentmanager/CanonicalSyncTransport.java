@@ -231,6 +231,7 @@ final class CanonicalSyncTransport {
                     case "checkin":route="/v1/management/device/checkin";fields(body,"generation event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units remaining_units occurred_at");break;
                     case "next":route="/v1/management/device/next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8");fields(body,"generation");break;
                     case "class-ready":route="/v1/management/device/class-ready";fields(body,"generation");break;
+                    case "history-ready":route="/v1/management/device/history-ready";fields(body,"generation");break;
                     case "class-next":route="/v1/management/device/class-next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8");fields(body,"generation");break;
                     case "class-receipt":route="/v1/management/device/class-receipt";fields(body,"generation class_id revision receipt_token sha256 status");break;
                     case "receipt":route="/v1/management/device/receipt";

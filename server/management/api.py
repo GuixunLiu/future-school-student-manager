@@ -38,6 +38,10 @@ class DecisionInput(Input):
     decision_ref: str = Field(min_length=1, max_length=80)
 
 
+class HistoricalReadyInput(Input):
+    generation: str=Field(min_length=1,max_length=80)
+
+
 class PeriodInput(Input):
     workspace_role: Role
     kind: Literal['weekly_plan', 'weekly_report', 'monthly_plan', 'monthly_report', 'enrolment_list', 'renewal_list']
@@ -322,7 +326,20 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'approval_mode': 'web_approval', 'tablet_delivery_enabled': active,
                 'runtime_admitted': admitted,'production_ready': False, 'wechat_sending_enabled': False,
                 'personnel_api_enabled':getattr(app.state,'personnel_store',None)is not None,
-                'class_teachers_enabled':getattr(app.state,'class_teacher_store',None)is not None}
+                'class_teachers_enabled':getattr(app.state,'class_teacher_store',None)is not None,
+                'historical_requests_enabled':historical_enabled}
+
+    @app.post('/v1/management/device/history-ready')
+    def history_ready(data:HistoricalReadyInput,token:Token):
+        def run(db,actor):
+            from .historical import enabled
+            from .migration_guard import require_not_held
+            store.access(db,actor,data.generation)
+            if not enabled(db):raise Problem(404,'history_not_enabled','历史更正尚未启用')
+            require_not_held(db,actor['org_id'],store.clock())
+            db.execute('INSERT OR IGNORE INTO management_historical_clients VALUES(?,?,?,1)',(actor['org_id'],actor['id'],data.generation))
+            return dict(org_id=actor['org_id'],device_id=actor['id'],generation=data.generation,historical_protocol=1)
+        return store.command(token,run)
 
     @app.get('/v1/me')
     def me(token: Token):
@@ -385,6 +402,16 @@ def create_app(database, clock=None, *, allow_test_client=False):
                               + ' AND '.join(where) + ' ORDER BY r.rowid DESC LIMIT ?', (*params, limit + 1)).fetchall()
             items = [dict(r) for r in rows[:limit]]
             for item in items:
+                fact = db.execute('SELECT starts_at FROM management_attendance WHERE org_id=? AND lesson_id=? AND student_id=?', (actor['org_id'], item['lesson_id'], item['student_id'])).fetchone()
+                item['starts_at'] = fact['starts_at'] if fact else None
+                item['historical'] = item['lesson_id'].startswith('legacy:')
+                if item['historical']:
+                    from .historical import enabled as history_enabled
+                    if history_enabled(db):
+                        context = db.execute('SELECT context_json FROM management_historical_facts WHERE org_id=? AND lesson_id=? AND student_id=?', (actor['org_id'],item['lesson_id'],item['student_id'])).fetchone()
+                        if context:
+                            import json
+                            item['class_name'] = json.loads(context['context_json'])['class_name']
                 item['tablet_delivery'] = store.delivery_status(db, actor['org_id'], item['id'], item['status'])
             return {'workspace_role': role, 'items': items,
                     'next_before': items[-1]['id'] if len(rows) > limit else None}
@@ -488,4 +515,6 @@ def create_app(database, clock=None, *, allow_test_client=False):
     if {'management_class_versions','management_class_commands','management_lesson_teacher_snapshots','management_metadata_clients','management_class_teacher_events'}<=tables:
         from .class_teachers_api import install_class_teacher_routes
         install_class_teacher_routes(app,database,clock)
+    from .historical import TABLES as HISTORICAL_TABLES
+    historical_enabled=HISTORICAL_TABLES<=tables
     return app

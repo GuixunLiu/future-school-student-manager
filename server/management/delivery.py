@@ -53,9 +53,11 @@ class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, M
     def delivery_status(self, db, org, request_id, request_status):
         if request_status != 'approved':
             return 'not_created'
+        from .historical import delivery_join
+        history_join,class_condition=delivery_join(db)
         row = db.execute('''SELECT d.status FROM management_requests r
           JOIN management_outbox o ON o.request_id=r.id AND o.org_id=r.org_id
-          JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND b.class_id=r.class_id
+          '''+history_join+''' JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND '''+class_condition+'''
           JOIN management_device_access a ON a.org_id=b.org_id AND a.device_id=b.device_id
           JOIN devices v ON v.org_id=a.org_id AND v.id=a.device_id
           JOIN device_classes c ON c.org_id=b.org_id AND c.device_id=b.device_id AND c.class_id=b.class_id
@@ -84,9 +86,11 @@ class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, M
     def eligible_event(self, db, actor, event_id=None):
         # Recheck current binding and device scope on EVERY poll/ack, including
         # duplicate acknowledgements after a class/identity authorization change.
+        from .historical import delivery_join
+        history_join,class_condition=delivery_join(db)
         rows = db.execute('''SELECT o.* FROM management_outbox o
           JOIN management_requests r ON r.id=o.request_id AND r.org_id=o.org_id
-          JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND b.class_id=r.class_id
+          '''+history_join+''' JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND '''+class_condition+'''
           JOIN device_classes c ON c.org_id=b.org_id AND c.device_id=b.device_id AND c.class_id=b.class_id
           WHERE o.org_id=? AND b.device_id=? AND (? IS NULL OR o.id=?) ORDER BY o.seq''',
           (actor['org_id'], actor['id'], event_id, event_id))
@@ -98,9 +102,11 @@ class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, M
             require_not_held(db,actor['org_id'],self.clock())
             # SQL excludes completed delivery, so an institution's complete
             # history is not materialized into memory on every poll.
+            from .historical import delivery_join
+            history_join,class_condition=delivery_join(db)
             event = db.execute('''SELECT o.* FROM management_outbox o
               JOIN management_requests r ON r.id=o.request_id AND r.org_id=o.org_id
-              JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND b.class_id=r.class_id
+              '''+history_join+''' JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND '''+class_condition+'''
               JOIN device_classes c ON c.org_id=b.org_id AND c.device_id=b.device_id AND c.class_id=b.class_id
               WHERE o.org_id=? AND b.device_id=? AND NOT EXISTS (
                 SELECT 1 FROM management_deliveries d WHERE d.org_id=o.org_id AND d.device_id=?

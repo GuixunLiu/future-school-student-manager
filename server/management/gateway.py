@@ -37,7 +37,7 @@ GETS={'/','/workspace.js','/workspace.css','/future-school-logo.png','/people','
 POSTS={'/v1/auth/login','/v1/auth/logout','/v1/management/people','/v1/management/requests','/v1/management/assessment-rules',
        '/v1/management/assessment-periods','/v1/management/enrollment-reviews','/v1/management/enrollment-authorizations',
        '/v1/management/enrollment-batches','/v1/management/migration-holds','/v1/management/activations',
-       '/v1/management/device/activation-commit','/v1/management/device/receipt','/v1/management/device/checkin','/v1/management/device/class-ready','/v1/management/device/class-receipt'}
+       '/v1/management/device/activation-commit','/v1/management/device/receipt','/v1/management/device/checkin','/v1/management/device/class-ready','/v1/management/device/class-receipt','/v1/management/device/history-ready'}
 GET_PATTERNS=(r'/v1/management/activations/[a-f0-9]{32}',r'/v1/management/materials/[a-f0-9]{32}')
 POST_PATTERNS=(r'/v1/management/requests/[a-f0-9]{32}/decision',r'/v1/management/materials/[a-f0-9]{32}',
                r'/v1/management/people/[a-f0-9]{32}',

@@ -34,6 +34,37 @@ function fixture(kind='arrived') {
 }
 function change(f, fn) {const s=JSON.parse(f.storage.raw);fn(s);f.storage.raw=JSON.stringify(s);}
 
+function historicalFixture(kind='arrived') {
+  const f=fixture(kind),header={format:'future-school-history-boundary-v1',org_id:'fictional',canonical_from_day:'2026-11-03',canonical_from:Date.parse('2026-11-03T00:00:00+08:00')/1000,baseline_sha256:'a'.repeat(64)};
+  const hash=createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.keys(header).sort().map(k=>[k,header[k]])))).digest('hex');
+  f.e.lesson_id='legacy:old-class:2026-10-31';f.e.class_id='old-class';
+  f.e.historical={protocol:1,local_student_id:1,local_class_id:99,class_name:'原历史班',teacher_name:'原历史教师',delivery_class_id:'class',date:'2026-10-31',history_boundary:{...header,boundary_sha256:hash}};
+  change(f,s=>{s.managementSync.lessons={};s.managementSync.facts={};s.managementSync.historyBoundarySha256=hash;s.attendance.push({id:80,studentId:777,date:'2026-10-24',className:'保留原记录'});});
+  return f;
+}
+
+test('historical approval atomically admits only one old fact; transferred class and original history stay unchanged',async()=>{
+  const f=historicalFixture(),envelope=f.envelope(f.e);
+  assert.equal((await receive(f.storage,envelope)).ok,true);
+  const s=JSON.parse(f.storage.raw);
+  assert.equal(s.students[0].className,'虚构班');assert.equal(s.students[0].hours,9);
+  assert.equal(s.attendance[0].className,'保留原记录');assert.equal(s.attendance[1].className,'原历史班');assert.equal(s.attendance[1].teacher,'原历史教师');assert.equal(s.attendance[1].classId,99);
+  assert.equal(s.transactions.length,1);assert.equal(s.transactions[0].amount,-1);
+  assert.equal(s.managementSync.students.student.classId,'class');assert.equal(s.managementSync.lessons[f.e.lesson_id].classId,'old-class');
+  assert.equal((await receive(f.storage,envelope)).duplicate,true);assert.equal(f.storage.writes,1);
+});
+
+test('historical leave admits one old fact without deducting or inventing arrival',async()=>{
+  const f=historicalFixture('leave');assert.equal((await receive(f.storage,f.envelope(f.e))).ok,true);
+  const s=JSON.parse(f.storage.raw);assert.equal(s.students[0].hours,10);assert.equal(s.attendance.length,1);assert.equal(s.transactions.length,0);assert.equal(s.settings.studentLeaves[0].className,'原历史班');
+});
+
+test('historical proof, current class, duplicate day and disk conflicts leave no partly admitted fact',async()=>{
+  for(const mutate of [f=>f.e.historical.history_boundary.baseline_sha256='b'.repeat(64),f=>change(f,s=>s.managementSync.historyBoundarySha256='0'.repeat(64)),f=>f.e.historical.delivery_class_id='wrong',f=>change(f,s=>s.attendance.push({id:81,studentId:1,date:'2026-10-31'})),f=>f.storage.compareAndSwap=()=>false]){
+    const f=historicalFixture();mutate(f);const before=f.storage.raw;assert.equal((await receive(f.storage,f.envelope(f.e))).ok,false);assert.equal(f.storage.raw,before);assert.equal(JSON.parse(before).managementSync.facts[f.e.lesson_id],undefined);
+  }
+});
+
 test('makeup, lost receipt, process restart and retry persist exactly one deduction',async()=>{
   const f=fixture(), envelope=f.envelope(f.e);
   const first=await receive(f.storage,envelope);

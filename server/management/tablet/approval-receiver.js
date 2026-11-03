@@ -38,6 +38,13 @@
         e.balance_revision !== e.previous_balance_revision + (e.status === 'arrived' ? 1 : 0) ||
         e.balance_delta !== (e.status === 'arrived' ? -e.charge_units : 0) ||
         (e.status === 'arrived' && e.effective_at < e.starts_at)) fail('invalid_event');
+    if(e.historical!==undefined){
+      const h=e.historical,b=h?.history_boundary;
+      if(!h||h.protocol!==1||!e.lesson_id.startsWith('legacy:')||!integer(h.local_student_id)||!integer(h.local_class_id)||![h.class_name,h.teacher_name,h.delivery_class_id,h.date].every(isText)||!b||b.format!=='future-school-history-boundary-v1'||b.org_id!==e.org_id||!integer(b.canonical_from)||e.starts_at>=b.canonical_from||b.canonical_from_day!==chinaDate(b.canonical_from)||h.date!==chinaDate(e.starts_at)||h.date>=b.canonical_from_day||e.previous_attendance_revision!==0||e.charge_units!==100)fail('invalid_event');
+      const {boundary_sha256,...header}=b,sorted=Object.fromEntries(Object.keys(header).sort().map(k=>[k,header[k]]));
+      const proof=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(sorted)));
+      if(Array.from(new Uint8Array(proof),v=>v.toString(16).padStart(2,'0')).join('')!==boundary_sha256)fail('invalid_event');
+    }
     return e;
   }
 
@@ -56,9 +63,21 @@
     }
     if (Object.keys(receipts).length >= 10000) fail('storage_failed'); // explicit checkpoint required, never silently evict
     if (!Array.isArray(sync.queue) || sync.queue.some(q => q.status !== 'accepted')) fail('local_changes');
-    if (!own(sync.students, e.student_id) || !own(sync.lessons, e.lesson_id)) fail('mapping_changed');
+    if (!own(sync.students, e.student_id)) fail('mapping_changed');
+    if(e.historical){
+      const h=e.historical,binding=sync.students[e.student_id];
+      if(sync.historyBoundarySha256!==h.history_boundary.boundary_sha256||binding.localId!==h.local_student_id||binding.classId!==h.delivery_class_id)fail('mapping_changed');
+      if(!sync.lessons||!sync.facts||Array.isArray(sync.lessons)||Array.isArray(sync.facts))fail('mapping_changed');
+      const lesson=sync.lessons[e.lesson_id];
+      if(lesson&&(lesson.classId!==e.class_id||lesson.startsAt!==e.starts_at||lesson.date!==h.date||!Array.isArray(lesson.studentIds)))fail('mapping_changed');
+      if(!lesson)sync.lessons[e.lesson_id]={classId:e.class_id,date:h.date,startsAt:e.starts_at,studentIds:[]};
+      if(!sync.lessons[e.lesson_id].studentIds.includes(e.student_id))sync.lessons[e.lesson_id].studentIds.push(e.student_id);
+      const facts=sync.facts[e.lesson_id]||(sync.facts[e.lesson_id]={});
+      if(!own(facts,e.student_id))facts[e.student_id]={status:'missing',expected:true,revision:0,chargeUnits:e.charge_units};
+    }
+    if(!own(sync.lessons,e.lesson_id))fail('mapping_changed');
     const binding = sync.students[e.student_id], lesson = sync.lessons[e.lesson_id];
-    if (!integer(binding.localId) || binding.classId !== e.class_id || lesson.classId !== e.class_id ||
+    if (!integer(binding.localId) || (!e.historical&&binding.classId !== e.class_id) || lesson.classId !== e.class_id ||
         lesson.startsAt !== e.starts_at || lesson.date !== chinaDate(e.starts_at) ||
         !Array.isArray(lesson.studentIds) || !lesson.studentIds.includes(e.student_id)) fail('mapping_changed');
     if (!Array.isArray(state.students) || !Array.isArray(state.classes) || !Array.isArray(state.attendance) ||
@@ -83,7 +102,7 @@
       for (const row of rows) { if (!integer(row.id) || row.id <= 0) fail('mapping_changed'); last = Math.max(last,row.id); }
     }
     const nextId = () => { last++; if (!integer(last) || last <= 0) fail('mapping_changed'); return last; };
-    const snapshot = {classId:c.id,className:binding.className,teacher:binding.teacher,classroom:c.classroom || ''};
+    const snapshot = e.historical?{classId:e.historical.local_class_id,className:e.historical.class_name,teacher:e.historical.teacher_name,classroom:''}:{classId:c.id,className:binding.className,teacher:binding.teacher,classroom:c.classroom || ''};
     const source = {serverEventId:e.event_id,serverRequestId:e.request_id,source:'web_approval',approvedAt:new Date(e.effective_at * 1000).toISOString()};
     if (e.status === 'arrived') {
       const attendanceId = nextId(), time = new Date((e.starts_at + 28800) * 1000).toISOString().slice(11,16);

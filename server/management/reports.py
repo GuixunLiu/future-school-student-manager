@@ -100,14 +100,21 @@ class ReportOperations:
                     source='legacy',read_only=True))
                 for member in members:
                     cursor=len(items)+1
-                    items.append(dict(cursor=cursor,lesson_id=lid,student_id=str(member.get('student_local_id','')),
+                    item=dict(cursor=cursor,lesson_id=lid,student_id=str(member.get('student_local_id','')),
                         student_name=member.get('name','原学生'),student_no=member.get('external_ref',''),class_id=class_id,
                         class_name=lesson.get('class_name','原班级'),starts_at=starts_at,
                         status=member.get('status') if member.get('status') in {'missing','leave','arrived'} else 'unknown',
                         expected=member.get('expected'),balance_units=member.get('remaining_units'),charge_units=None,
                         attendance_time=member.get('attendance_time',''),attendance_method=member.get('attendance_method',''),
-                        makeup=member.get('makeup') is True,has_pending_request=False,source='legacy',read_only=True))
+                        makeup=member.get('makeup') is True,has_pending_request=False,source='legacy',read_only=True)
+                    from .historical import annotate
+                    item.update(annotate(db,actor['org_id'],lesson,member,boundary));items.append(item)
                     if len(items)>10000:raise Problem(503,'attendance_scope_exceeded','当日原名单较多，需要分段核对')
+            for lesson in result['lessons']:
+                changes=[r for r in items if r['lesson_id']==lesson['lesson_id'] and r.get('corrected_at')]
+                if changes:
+                    arrivals=sum(r['status']=='arrived' for r in changes);leaves=sum(r['status']=='leave' for r in changes)
+                    lesson.update(arrived=lesson['arrived']+arrivals,leave_count=lesson['leave_count']+leaves,missing=max(0,lesson['missing']-arrivals-leaves),has_historical_corrections=True)
             result['lessons'].sort(key=lambda r:(r['starts_at'] or 0,r['class_name'],r['lesson_id']))
             filtered=[r for r in reversed(items) if (before is None or r['cursor']<before) and
                 (lesson_id is None or r['lesson_id']==lesson_id) and (status=='all' or r['status']==status) and
@@ -190,6 +197,17 @@ class ReportOperations:
                     teachers=json.loads(sealed['teachers_json']) if sealed else list(db.execute('SELECT u.id,u.display_name FROM teacher_classes t JOIN users u ON u.org_id=t.org_id AND u.id=t.user_id WHERE t.org_id=? AND t.class_id=? ORDER BY u.id',(actor['org_id'],r['class_id'])))
                     rows.append(dict(r,teacher_id=':'.join(t['id'] for t in teachers) or 'unassigned:'+r['class_id'],teacher_name='、'.join(t['display_name'] for t in teachers) or '未分配教师'))
                 sections.append(dict(kind='canonical',label='网页接入后的实际课次',read_only=True,report=aggregate(rows),original_totals_preserved=False))
+            from .historical import enabled as history_enabled
+            if history_enabled(db):
+                changes=[]
+                for r in db.execute('''SELECT r.class_id,r.student_id,r.kind,r.decided_at,s.name AS student_name,h.context_json FROM management_requests r
+                  JOIN management_historical_facts h ON h.org_id=r.org_id AND h.lesson_id=r.lesson_id AND h.student_id=r.student_id
+                  JOIN management_attendance a ON a.org_id=r.org_id AND a.lesson_id=r.lesson_id AND a.student_id=r.student_id
+                  JOIN students s ON s.org_id=r.org_id AND s.id=r.student_id WHERE r.org_id=? AND r.status='approved' AND a.starts_at>=? AND a.starts_at<? AND (? IS NULL OR EXISTS(SELECT 1 FROM teacher_classes tc WHERE tc.org_id=r.org_id AND tc.class_id=r.class_id AND tc.user_id=?)) ORDER BY r.decided_at,r.id LIMIT 1001''',(actor['org_id'],starts,ends,actor['id'] if own is not None else None,actor['id'])):
+                    if own is not None and r['class_id'] not in own:continue
+                    c=json.loads(r['context_json']);changes.append(dict(class_name=c['class_name'],student_name=r['student_name'],date=c['date'],kind=r['kind'],approved_at=r['decided_at']))
+                if len(changes)>1000:raise Problem(503,'history_corrections_exceeded','历史更正较多，请分段核对')
+                if changes:sections.append(dict(kind='historical_corrections',label='本周历史更正记录',correction_only=True,makeup_count=sum(r['kind']=='makeup' for r in changes),leave_count=sum(r['kind']=='leave' for r in changes),items=changes,read_only=True))
             today=datetime.fromtimestamp(self.clock(),TZ).date();this_week=today-timedelta(days=today.weekday())
             weeks={w['start'] for w in data.get('weeks',[]) if w['start']<=this_week.isoformat()}
             weeks.add(this_week.isoformat())

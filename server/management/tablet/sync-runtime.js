@@ -7,7 +7,7 @@
   const queue=typeof module!=='undefined'&&module.exports?require('./checkin-queue.js'):root.ManagementCheckinQueue;
   const receiver=typeof module!=='undefined'&&module.exports?require('./approval-receiver.js'):root.ManagementApprovalReceiver;
   const classTeachers=typeof module!=='undefined'&&module.exports?require('./class-teacher-receiver.js'):root.ManagementClassTeacherReceiver;
-  function create({store,profile,request,metadata=false}){
+  function create({store,profile,request,metadata=false,historical=false}){
     let busy=false;
     function identity(){
       const s=store.snapshot().managementSync,p=profile();
@@ -23,6 +23,10 @@
         const send=async(kind,body)=>{check();const response=await request(kind,body);check();return response;};
         const uploaded=await queue.pump(guarded,body=>send('checkin',body));
         if(!uploaded.ok||uploaded.blocked||uploaded.more)return{...uploaded,phase:'upload'};
+        if(historical){
+          const ready=await send('history-ready',{generation:initial.generation});
+          if(ready?.status!==404){const r=ready?.data;if(!ready?.ok||r?.org_id!==initial.orgId||r?.device_id!==initial.deviceId||r?.generation!==initial.generation||r?.historical_protocol!==1)return{ok:false,phase:'history-ready',retry:true};}
+        }
         if(metadata){
           const ready=await send('class-ready',{generation:initial.generation});
           if(ready?.status!==404){
@@ -55,7 +59,7 @@
           if(envelope.item===null)return{ok:true,uploaded:uploaded.uploaded,received};
           const result=await receiver.receive(guarded,envelope);
           if(!result.ok){
-            if(['local_changes','attendance_changed','balance_changed','storage_failed'].includes(result.code)){
+            if(['mapping_changed','local_changes','attendance_changed','balance_changed','storage_failed'].includes(result.code)){
               // These errors occur only after envelope/digest validation. A
               // conflict is distinct from success; do not advance the inbox.
               const event=JSON.parse(envelope.item.event_json);
