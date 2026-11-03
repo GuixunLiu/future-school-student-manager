@@ -75,6 +75,8 @@ class GatewayTests(unittest.TestCase):
             ('/v1/management/requests',dict(method='POST',headers=auth,body='{}'),415),
             ('/v1/management/device/next?generation=x',dict(tls=True,headers=auth|{'Origin':self.origin}),403),
             ('/v1/management/requests',dict(method='POST',headers=auth|{'Content-Type':'application/json'},body='{}'),200),
+            ('/v1/management/legacy-requests/'+'a'*32+'/decision',dict(method='POST',headers=auth|{'Content-Type':'application/json'},body='{}'),200),
+            ('/v1/management/legacy-requests/not-a-valid-id/decision',dict(method='POST',headers=auth|{'Content-Type':'application/json'},body='{}'),404),
             ('/v1/management/materials/'+'a'*32+'/scores',dict(method='POST',headers=auth|{'Content-Type':'application/json'},body='{}'),200),
         ]:
             self.assertEqual(self.call(path,**options)[0],status,(path,status))

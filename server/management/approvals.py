@@ -171,65 +171,68 @@ class ApprovalStore(Store):
         return self.command(token, run)
 
     def decide(self, token, role, *, request_id, approve, reason, decision_ref):
+        return self.command(token,lambda db,actor:self.decide_in_transaction(db,actor,role,
+            request_id=request_id,approve=approve,reason=reason,decision_ref=decision_ref))
+
+    def decide_in_transaction(self, db, actor, role, *, request_id, approve, reason, decision_ref):
+        """Share the same checked decision inside atomic legacy-request adoption."""
         if type(approve) is not bool:
             raise Problem(422, 'invalid_decision', '请选择审批结果')
         reason, decision_ref = label(reason), label(decision_ref, 80)
         hashed = digest(dict(request=request_id, approve=approve, reason=reason))
-        def run(db, actor):
-            selected = workspace(actor, role)
-            row = db.execute('SELECT * FROM management_requests WHERE org_id=? AND id=?',
-                             (actor['org_id'], request_id)).fetchone()
-            if not row:
-                raise Problem(404, 'request_missing', '未找到申请')
-            require(actor, selected, 'approvals.decide', scope=self.scope(db, actor),
-                    target_org=row['org_id'], class_id=row['class_id'])
-            prior = db.execute('SELECT * FROM management_requests WHERE org_id=? AND decided_by=? AND decision_ref=?',
-                               (actor['org_id'], actor['id'], decision_ref)).fetchone()
-            if prior:
-                if prior['decision_digest'] != hashed:
-                    raise Problem(409, 'idempotency_conflict', '同一审批编号不能用于不同内容')
-                return self.receipt(prior, True)
-            if row['status'] != 'pending':
-                raise Problem(409, 'already_decided', '申请已处理，请刷新查看结果')
-            now = self.clock()
-            if approve:
-                require_not_held(db,actor['org_id'],self.clock())
-                fact = self.fact(db, actor['org_id'], row['lesson_id'], row['student_id'])
-                if fact['class_id'] != row['class_id'] or fact['revision'] != row['expected_revision'] or fact['status'] != 'missing' or not fact['expected']:
-                    raise Problem(409, 'attendance_changed', '申请后课堂记录已变化，需重新核对；本次未生效')
-                if row['kind'] == 'makeup' and now < fact['starts_at']:
-                    raise Problem(409, 'future_makeup', '课程尚未开始，不能补签')
-                historical=None
-                if row['lesson_id'].startswith('legacy:'):
-                    from .historical import approve_context
-                    historical=approve_context(db,actor['org_id'],row['lesson_id'],row['student_id'],now)
-                balance = db.execute('SELECT * FROM management_balances WHERE org_id=? AND student_id=?',
-                                     (actor['org_id'], row['student_id'])).fetchone()
-                delta = -fact['charge_units'] if row['kind'] == 'makeup' else 0
-                status = 'arrived' if row['kind'] == 'makeup' else 'leave'
-                db.execute('UPDATE management_attendance SET status=?,revision=revision+1 WHERE org_id=? AND lesson_id=? AND student_id=?',
-                           (status, actor['org_id'], row['lesson_id'], row['student_id']))
-                if delta:
-                    db.execute('UPDATE management_balances SET units=units+?,revision=revision+1 WHERE org_id=? AND student_id=?',
-                               (delta, actor['org_id'], row['student_id']))
-                # Device must apply this event once against BOTH expected revisions.
-                # It must not perform its ordinary local attendance deduction again.
-                event = dict(protocol=1, org_id=actor['org_id'], event_id=uid(), request_id=row['id'],
-                             lesson_id=row['lesson_id'], student_id=row['student_id'], class_id=row['class_id'],
-                             starts_at=fact['starts_at'], charge_units=fact['charge_units'],
-                             reason=row['reason'], decided_by_name=actor['display_name'],
-                             status=status, expected=bool(fact['expected']),
-                             previous_attendance_revision=fact['revision'], attendance_revision=fact['revision'] + 1,
-                             previous_balance_revision=balance['revision'], balance_revision=balance['revision'] + bool(delta),
-                             previous_balance_units=balance['units'],
-                             balance_units=balance['units'] + delta, balance_delta=delta,
-                             decided_by=actor['id'], effective_at=now)
-                if historical:event['historical']=historical
-                db.execute('INSERT INTO management_outbox(id,org_id,request_id,payload,created_at) VALUES(?,?,?,?,?)',
-                           (event['event_id'], actor['org_id'], row['id'], encoded(event), now))
-                if historical:db.execute('INSERT INTO management_historical_events VALUES(?,?,?)',(event['event_id'],actor['org_id'],historical['delivery_class_id']))
-            db.execute('UPDATE management_requests SET status=?,decided_at=?,decided_by=?,decision_reason=?,decision_ref=?,decision_digest=? WHERE id=?',
-                       ('approved' if approve else 'rejected', now, actor['id'], reason, decision_ref, hashed, row['id']))
-            self.record_audit(db, actor, selected, 'attendance_approved' if approve else 'attendance_rejected', row['id'], reason=reason)
-            return self.receipt(db.execute('SELECT * FROM management_requests WHERE id=?', (row['id'],)).fetchone())
-        return self.command(token, run)
+        selected = workspace(actor, role)
+        row = db.execute('SELECT * FROM management_requests WHERE org_id=? AND id=?',
+                         (actor['org_id'], request_id)).fetchone()
+        if not row:
+            raise Problem(404, 'request_missing', '未找到申请')
+        require(actor, selected, 'approvals.decide', scope=self.scope(db, actor),
+                target_org=row['org_id'], class_id=row['class_id'])
+        prior = db.execute('SELECT * FROM management_requests WHERE org_id=? AND decided_by=? AND decision_ref=?',
+                           (actor['org_id'], actor['id'], decision_ref)).fetchone()
+        if prior:
+            if prior['decision_digest'] != hashed:
+                raise Problem(409, 'idempotency_conflict', '同一审批编号不能用于不同内容')
+            return self.receipt(prior, True)
+        if row['status'] != 'pending':
+            raise Problem(409, 'already_decided', '申请已处理，请刷新查看结果')
+        now = self.clock()
+        if approve:
+            require_not_held(db,actor['org_id'],self.clock())
+            fact = self.fact(db, actor['org_id'], row['lesson_id'], row['student_id'])
+            if fact['class_id'] != row['class_id'] or fact['revision'] != row['expected_revision'] or fact['status'] != 'missing' or not fact['expected']:
+                raise Problem(409, 'attendance_changed', '申请后课堂记录已变化，需重新核对；本次未生效')
+            if row['kind'] == 'makeup' and now < fact['starts_at']:
+                raise Problem(409, 'future_makeup', '课程尚未开始，不能补签')
+            historical=None
+            if row['lesson_id'].startswith('legacy:'):
+                from .historical import approve_context
+                historical=approve_context(db,actor['org_id'],row['lesson_id'],row['student_id'],now)
+            balance = db.execute('SELECT * FROM management_balances WHERE org_id=? AND student_id=?',
+                                 (actor['org_id'], row['student_id'])).fetchone()
+            delta = -fact['charge_units'] if row['kind'] == 'makeup' else 0
+            status = 'arrived' if row['kind'] == 'makeup' else 'leave'
+            db.execute('UPDATE management_attendance SET status=?,revision=revision+1 WHERE org_id=? AND lesson_id=? AND student_id=?',
+                       (status, actor['org_id'], row['lesson_id'], row['student_id']))
+            if delta:
+                db.execute('UPDATE management_balances SET units=units+?,revision=revision+1 WHERE org_id=? AND student_id=?',
+                           (delta, actor['org_id'], row['student_id']))
+            # Device must apply this event once against BOTH expected revisions.
+            # It must not perform its ordinary local attendance deduction again.
+            event = dict(protocol=1, org_id=actor['org_id'], event_id=uid(), request_id=row['id'],
+                         lesson_id=row['lesson_id'], student_id=row['student_id'], class_id=row['class_id'],
+                         starts_at=fact['starts_at'], charge_units=fact['charge_units'],
+                         reason=row['reason'], decided_by_name=actor['display_name'],
+                         status=status, expected=bool(fact['expected']),
+                         previous_attendance_revision=fact['revision'], attendance_revision=fact['revision'] + 1,
+                         previous_balance_revision=balance['revision'], balance_revision=balance['revision'] + bool(delta),
+                         previous_balance_units=balance['units'],
+                         balance_units=balance['units'] + delta, balance_delta=delta,
+                         decided_by=actor['id'], effective_at=now)
+            if historical:event['historical']=historical
+            db.execute('INSERT INTO management_outbox(id,org_id,request_id,payload,created_at) VALUES(?,?,?,?,?)',
+                       (event['event_id'], actor['org_id'], row['id'], encoded(event), now))
+            if historical:db.execute('INSERT INTO management_historical_events VALUES(?,?,?)',(event['event_id'],actor['org_id'],historical['delivery_class_id']))
+        db.execute('UPDATE management_requests SET status=?,decided_at=?,decided_by=?,decision_reason=?,decision_ref=?,decision_digest=? WHERE id=?',
+                   ('approved' if approve else 'rejected', now, actor['id'], reason, decision_ref, hashed, row['id']))
+        self.record_audit(db, actor, selected, 'attendance_approved' if approve else 'attendance_rejected', row['id'], reason=reason)
+        return self.receipt(db.execute('SELECT * FROM management_requests WHERE id=?', (row['id'],)).fetchone())

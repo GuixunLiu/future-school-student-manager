@@ -146,9 +146,12 @@ class ReportOperations:
                 lesson=lessons.get(r['lesson_key']);class_id=links.get(str(lesson['class_local_id'])) if lesson else None
                 if selected!='admin' and class_id not in allowed:continue
                 student=next((m for m in lesson['members'] if str(m['student_local_id'])==str(r['student_local_id'])),None) if lesson else None
-                out.append(dict(r,student_name=student['name'] if student else '待核对原学生',class_name=lesson['class_name'] if lesson else '待核对原课堂',date=lesson['date'] if lesson else '',requires_review=r['status']=='pending'))
+                item=dict(r,student_name=student['name'] if student else '待核对原学生',class_name=lesson['class_name'] if lesson else '待核对原课堂',date=lesson['date'] if lesson else '',requires_review=r['status']=='pending')
+                from .legacy_approvals import describe
+                item.update(describe(self,db,actor,selected,r));out.append(item)
                 if len(out)>limit:break
-            return dict(items=out[:limit],next_before=out[limit-1]['cursor'] if len(out)>limit else None,legacy_read_only=True,balances_changed=False)
+            from .legacy_approvals import enabled as legacy_enabled
+            return dict(items=out[:limit],next_before=out[limit-1]['cursor'] if len(out)>limit else None,legacy_read_only=not legacy_enabled(db),balances_changed=False)
         return self.command(token,run)
 
     def weekly_report(self,token,role,*,start=None):

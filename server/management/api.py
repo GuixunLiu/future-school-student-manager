@@ -327,7 +327,8 @@ def create_app(database, clock=None, *, allow_test_client=False):
                 'runtime_admitted': admitted,'production_ready': False, 'wechat_sending_enabled': False,
                 'personnel_api_enabled':getattr(app.state,'personnel_store',None)is not None,
                 'class_teachers_enabled':getattr(app.state,'class_teacher_store',None)is not None,
-                'historical_requests_enabled':historical_enabled}
+                'historical_requests_enabled':historical_enabled,
+                'legacy_approvals_enabled':legacy_approvals_enabled}
 
     @app.post('/v1/management/device/history-ready')
     def history_ready(data:HistoricalReadyInput,token:Token):
@@ -439,6 +440,12 @@ def create_app(database, clock=None, *, allow_test_client=False):
                         before: Annotated[int | None,Query(ge=1)] = None):
         return store.legacy_requests(token,workspace_role,limit=limit,before=before)
 
+    @app.post('/v1/management/legacy-requests/{legacy_id}/decision')
+    def legacy_decision(legacy_id:str,data:DecisionInput,token:Token):
+        from .legacy_approvals import decide
+        return decide(store,token,data.workspace_role,legacy_id=legacy_id,
+                      **data.model_dump(exclude={'workspace_role'}))
+
     @app.post('/v1/management/requests', status_code=201)
     def submit(data: RequestInput, token: Token):
         return store.submit(token, data.workspace_role, **data.model_dump(exclude={'workspace_role'}))
@@ -517,4 +524,5 @@ def create_app(database, clock=None, *, allow_test_client=False):
         install_class_teacher_routes(app,database,clock)
     from .historical import TABLES as HISTORICAL_TABLES
     historical_enabled=HISTORICAL_TABLES<=tables
+    legacy_approvals_enabled='management_legacy_decisions' in tables
     return app

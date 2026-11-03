@@ -96,9 +96,10 @@ def context_for(db,org,lesson_id,student_id):
     return context,checksum,link['server_id'],starts,student
 
 
-def prepare_request(store,db,actor,selected,lesson_id,student_id):
+def prepare_request(store,db,actor,selected,lesson_id,student_id,*,permission='attendance.request'):
     context,checksum,class_id,starts,student=context_for(db,actor['org_id'],lesson_id,student_id)
-    require(actor,selected,'attendance.request',scope=store.scope(db,actor),class_id=class_id)
+    if permission not in {'attendance.request','approvals.decide'}:raise ValueError('Unknown historical operation')
+    require(actor,selected,permission,scope=store.scope(db,actor),class_id=class_id)
     org=actor['org_id'];prior=db.execute('SELECT * FROM management_historical_facts WHERE org_id=? AND lesson_id=? AND student_id=?',(org,lesson_id,student_id)).fetchone()
     if prior:
         if prior['context_json']!=encoded(context) or prior['source_sha256']!=checksum:refuse('原历史来源已变化，需管理员重新核对')

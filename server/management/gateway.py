@@ -40,6 +40,7 @@ POSTS={'/v1/auth/login','/v1/auth/logout','/v1/management/people','/v1/managemen
        '/v1/management/device/activation-commit','/v1/management/device/receipt','/v1/management/device/checkin','/v1/management/device/class-ready','/v1/management/device/class-receipt','/v1/management/device/history-ready'}
 GET_PATTERNS=(r'/v1/management/activations/[a-f0-9]{32}',r'/v1/management/materials/[a-f0-9]{32}')
 POST_PATTERNS=(r'/v1/management/requests/[a-f0-9]{32}/decision',r'/v1/management/materials/[a-f0-9]{32}',
+               r'/v1/management/legacy-requests/[a-f0-9]{32}/decision',
                r'/v1/management/people/[a-f0-9]{32}',
                r'/v1/management/classes/[a-f0-9]{32}/teacher',
                r'/v1/management/materials/[a-f0-9]{32}/scores',r'/v1/management/enrollment-batches/[a-f0-9]{32}/(?:pages|finalize)',

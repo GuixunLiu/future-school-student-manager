@@ -40,7 +40,7 @@ async function dashboard(){
   if(workspaceInfo.class_teachers_enabled)nav.append(button('班级与任课',()=>{tab='classes';return dashboard();},tab==='classes'?'gold':'secondary'));
   const tools=el('div',undefined,'toolbar');tools.append(button('刷新',dashboard,'secondary'));if(role==='admin'&&tab==='materials')tools.append(button('安排考核周期',openPeriod),button('截止时间规则',ruleEditor,'secondary'));
   const titles={materials:'计划与考核材料',attendance:!attendanceDate||attendanceDate===chinaToday()?'今日课程':'课程与签到',reports:'周报与历史周报',legacyRequests:'接入前补签申请',requests:'请假与补签审批',people:'人员与身份',classes:'班级与任课'};
-  const list=el('div',undefined,'list');list.append(el('p','正在读取资料…'));$('main').replaceChildren(el('h1',titles[tab]),el('p',tab==='attendance'?'按上课日期选择班级，再查看已到、未到和请假学生。':tab==='people'?'维护人员账号、兼任身份与审批范围，修改保留操作记录。':tab==='classes'?'按课程查看班级，办理教师任课交接。':tab==='materials'?'截止时间均为北京时间。提交后保留版本，补交保留实际提交时间。':tab==='reports'?'请假保留在应到人数中。接入前历史与接入后课次按边界分开列示。':tab==='legacyRequests'?'查阅并核对接入前保存的原申请。':'请假和补签经网页审批后生效，平板收到后显示结果。'),nav,tools,list);
+  const list=el('div',undefined,'list');list.append(el('p','正在读取资料…'));$('main').replaceChildren(el('h1',titles[tab]),el('p',tab==='attendance'?'按上课日期选择班级，再查看已到、未到和请假学生。':tab==='people'?'维护人员账号、兼任身份与审批范围，修改保留操作记录。':tab==='classes'?'按课程查看班级，办理教师任课交接。':tab==='materials'?'截止时间均为北京时间。提交后保留版本，补交保留实际提交时间。':tab==='reports'?'请假保留在应到人数中。接入前历史与接入后课次按边界分开列示。':tab==='legacyRequests'?(role==='teacher'?'查看原申请及审批进度。':'在原申请上直接批准或驳回，审批结果同步平板。'):'请假和补签经网页审批后生效，平板收到后显示结果。'),nav,tools,list);
   if(tab==='reports'){await weeklyReportsView(list,run);return;}
   if(tab==='legacyRequests'){await legacyRequestsView(list,run);return;}
   if(tab==='attendance'){await attendanceView(list,run);return;}
@@ -107,10 +107,21 @@ async function attendanceView(list,run){
   form.addEventListener('submit',e=>{e.preventDefault();attendanceDate=date.value;attendanceLesson='';attendanceStatus='all';attendanceSearch='';dashboard().catch(fail);});await load();
 }
 async function legacyRequestsView(list,run){
- list.replaceChildren(el('h2','接入前补签申请'),el('p','这些是旧系统保存的申请，需结合原签到历史核对。此列表只供查阅，不会自动补签或扣课时。','hint'));
+ list.replaceChildren(el('h2','接入前补签申请'),el('p','旧待审申请可在这里核对并审批，无需教师重新提交。批准后同步平板；原申请保留，已生效的同一补签只关联，不重复扣课。','hint'));
  async function load(before){const data=await api(query('/v1/management/legacy-requests')+(before?'&before='+before:''));if(run!==generation)return;
   if(!data.items.length&&!before)list.append(el('div','没有当前身份可查看的原申请','empty'));
-  for(const row of data.items){const card=el('article',undefined,'item');card.append(el('h3',row.student_name),el('p',row.class_name+' · '+row.date),el('p',row.reason),badge(row.status),el('p',stamp(row.created_at)+(row.requires_review?' · 待核对原始记录':'')));list.append(card);}
+  for(const row of data.items){const card=el('article',undefined,'item');card.append(el('h3',row.student_name),el('p',row.class_name+' · '+row.date),el('p',row.reason),badge(row.status),el('p','原申请时间 '+stamp(row.created_at)));
+   if(row.decision_reason)card.append(el('p','审批意见：'+row.decision_reason+' · '+stamp(row.decided_at)));
+   if(row.status==='approved'&&row.tablet_delivery)card.append(el('p',({unassigned:'已生效 · 尚无可接收的平板',pending:'已生效 · 等待平板接收',conflict:'已生效 · 平板记录有差异，待核对',applied:'已生效 · 平板已保存'})[row.tablet_delivery]||'已生效 · 接收状态待核对'));
+   if(row.can_decide&&['admin','assessor'].includes(role)){
+    if(row.already_effective)card.append(el('p','同一课堂已有批准补签，确认后只关联原申请，不再次扣课。','hint'));
+    if(row.approval_blocked_reason)card.append(el('p',row.approval_blocked_reason,'hint'));
+    const bar=el('div',undefined,'toolbar');for(const approve of [true,false]){
+     const action=button(approve?(row.already_effective?'确认关联已生效补签':'批准补签'):'驳回申请',()=>{const box=dialog(row.student_name+' · '+(approve?'批准接入前补签':'驳回接入前申请')),f=el('form'),reason=field(f,'审批意见');reason.required=true;reason.maxLength=200;box.append(el('p',row.class_name+' · '+row.date),el('p','原申请：'+row.reason),el('p',approve?'核对该学生确实到过这节课。批准后按一节课计费一次，平板联网后接收。':'驳回保留原申请和审批意见，不扣课时。'),f);mutation(f,approve?'确认批准':'确认驳回','/v1/management/legacy-requests/'+encodeURIComponent(row.id)+'/decision',()=>({workspace_role:role,approve,reason:reason.value}),'decision_ref');},approve?'':'secondary');action.disabled=approve?!row.can_approve:!row.can_reject;bar.append(action);
+    }card.append(bar);
+   }else if(row.requires_review)card.append(el('p',data.legacy_read_only?'旧申请审批尚未启用，请联系管理员更新网页。':'等待管理员或管辖范围内专员审批。','hint'));
+   list.append(card);
+  }
   if(data.next_before){const more=button('继续加载',async()=>{more.disabled=true;try{await load(data.next_before);more.remove();}catch(e){more.disabled=false;throw e;}},'secondary');list.append(more);}
  }await load();
 }
