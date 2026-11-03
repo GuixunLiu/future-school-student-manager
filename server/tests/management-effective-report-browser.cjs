@@ -1,0 +1,18 @@
+'use strict';
+const fs=require('fs'),path=require('path'),crypto=require('crypto'),assert=require('assert/strict'),{spawn}=require('child_process');
+const {chromium}=require('C:/Users/liugu/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const root=path.resolve(__dirname,'../..'),out=path.resolve(root,'../../outputs/effective-report-2026-11-03-ready'),stop=crypto.randomBytes(24).toString('hex');
+(async()=>{
+ fs.mkdirSync(out,{recursive:true});const child=spawn(path.join(root,'server/.venv/Scripts/python.exe'),[path.join(__dirname,'serve_effective_report_fixture.py')],{cwd:root,env:{...process.env,PYTHONPATH:'server;server/tests',REPORT_FIXTURE_STOP:stop,PYTHONIOENCODING:'utf-8'},stdio:['ignore','pipe','pipe'],windowsHide:true});let browser,err='';child.stderr.on('data',b=>err+=b);
+ try{
+  await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error('Fixture timeout '+err.slice(-1500))),30000);child.stdout.on('data',b=>{if(b.toString().includes('FICTIONAL_REPORT_READY')){clearTimeout(t);resolve();}});child.on('exit',c=>{clearTimeout(t);reject(Error('Fixture exit '+c+' '+err.slice(-1500)));});});
+  browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});const page=await browser.newPage({viewport:{width:1365,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('http://127.0.0.1:18115/');await page.getByLabel('机构',{exact:true}).fill('fictional');await page.getByLabel('账号',{exact:true}).fill('owner');await page.getByLabel('密码',{exact:true}).fill('fictional-approval-test-only');await page.getByRole('button',{name:'登录',exact:true}).click();await page.getByRole('button',{name:'退出',exact:true}).waitFor();await page.waitForLoadState('networkidle');
+  await page.getByRole('button',{name:'周报与历史周报',exact:true}).click();await page.getByRole('combobox').waitFor();await page.waitForLoadState('networkidle');await page.getByRole('combobox').selectOption('2026-10-26');await page.getByRole('button',{name:'查看周报',exact:true}).click();
+  await page.getByRole('heading',{name:'历史周报 · 含已批准更正',exact:true}).waitFor();await page.getByText('应到 2 人次 · 已到 2 人次 · 请假 0 人次 · 到课率 100%',{exact:true}).waitFor();
+  const teacher=page.getByRole('row').filter({hasText:'原任教师'});assert.match(await teacher.innerText(),/2\s+2\s+0\s+100%/);await page.getByText('以下更正已计入上方汇总，请勿重复相加。',{exact:true}).waitFor();assert.equal(await page.getByText(/待核对原因：/).count(),0);
+  await page.screenshot({path:path.join(out,'effective-weekly-desktop.png'),fullPage:true});await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:path.join(out,'effective-weekly-mobile.png'),fullPage:true});
+  await page.getByText('查看接入前原始汇总',{exact:true}).click();await page.getByText('原应到 1 · 原已到 1 · 原请假 0 · 原到课率 待核对',{exact:true}).waitFor();assert.deepEqual(errors,[]);
+  console.log('Effective weekly browser passed: approved makeup in main totals and teacher rate, one-person temporary makeup expected, source snapshot retained, included-once notice, mobile. Fictional records only.');
+ }finally{await browser?.close();await fetch('http://127.0.0.1:18115/__fixture_stop',{method:'POST',headers:{'X-Fixture-Stop':stop}}).catch(()=>{});await new Promise(resolve=>{if(child.exitCode!==null)return resolve();const t=setTimeout(()=>{child.kill();resolve();},5000);child.once('exit',()=>{clearTimeout(t);resolve();});});}
+})().catch(e=>{console.error(e);process.exitCode=1;});

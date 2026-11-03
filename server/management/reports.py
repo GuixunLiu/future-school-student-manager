@@ -1,6 +1,8 @@
 """Read-only historical/current attendance reports across the sealed boundary."""
 from datetime import date, datetime, time, timedelta
 import json
+import copy
+import hashlib
 
 from business.store import Problem
 from .deadlines import TZ
@@ -22,6 +24,79 @@ def aggregate(rows):
             _,counts=groups[kind].setdefault(r.get(identity,r[key]),(r[key],[0,0,0]))
             for i,k in enumerate(('expected','arrived','leave_count')):counts[i]+=r[k]
     return summary('全部',expected,arrived,leave)|{kind:[summary(name,*values) for _,(name,values) in sorted(items.items())] for kind,items in groups.items()}
+
+
+def effective_history(db,org,data,source_sha,first,last,cut,links,own=None,*,apply_approved=True):
+    """Read-only effective lessons: immutable originals plus approved amendments."""
+    originals=[l for l in data.get('lessons',[]) if first<=l['date']<=last and l['date']<cut and (own is None or links.get(str(l['class_local_id'])) in own)]
+    lessons=copy.deepcopy(originals);bykey={l['key']:l for l in lessons};changes=[]
+    confirmations={}
+    for row in db.execute("SELECT entity_id,detail FROM management_audit WHERE org_id=? AND action='historical_temporary_makeup_confirmed' ORDER BY seq LIMIT 1001",(org,)):
+        if len(confirmations)>=1000:raise Problem(503,'history_review_limit','历史核对记录较多，请分段核对')
+        detail=json.loads(row['detail'])
+        if detail.get('format')=='future-school-temporary-makeup-review-v1' and detail.get('source_sha256')==source_sha:confirmations[row['entity_id']]=detail
+    for l in lessons:
+        members=l.get('members',[]);unexpected={str(m['student_local_id']) for m in members if m.get('status')=='arrived' and m.get('expected')is not True}
+        l['_source_review_explained']=bool(unexpected or l['arrived']>l['expected'])
+        review=confirmations.get('legacy:'+l['key'])
+        if review:
+            ids=review.get('expected_student_ids',[])
+            if not isinstance(ids,list) or not ids or any(not isinstance(i,str) for i in ids) or len(set(ids))!=len(ids) or not set(ids)<=unexpected:raise Problem(503,'history_review_differs','临时补课核对记录与原签到不一致')
+            for m in members:
+                if str(m['student_local_id']) in ids:m['expected']=True
+            l['expected']+=len(ids);l['temporary_makeup_confirmed']=True
+    from .historical import enabled as history_enabled
+    if apply_approved and history_enabled(db):
+        seen=set()
+        starts=int(datetime.combine(date.fromisoformat(first),time(),TZ).timestamp())
+        ends=int(datetime.combine(date.fromisoformat(last)+timedelta(days=1),time(),TZ).timestamp())
+        for r in db.execute('''SELECT a.lesson_id,a.student_id,a.status,h.context_json,h.source_sha256,r.decided_at,s.name AS student_name FROM management_historical_facts h
+          JOIN management_attendance a ON a.org_id=h.org_id AND a.lesson_id=h.lesson_id AND a.student_id=h.student_id
+          JOIN management_requests r ON r.org_id=a.org_id AND r.lesson_id=a.lesson_id AND r.student_id=a.student_id AND r.status='approved'
+          JOIN students s ON s.org_id=a.org_id AND s.id=a.student_id WHERE h.org_id=? AND a.starts_at>=? AND a.starts_at<? AND a.status IN ('arrived','leave') ORDER BY r.decided_at,r.id LIMIT 10001''',(org,starts,ends)):
+            key=r['lesson_id'][7:];l=bykey.get(key)
+            if not l:continue
+            identity=(r['lesson_id'],r['student_id'])
+            if identity in seen:continue
+            seen.add(identity)
+            if len(seen)>10000:raise Problem(503,'history_amendment_limit','历史更正记录较多，请分段核对')
+            if r['source_sha256']!=source_sha:raise Problem(503,'history_source_changed','历史更正来源已变化，需要核对原始资料')
+            c=json.loads(r['context_json']);found=[m for m in l.get('members',[]) if str(m.get('student_local_id'))==str(c['local_student_id'])]
+            if len(found)!=1 or found[0].get('expected')is not True or found[0].get('status')!='missing':raise Problem(503,'history_amendment_differs','批准记录与原缺签名单不一致')
+            found[0]['status']=r['status'];l['arrived' if r['status']=='arrived' else 'leave_count']+=1
+            changes.append(dict(class_name=c['class_name'],teacher_name=c['teacher_name'],student_name=r['student_name'],date=c['date'],kind='makeup' if r['status']=='arrived' else 'leave',approved_at=r['decided_at']))
+    issues=[]
+    for l in lessons:
+        unexpected=[m for m in l.get('members',[]) if m.get('status')=='arrived' and m.get('expected')is not True]
+        l['needs_review']=bool(unexpected or l['arrived']>l['expected'] or l.get('needs_review') and not l.pop('_source_review_explained'))
+        l.pop('_source_review_explained',None)
+        if l['needs_review']:issues.append(dict(lesson_id='legacy:'+l['key'],date=l['date'],class_name=l['class_name'],teacher_name=l['teacher'],reason='有签到学生未列入该次应到名单，请核对临时补课或调课' if unexpected else '原课次应到与实到或排课资料需要核对'))
+    return originals,lessons,changes,issues
+
+
+def corrected_saved(saved,originals,lessons):
+    report=copy.deepcopy(saved);changed=False
+    def apply(group,before,after):
+        nonlocal changed
+        delta={k:sum(l[k] for l in after)-sum(l[k] for l in before) for k in ('expected','arrived','leave_count')}
+        if not any(delta.values()):return
+        changed=True
+        covered=all(abs(sum(l[k] for l in before)-group[k])<1e-7 for k in delta)
+        for k,value in delta.items():group[k]+=value
+        group['needs_review']=bool(group.get('needs_review') and not covered or any(l.get('needs_review') for l in after) or group['arrived']>group['expected'])
+        group['rate']='待核对' if group['needs_review'] else summary(group['name'],group['expected'],group['arrived'],group['leave_count'])['rate']
+    apply(report,originals,lessons)
+    for key,field in [('classes','class_name'),('teachers','teacher')]:
+        for group in report[key]:apply(group,[l for l in originals if l[field]==group['name']],[l for l in lessons if l[field]==group['name']])
+    return report,changed
+
+
+def aggregate_history(lessons):
+    report=aggregate([dict(l,teacher_name=l['teacher']) for l in lessons])
+    for group,scope in [(report,lessons)]+[(g,[l for l in lessons if l[field]==g['name']]) for key,field in [('classes','class_name'),('teachers','teacher')] for g in report[key]]:
+        group['needs_review']=any(l.get('needs_review') for l in scope)
+        if group['needs_review']:group['rate']='待核对'
+    return report
 
 
 class ReportOperations:
@@ -80,6 +155,7 @@ class ReportOperations:
             links={str(r['local_id']):r['server_id'] for r in db.execute("SELECT local_id,server_id FROM management_source_links WHERE org_id=? AND kind='class'",(actor['org_id'],))} if 'management_source_links' in tables else {}
             if not links and 'web_class_links' in tables:links={str(r[0]):r[1] for r in db.execute('SELECT local_id,remote_id FROM web_class_links')}
             own={r[0] for r in db.execute('SELECT class_id FROM teacher_classes WHERE org_id=? AND user_id=?',(actor['org_id'],actor['id']))} if selected=='teacher' else None
+            _,lessons,_,_=effective_history(db,actor['org_id'],data,hashlib.sha256(saved[0].encode()).hexdigest(),on,on,boundary['canonical_from_day'],links,own,apply_approved=False)
             items=[];seen=set()
             for lesson in lessons:
                 if lesson.get('date')!=on:continue
@@ -175,21 +251,24 @@ class ReportOperations:
             own={r[0] for r in db.execute('SELECT class_id FROM teacher_classes WHERE org_id=? AND user_id=?',(actor['org_id'],actor['id']))} if selected=='teacher' else None
             links={str(r['local_id']):r['server_id'] for r in db.execute("SELECT local_id,server_id FROM management_source_links WHERE org_id=? AND kind='class'",(actor['org_id'],))} if 'management_source_links' in tables else {}
             if not links and 'web_class_links' in tables:links={r[0]:r[1] for r in db.execute('SELECT local_id,remote_id FROM web_class_links')}
+            source_sha=hashlib.sha256(row[0].encode()).hexdigest() if row else ''
+            original_lessons,effective_lessons,changes,review_issues=effective_history(db,actor['org_id'],data,source_sha,monday.isoformat(),sunday.isoformat(),cut,links,own)
             saved=next((w for w in data.get('weeks',[]) if w['start']==monday.isoformat()),None)
             current_names={r[0] for r in db.execute('SELECT name FROM classes WHERE org_id=?',(actor['org_id'],))}
             sections=[]
             if monday.isoformat()<cut:
                 if sunday.isoformat()<cut and selected!='teacher' and saved:
                     # Preserve exact old totals/fractions and deleted class labels.
-                    report=dict(saved,classes=[dict(c,historical_class_name=c['name'] not in current_names) for c in saved['classes']])
-                    sections.append(dict(kind='legacy',label='接入前历史周报',read_only=True,report=report,original_totals_preserved=True))
+                    report,adjusted=corrected_saved(saved,original_lessons,effective_lessons)
+                    report['classes']=[dict(c,historical_class_name=c['name'] not in current_names) for c in report['classes']]
+                    sections.append(dict(kind='legacy',label='历史周报 · 含已批准更正' if adjusted else '接入前历史周报',read_only=True,report=report,original_totals_preserved=not adjusted,original_snapshot_preserved=True,includes_approved_corrections=bool(changes),original_report=saved if adjusted else None,review_issues=review_issues))
                 else:
                     legacy=[]
-                    for l in data.get('lessons',[]):
+                    for l in effective_lessons:
                         if not monday.isoformat()<=l['date']<=sunday.isoformat() or l['date']>=cut:continue
                         if own is not None and links.get(str(l['class_local_id'])) not in own:continue
-                        legacy.append(dict(class_name=l['class_name'],teacher_name=l['teacher'],expected=l['expected'],arrived=l['arrived'],leave_count=l['leave_count']))
-                    if legacy:sections.append(dict(kind='legacy',label='接入前课堂明细汇总',read_only=True,report=aggregate(legacy),original_totals_preserved=False,detail_scope_only=True))
+                        legacy.append(l)
+                    if legacy:sections.append(dict(kind='legacy',label='历史课堂明细 · 含已批准更正' if changes else '接入前课堂明细汇总',read_only=True,report=aggregate_history(legacy),original_totals_preserved=False,detail_scope_only=True,includes_approved_corrections=bool(changes),review_issues=review_issues))
             if sunday.isoformat()>=cut:
                 where='a.org_id=? AND a.starts_at>=? AND a.starts_at<?';params=[actor['org_id'],max(starts,boundary['canonical_from']) if boundary else starts,ends]
                 if own is not None:
@@ -200,17 +279,8 @@ class ReportOperations:
                     teachers=json.loads(sealed['teachers_json']) if sealed else list(db.execute('SELECT u.id,u.display_name FROM teacher_classes t JOIN users u ON u.org_id=t.org_id AND u.id=t.user_id WHERE t.org_id=? AND t.class_id=? ORDER BY u.id',(actor['org_id'],r['class_id'])))
                     rows.append(dict(r,teacher_id=':'.join(t['id'] for t in teachers) or 'unassigned:'+r['class_id'],teacher_name='、'.join(t['display_name'] for t in teachers) or '未分配教师'))
                 sections.append(dict(kind='canonical',label='网页接入后的实际课次',read_only=True,report=aggregate(rows),original_totals_preserved=False))
-            from .historical import enabled as history_enabled
-            if history_enabled(db):
-                changes=[]
-                for r in db.execute('''SELECT r.class_id,r.student_id,r.kind,r.decided_at,s.name AS student_name,h.context_json FROM management_requests r
-                  JOIN management_historical_facts h ON h.org_id=r.org_id AND h.lesson_id=r.lesson_id AND h.student_id=r.student_id
-                  JOIN management_attendance a ON a.org_id=r.org_id AND a.lesson_id=r.lesson_id AND a.student_id=r.student_id
-                  JOIN students s ON s.org_id=r.org_id AND s.id=r.student_id WHERE r.org_id=? AND r.status='approved' AND a.starts_at>=? AND a.starts_at<? AND (? IS NULL OR EXISTS(SELECT 1 FROM teacher_classes tc WHERE tc.org_id=r.org_id AND tc.class_id=r.class_id AND tc.user_id=?)) ORDER BY r.decided_at,r.id LIMIT 1001''',(actor['org_id'],starts,ends,actor['id'] if own is not None else None,actor['id'])):
-                    if own is not None and r['class_id'] not in own:continue
-                    c=json.loads(r['context_json']);changes.append(dict(class_name=c['class_name'],student_name=r['student_name'],date=c['date'],kind=r['kind'],approved_at=r['decided_at']))
-                if len(changes)>1000:raise Problem(503,'history_corrections_exceeded','历史更正较多，请分段核对')
-                if changes:sections.append(dict(kind='historical_corrections',label='本周历史更正记录',correction_only=True,makeup_count=sum(r['kind']=='makeup' for r in changes),leave_count=sum(r['kind']=='leave' for r in changes),items=changes,read_only=True))
+            if changes:
+                sections.append(dict(kind='historical_corrections',label='已计入周报的更正明细',correction_only=True,included_in_report=True,makeup_count=sum(r['kind']=='makeup' for r in changes),leave_count=sum(r['kind']=='leave' for r in changes),items=changes,read_only=True))
             today=datetime.fromtimestamp(self.clock(),TZ).date();this_week=today-timedelta(days=today.weekday())
             weeks={w['start'] for w in data.get('weeks',[]) if w['start']<=this_week.isoformat()}
             weeks.add(this_week.isoformat())

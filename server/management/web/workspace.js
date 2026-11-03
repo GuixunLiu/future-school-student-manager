@@ -135,8 +135,11 @@ async function weeklyReportsView(list,run){
   if(data.transition_week)results.append(el('p','本周跨越系统接入日期。两部分分别统计，不相加为一个到课率。','hint'));
   if(!data.sections.length)results.append(el('div','这周尚无可显示的资料','empty'));
   for(const section of data.sections){
-   if(section.correction_only){const card=el('article',undefined,'item');card.append(el('h2',section.label),el('p','已批准补签 '+section.makeup_count+' 人次 · 请假 '+section.leave_count+' 人次'),el('p','原历史周报保留，更正结果请结合以下明细查看。','hint'));for(const row of section.items)card.append(el('p',row.date+' · '+row.class_name+' · '+row.student_name+' · '+(row.kind==='makeup'?'补签':'请假')+' · 审批 '+stamp(row.approved_at)));results.append(card);continue;}
+   if(section.correction_only){const card=el('article',undefined,'item');card.append(el('h2',section.label),el('p','已批准补签 '+section.makeup_count+' 人次 · 请假 '+section.leave_count+' 人次'),el('p',section.included_in_report?'以下更正已计入上方汇总，请勿重复相加。':'更正结果请结合以下明细查看。','hint'));for(const row of section.items)card.append(el('p',row.date+' · '+row.class_name+' · '+row.student_name+' · '+(row.kind==='makeup'?'补签':'请假')+' · 审批 '+stamp(row.approved_at)));results.append(card);continue;}
    const report=section.report,card=el('article',undefined,'item');card.append(el('h2',section.label),el('p','应到 '+Number(report.expected).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 人次 · 已到 '+report.arrived+' 人次 · 请假 '+report.leave_count+' 人次 · 到课率 '+report.rate));
+   if(section.includes_approved_corrections)card.append(el('p','已批准的补签、请假已计入本周教师、班级及总体统计。','hint'));
+   if(section.original_report){const old=section.original_report,details=el('details');details.append(el('summary','查看接入前原始汇总'),el('p','原应到 '+old.expected+' · 原已到 '+old.arrived+' · 原请假 '+old.leave_count+' · 原到课率 '+old.rate));card.append(details);}
+   for(const issue of section.review_issues||[])card.append(el('p','待核对原因：'+issue.date+' · '+issue.class_name+' · '+issue.reason,'hint'));
    if(section.detail_scope_only)card.append(el('p','只汇总接入前有课堂明细的部分；旧系统估算总数可在完整历史周查看。','hint'));
    for(const [key,title]of [['classes','班级'],['teachers','教师']]){
     const table=el('table'),head=el('tr');for(const titleText of [title,'应到人次','已到人次','请假人次','到课率'])head.append(el('th',titleText));table.append(head);
