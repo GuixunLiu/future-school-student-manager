@@ -52,11 +52,19 @@ class Handler(base.Handler):
         s=self.server
         try:p=urlsplit(self.path)
         except ValueError:return self.reject(400,'invalid_path')
-        if self.headers.get_all('Host',[])!=[s.authority]:return self.reject(403,'invalid_host')
         native=p.path.startswith('/v1/management/device/')
+        encrypted=isinstance(self.connection,ssl.SSLSocket)
+        device_health=encrypted and p.path in {'/health/ready','/viewer/health'} and self.headers.get_all('Host',[])==[s.authority]
+        browser=s.browser_origin if not native and not device_health else None
+        authority=urlsplit(browser).netloc if browser else s.authority
+        if self.headers.get_all('Host',[])!=[authority]:return self.reject(403,'invalid_host')
         origins=self.headers.get_all('Origin',[])
-        if native and (not isinstance(self.connection,ssl.SSLSocket) or origins):return self.reject(403,'encrypted_device_transport_required')
-        if origins and origins!=[s.public_origin]:return self.reject(403,'invalid_origin')
+        if native and (not encrypted or origins):return self.reject(403,'encrypted_device_transport_required')
+        if browser and not encrypted:
+            if self.command in {'GET','HEAD'} and p.path in {'/','/people'} and not p.query and not self.headers.get('Authorization'):
+                return self.reply(308,b'',{'Location':browser+p.path})
+            return self.reject(403,'encrypted_web_transport_required')
+        if origins and origins!=[browser or s.public_origin]:return self.reject(403,'invalid_origin')
         if s.clock()>=s.expires_at:return self.reject(410,'temporary_viewer_expired')
         if p.scheme or p.netloc or p.fragment or '%' in p.path or '\\' in self.path or len(self.path)>4096:return self.reject(400,'invalid_path')
         if p.path.startswith('/v1/tablet-mirror/'):return self.reject(409,'legacy_mirror_fenced')
@@ -94,8 +102,15 @@ class Handler(base.Handler):
 
 
 class Viewer(base.Viewer):
-    def __init__(self,address,origin,expires_at,context,**kwargs):
+    def __init__(self,address,origin,expires_at,context,*,browser_origin=None,browser_context=None,**kwargs):
         super().__init__(address,origin,expires_at,**kwargs);self.tls_context=context
+        self.browser_origin=browser_origin
+        if browser_origin:
+            name=urlsplit(browser_origin).hostname
+            def select_certificate(connection,server_name,_):
+                if server_name==name:
+                    connection.context=browser_context
+            self.tls_context.set_servername_callback(select_certificate)
         self.connection_slots=threading.BoundedSemaphore(24);self.RequestHandlerClass=Handler
         self.source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     def process_request(self,request,address):
@@ -112,21 +127,37 @@ class Viewer(base.Viewer):
         finally:self.shutdown_request(channel);self.connection_slots.release()
 
 
+def tls_context(config,private_path):
+    context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2
+    for key in ('certificate','private_key'):
+        file=Path(config[key]);private_path(file.parent,True);private_path(file)
+        if config['tls_sha256'].get(key)!=hashlib.sha256(file.read_bytes()).hexdigest():raise ValueError('TLS identity changed')
+    context.load_cert_chain(config['certificate'],config['private_key'])
+    return context
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,required=True);args=parser.parse_args()
     from management.initialization import export_helper
     helper=export_helper();helper.private_path(args.config.parent,True);helper.private_path(args.config)
     config=json.loads(args.config.read_bytes())
-    if set(config)!={'origin','expires_at','certificate','private_key','tls_sha256','gateway_sha256'}:raise ValueError('Explicit gateway configuration required')
-    if config['origin']!='http://47.97.226.219:18083' or config['expires_at']!=1794391683 or not time.time()<config['expires_at']:raise ValueError('Original temporary origin and expiry required')
+    fields={'origin','expires_at','certificate','private_key','tls_sha256','gateway_sha256'}
+    if set(config) not in (fields,fields|{'browser_tls'}):raise ValueError('Explicit gateway configuration required')
+    if config['origin']!='http://47.97.226.219:18083' or type(config['expires_at']) is not int or not time.time()<config['expires_at']:raise ValueError('Pinned device origin and future expiry required')
     if config['tls_sha256'].get('certificate')!='320750ba1113dafa0410bcdbeffd7b04a68f42f64b74744adf01731bad92e8fe':raise ValueError('Original pinned TLS certificate required')
     if config['gateway_sha256']!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest():raise ValueError('Gateway code changed')
-    for key in ('certificate','private_key'):
-        file=Path(config[key]);helper.private_path(file.parent,True);helper.private_path(file)
-        if config['tls_sha256'].get(key)!=hashlib.sha256(file.read_bytes()).hexdigest():raise ValueError('TLS identity changed')
-    context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(config['certificate'],config['private_key'])
-    with Viewer(('0.0.0.0',18083),config['origin'],config['expires_at'],context,upstream=('127.0.0.1',18098)) as server:server.serve_forever(poll_interval=.3)
+    context=tls_context(config,helper.private_path)
+    browser_origin=browser_context=None
+    if 'browser_tls' in config:
+        browser=config['browser_tls']
+        if set(browser)!={'origin','certificate','private_key','tls_sha256'} or not re.fullmatch(
+            r'https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}:18083',browser['origin']):
+            raise ValueError('Explicit HTTPS browser DNS origin on port 18083 required')
+        browser_origin=browser['origin']
+        browser_context=tls_context(browser,helper.private_path)
+    with Viewer(('0.0.0.0',18083),config['origin'],config['expires_at'],context,
+                browser_origin=browser_origin,browser_context=browser_context,
+                upstream=('127.0.0.1',18098)) as server:server.serve_forever(poll_interval=.3)
 
 
 if __name__=='__main__':main()

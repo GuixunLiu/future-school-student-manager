@@ -72,6 +72,17 @@ class DeliveryTests(unittest.TestCase):
             self.store.acknowledge(self.token, **args)
         self.assertIsNone(self.poll()['item'])
 
+    def test_deferral_does_not_acknowledge_or_hide_the_event_from_future_polls(self):
+        self.approve()
+        original=self.poll()
+        headers={'Authorization':'Bearer '+self.token}
+        endpoint='/v1/management/device/next?generation=fixture-generation'
+        filtered=self.client.get(endpoint+'&defer=student',headers=headers)
+        self.assertEqual(filtered.status_code,200,filtered.text)
+        self.assertIsNone(filtered.json()['item'])
+        self.assertEqual(self.poll(),original)
+        self.assertEqual(self.client.get(endpoint+'&defer=student,,other',headers=headers).status_code,422)
+
     def test_disabled_expired_changed_generation_and_personal_accounts_denied(self):
         for token, gen in [(self.f.tokens['owner'], 'fixture-generation'), (self.token, 'wrong')]:
             with self.assertRaises(Problem):

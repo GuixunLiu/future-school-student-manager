@@ -69,6 +69,25 @@ class ActivationTests(unittest.TestCase):
         with self.assertRaises(Problem) as error:self.f.decide(request['id'])
         self.assertEqual(error.exception.code,'migration_in_progress');self.assertEqual(before,self.f.state())
 
+    def test_renewal_updates_only_matching_active_grant_and_can_retry(self):
+        offer=self.offer();self.commit()
+        expiry=offer['active_until']
+        with self.store.transaction() as db:
+            db.execute('UPDATE devices SET expires_at=?',(expiry,))
+            db.execute('UPDATE management_device_access SET expires_at=?',(expiry,))
+        before=self.f.state()
+        args=dict(activation_id=offer['activation_id'],expected_expiry=expiry,
+                  expires_at=expiry+86400,reason='续期验收',command_ref='renew-1')
+        with self.assertRaises(Problem):
+            self.store.renew_active_writer(self.f.tokens['teacher'],**args)
+        with self.assertRaises(Problem):
+            self.store.renew_active_writer(self.f.tokens['owner'],**(args|{'expected_expiry':expiry+1}))
+        self.assertFalse(self.store.renew_active_writer(self.f.tokens['owner'],**args)['duplicate'])
+        self.assertTrue(self.store.renew_active_writer(self.f.tokens['owner'],**args)['duplicate'])
+        self.f.now=expiry+1
+        self.assertIsNone(self.store.poll(self.token,'fixture-generation')['item'])
+        self.assertEqual(self.f.state(),before)
+
     def test_wrong_profile_digest_nonce_device_and_role_cannot_activate(self):
         self.offer()
         for changes in (dict(profile_id='f'*32),dict(nonce='f'*32),dict(bootstrap_sha256='f'*64),dict(source_map_sha256='f'*64)):

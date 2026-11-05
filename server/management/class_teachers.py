@@ -4,7 +4,7 @@ import json
 
 from business.store import Problem,uid
 from .approvals import digest,encoded,label
-from .delivery import DeliveryStore
+from .delivery import DeliveryStore, deferred_ids
 from .migration_guard import require_not_held
 from .policy import require,workspace
 
@@ -131,10 +131,15 @@ class ClassTeacherStore(DeliveryStore):
             return dict(org_id=actor['org_id'],device_id=actor['id'],generation=generation,class_teacher_protocol=1)
         return self.command(token,run)
 
-    def metadata_next(self,token,generation):
+    def metadata_next(self,token,generation,defer=''):
+        deferred=deferred_ids(defer)
         def run(db,actor):
             self.access(db,actor,generation);require_not_held(db,actor['org_id'],self.clock())
-            r=db.execute("SELECT e.* FROM management_class_teacher_events e JOIN device_classes c ON c.org_id=e.org_id AND c.device_id=e.device_id AND c.class_id=e.class_id WHERE e.org_id=? AND e.device_id=? AND e.generation=? AND e.status!='applied' ORDER BY e.seq LIMIT 1",(actor['org_id'],actor['id'],generation)).fetchone()
+            r=db.execute("""SELECT e.* FROM management_class_teacher_events e JOIN device_classes c
+                ON c.org_id=e.org_id AND c.device_id=e.device_id AND c.class_id=e.class_id
+                WHERE e.org_id=? AND e.device_id=? AND e.generation=? AND e.status!='applied'
+                AND e.class_id NOT IN (SELECT value FROM json_each(?)) ORDER BY e.seq LIMIT 1""",
+                (actor['org_id'],actor['id'],generation,deferred)).fetchone()
             return dict(org_id=actor['org_id'],device_id=actor['id'],generation=generation,item=None if not r else dict(event_json=r['payload'],sha256=r['sha256'],receipt_token=r['receipt_token'],status=r['status']))
         return self.command(token,run)
 

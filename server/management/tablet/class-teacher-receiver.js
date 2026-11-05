@@ -8,11 +8,13 @@
   const e=JSON.parse(item.event_json);if(e.protocol!==1||e.kind!=='class_teacher'||e.org_id!==envelope.org_id||![e.event_id,e.class_id,e.class_name,e.previous_teacher,e.teacher].every(text)||!Number.isSafeInteger(e.local_class_id)||e.local_class_id<1||!Number.isSafeInteger(e.previous_revision)||e.previous_revision<0||e.revision!==e.previous_revision+1)fail('invalid_event');
   const raw=store.read(),state=JSON.parse(raw),s=state.managementSync;
   if(!s||s.enabled!==true||s.mode!=='server_authoritative'||s.legacyMirrorDisabled!==true||s.orgId!==envelope.org_id||s.deviceId!==envelope.device_id||s.generation!==envelope.generation)fail('mapping_changed');
-  if(state.deviceSync?.captureEnabled||!Array.isArray(s.queue)||s.queue.some(q=>q.status!=='accepted'))fail('local_changes');
+  if(state.deviceSync?.captureEnabled||!Array.isArray(s.queue))fail('local_changes');
   const revisions=s.classTeacherRevisions||{};if(Array.isArray(revisions)||typeof revisions!=='object')fail('mapping_changed');
   const old=Object.prototype.hasOwnProperty.call(revisions,e.class_id)?revisions[e.class_id]:{revision:0};
   const receipt={generation:s.generation,class_id:e.class_id,revision:e.revision,sha256:item.sha256,receipt_token:item.receipt_token,status:'applied'};
   if(old.revision===e.revision){if(old.sha256!==item.sha256)fail('invalid_event');return{ok:true,duplicate:true,receipt};}
+  if(s.queue.some(q=>q.status!=='accepted'&&
+    (!s.students?.[q.payload?.student_id]||s.students[q.payload.student_id].classId===e.class_id)))fail('local_changes');
   if(old.revision!==e.previous_revision)fail('mapping_changed');
   if(!Array.isArray(state.classes)||!s.students||Array.isArray(s.students))fail('mapping_changed');
   const classes=state.classes.filter(c=>c.id===e.local_class_id);if(classes.length!==1||classes[0].name!==e.class_name||classes[0].teacher!==e.previous_teacher)fail('mapping_changed');

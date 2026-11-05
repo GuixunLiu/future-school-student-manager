@@ -62,10 +62,43 @@ test('mismatched or missing receipt is not success; full disk retains pending ev
  assert.equal((await queue.acknowledge(f.storage,'local-1',{...r,...delta})).code,'receipt_mismatch');assert.equal(f.storage.raw,raw);}
  f.storage.compareAndSwap=()=>false;assert.equal((await queue.acknowledge(f.storage,'local-1',r)).code,'storage_failed');assert.equal(f.storage.raw,raw);
 });
-test('server conflict preserves local attendance/debit and blocks all following events',()=>{
+test('server conflict preserves local attendance and debit for review',()=>{
  const f=fixture();queue.record(f.storage,f.input,f.now);assert.equal(queue.block(f.storage,'local-1','attendance_changed').ok,true);
  assert.deepEqual(queue.next(f.storage),{ok:true,item:null,blocked:true});const s=JSON.parse(f.storage.raw);
  assert.equal(s.students[0].hours,9);assert.equal(s.attendance.length,1);assert.equal(s.managementSync.queue[0].status,'blocked');
+});
+test('acknowledged history cannot exhaust the live queue',()=>{
+ const f=fixture();
+ edit(f,s=>{s.managementSync.queue=Array.from({length:10000},(_,i)=>({status:'accepted',eventRef:'old-'+i}));
+   s.attendance.push({id:3,studentId:999,date:'2026-01-01',deviceEventRef:'old-0'});});
+ assert.equal(queue.record(f.storage,f.input,f.now).ok,true);
+ assert.equal(JSON.parse(f.storage.raw).managementSync.queue.length,129);
+ assert.equal(queue.record(f.storage,{...f.input,eventRef:'old-0'},f.now).code,'idempotency_conflict');
+});
+test('a real conflict isolates the student while authorization can recover on retry',async()=>{
+ const f=fixture();
+ queue.record(f.storage,f.input,f.now);
+ edit(f,s=>{
+   const sync=s.managementSync;
+   sync.queue.push({status:'pending',eventRef:'later',payload:{student_id:'student'}});
+   const payload={...sync.queue[0].payload,student_id:'other'};
+   sync.queue.push({status:'pending',eventRef:'other',payload,wire:JSON.stringify({generation:'generation',event_ref:'other',...payload})});
+ });
+ assert.equal((await queue.pump(f.storage,async()=>({ok:false,status:403,data:{error:{code:'delivery_not_granted'}}}))).retry,true);
+ assert.equal(queue.next(f.storage).item.eventRef,'local-1');
+ const sent=[];
+ const result=await queue.pump(f.storage,async body=>{
+   sent.push(body.event_ref);
+   return body.event_ref==='local-1'?{ok:false,status:409,data:{error:{code:'attendance_changed'}}}:{ok:true,data:receipt(f,2)};
+ });
+ assert.deepEqual(sent,['local-1','other']);
+ assert.equal(result.blocked,true);
+ assert.equal(result.uploaded,1);
+ assert.deepEqual(JSON.parse(f.storage.raw).managementSync.queue.map(e=>e.status),['blocked','pending','accepted']);
+ const before=JSON.parse(f.storage.raw);
+ assert.equal(queue.retryConflict(f.storage,'local-1').ok,true);
+ assert.equal(queue.next(f.storage).item.wire,before.managementSync.queue[0].wire);
+ assert.equal(JSON.parse(f.storage.raw).students[0].hours,before.students[0].hours);
 });
 const guards=[['wrong balance',s=>s.students[0].hours=11,'balance_changed'],['renamed student',s=>s.students[0].name='其他人','mapping_changed'],
  ['changed teacher',s=>s.classes[0].teacher='另一教师','mapping_changed'],['legacy writer',s=>s.deviceSync={captureEnabled:true},'legacy_writer_active'],

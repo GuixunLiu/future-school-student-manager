@@ -229,10 +229,10 @@ final class CanonicalSyncTransport {
                 String route;
                 switch(kind){
                     case "checkin":route="/v1/management/device/checkin";fields(body,"generation event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units remaining_units occurred_at");break;
-                    case "next":route="/v1/management/device/next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8");fields(body,"generation");break;
+                    case "next":route="/v1/management/device/next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8")+deferredQuery(body);break;
                     case "class-ready":route="/v1/management/device/class-ready";fields(body,"generation");break;
                     case "history-ready":route="/v1/management/device/history-ready";fields(body,"generation");break;
-                    case "class-next":route="/v1/management/device/class-next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8");fields(body,"generation");break;
+                    case "class-next":route="/v1/management/device/class-next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8")+deferredQuery(body);break;
                     case "class-receipt":route="/v1/management/device/class-receipt";fields(body,"generation class_id revision receipt_token sha256 status");break;
                     case "receipt":route="/v1/management/device/receipt";
                         fields(body,body.optString("status").equals("applied")?"generation event_id receipt_token sha256 status attendance_revision balance_revision balance_units":"generation event_id receipt_token sha256 status conflict_code");break;
@@ -247,6 +247,13 @@ final class CanonicalSyncTransport {
     }
     private void reply(String id,JSONObject response){if(!closed)activity.runOnUiThread(()->{if(!closed)callback.reply(id,response);});}
     private static JSONObject result(boolean ok,int status,JSONObject data){try{return new JSONObject().put("ok",ok).put("status",status).put("data",data==null?JSONObject.NULL:data);}catch(Exception e){return new JSONObject();}}
+    private static String deferredQuery(JSONObject body)throws Exception{
+        if(!body.has("defer")){fields(body,"generation");return "";}
+        fields(body,"generation defer");
+        String value=body.getString("defer");
+        if(!value.matches("[A-Za-z0-9_-]{1,80}(,[A-Za-z0-9_-]{1,80}){0,39}"))throw new IOException("defer");
+        return "&defer="+value;
+    }
     private static void fields(JSONObject row,String names)throws Exception{
         java.util.Set<String> allowed=new java.util.HashSet<>(java.util.Arrays.asList(names.split(" ")));
         if(row.length()!=allowed.size())throw new IOException("fields");java.util.Iterator<String> keys=row.keys();while(keys.hasNext())if(!allowed.contains(keys.next()))throw new IOException("fields");

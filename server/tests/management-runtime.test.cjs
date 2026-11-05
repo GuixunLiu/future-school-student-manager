@@ -87,3 +87,20 @@ test('local check-in arriving during download is retained and reported as confli
  const s=f.store.snapshot();assert.equal(s.students[0].hours,9);assert.equal(s.attendance.length,1);
  assert.equal(s.managementSync.queue[0].status,'pending');assert.equal(Object.keys(s.managementSync.receipts).length,0);
 });
+test('a blocked upload defers that student and receives an unrelated approval',async()=>{
+ const f=fixture();
+ const raw=f.store.read(),state=JSON.parse(raw),s=state.managementSync;
+ s.students.other={...s.students.student,localId:3};
+ s.queue.push({status:'blocked',error:'attendance_changed',payload:{student_id:'other'}});
+ assert(f.store.compareAndSwap(raw,JSON.stringify(state)));
+ const order=[];
+ const request=async(kind,body)=>{
+   order.push([kind,body.defer]);
+   if(kind==='next')return{ok:true,data:order.length===1?f.envelope:f.empty};
+   return{ok:true,data:{event_id:body.event_id,status:'applied'}};
+ };
+ const result=await runtime.create({store:f.store,profile:()=>f.profile,request}).tick();
+ assert.deepEqual(order,[['next','other'],['receipt',undefined],['next','other']]);
+ assert.equal(result.ok,false);assert.equal(result.blocked,true);assert.equal(result.received,1);
+ assert.equal(f.store.snapshot().students[0].hours,9);
+});

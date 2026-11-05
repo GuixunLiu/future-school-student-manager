@@ -80,3 +80,16 @@ class GatewayTests(unittest.TestCase):
             ('/v1/management/materials/'+'a'*32+'/scores',dict(method='POST',headers=auth|{'Content-Type':'application/json'},body='{}'),200),
         ]:
             self.assertEqual(self.call(path,**options)[0],status,(path,status))
+
+    def test_https_browser_origin_rejects_plaintext_credentials_and_retains_device_tls(self):
+        host='school.example:'+str(self.port)
+        self.viewer.browser_origin='https://'+host
+        body='{}'
+        headers={'Host':host,'Content-Type':'application/json'}
+        self.assertEqual(self.call('/v1/auth/login',method='POST',headers=headers,body=body)[0],403)
+        self.assertFalse(any(path=='/v1/auth/login' for _,path,_,_ in self.requests))
+        self.assertEqual(self.call('/',headers={'Host':host})[0],308)
+        self.assertEqual(self.call('/v1/auth/login',tls=True,method='POST',
+            headers=headers|{'Origin':'https://'+host},body=body)[0],200)
+        self.assertEqual(self.call('/v1/management/device/plan',tls=True,
+            headers={'Authorization':'Bearer fictional-device'})[0],200)

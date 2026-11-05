@@ -44,10 +44,12 @@ class Store:
         return db
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, *, read_only=False):
         db = self.connect()
         try:
-            db.execute("BEGIN IMMEDIATE")
+            if read_only:
+                db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN" if read_only else "BEGIN IMMEDIATE")
             yield db
             db.commit()
         except BaseException:
@@ -108,8 +110,8 @@ class Store:
                 return {"kind": "device", "id": device["id"], "org_id": device["org_id"], "roles": set(), "name": device["name"]}
         raise Problem(401, "unauthorized", "请重新登录")
 
-    def command(self, token, operation):
-        with self.transaction() as db:
+    def command(self, token, operation, *, read_only=False):
+        with self.transaction(read_only=read_only) as db:
             return operation(db, self.authenticate(db, token))
 
     def login(self, organization, login, password, source):

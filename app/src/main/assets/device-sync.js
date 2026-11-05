@@ -123,7 +123,20 @@ function deviceSyncSummary(){
   return`${s.paused?'已暂停':'已启用'} · 待同步 ${waiting} 条 · 待核对 ${blocked} 条${s.skipped?` · 未完整生成 ${s.skipped} 次`:''}`;
 }
 function deviceSyncSettingsMarkup(){
-  if(state.managementSync?.enabled===true&&state.managementSync.mode==='server_authoritative')return `<section class="panel"><div class="panel-head"><div><h2>网页与平板同步</h2><p>学生、班级和课时由网页管理，平板负责签到</p></div></div><div class="setting-row"><div><b id="canonicalSyncStatus">${esc(deviceSyncSummary())}</b><small>签到先保存在平板，联网后核对上传；网页审批和任课变更保存到平板后生效。</small></div></div></section>`;
+  const sync=state.managementSync;
+  if(sync?.enabled===true&&sync.mode==='server_authoritative'){
+    const conflicts=Array.isArray(sync.queue)?sync.queue.filter(e=>e.status==='blocked'):[];
+    const details=conflicts.length?`<details class="settings-card"><summary>查看待核对签到（${conflicts.length} 条）</summary>
+      <p>请对照网页上的同一课次及课时流水核对，原签到仍保存在平板。</p>
+      <ul>${conflicts.slice(0,50).map(e=>{
+        const student=sync.students?.[e.payload?.student_id],lesson=sync.lessons?.[e.payload?.lesson_id];
+        const reasons={attendance_changed:'网页考勤已变化',balance_changed:'网页课时已变化',checkin_scope:'班级或学生授权已变化',
+          lesson_day:'日期和课次不符',idempotency_conflict:'签到编号冲突'};
+        return `<li>${esc(student?.name||'待确认学生')} · ${esc(lesson?.date||'待确认日期')} · ${esc(reasons[e.error]||'连接或授权待核对')}
+          <button type="button" class="secondary-btn" data-retry-canonical-checkin="${esc(e.eventRef)}">重新核对上传</button></li>`;
+      }).join('')}</ul>${conflicts.length>50?'<p>此处显示前 50 条。</p>':''}</details>`:'';
+    return `<section class="panel"><div class="panel-head"><div><h2>网页与平板同步</h2><p>学生、班级和课时由网页管理，平板负责签到</p></div></div><div class="setting-row"><div><b id="canonicalSyncStatus">${esc(deviceSyncSummary())}</b><small>签到先保存在平板，联网后核对上传；网页审批和任课变更保存到平板后生效。</small></div></div>${details}</section>`;
+  }
   return `<section class="panel"><div class="panel-head"><div><h2>平板与服务器同步</h2><p>本机先保存，后台再提交；默认关闭</p></div><span class="tag">微信仍未接通</span></div><div class="setting-row"><div><b id="deviceSyncStatus">${esc(deviceSyncSummary())}</b><small>只同步核对后的签到、课时及获委托的代办请假，不上传照片、人脸、联系方式或整库。</small></div><button type="button" class="primary-btn" id="openDeviceSync">管理同步</button></div></section>`;
 }
 function refreshDeviceSyncStatus(){const n=$('#deviceSyncStatus');if(n)n.textContent=deviceSyncSummary();const m=$('#syncQueueSummary');if(m)m.textContent=deviceSyncSummary()}

@@ -1,0 +1,101 @@
+/* Keep the loading screen and kiosk controls usable without CSS Grid. */
+@supports not (inset: 0) {
+  #appStartup, .modal-backdrop { top: 0; right: 0; bottom: 0; left: 0; }
+}
+
+/* Use the actual WebView area, including the device's display density and system bars. */
+@media (orientation: landscape) {
+  .kiosk-mode .app-shell { display: flex; flex-direction: column; }
+  .kiosk-mode .app-masthead {
+    display: flex; justify-content: space-between; align-items: center; flex: none;
+    width: 100%; max-width: 1760px; padding: 2.8vh 5vw 1vh;
+  }
+  .kiosk-mode .app-masthead .brand b { font-size: 2.3vh; }
+  .kiosk-mode .app-masthead .brand small { display: block; font-size: 1.5vh; }
+  .kiosk-mode .admin-access-btn { min-height: 42px; height: 5.7vh; }
+  .kiosk-mode .admin-access-btn b { font-size: 1.7vh; }
+  .kiosk-mode .workspace {
+    display: flex; flex: 1 0 auto; width: 100%; max-width: 1760px; padding: 0 5vw 2vh;
+  }
+  .kiosk-mode .content { display: flex; flex: 1 0 auto; flex-direction: column; min-width: 0; }
+  .kiosk-mode .space-kiosk-home {
+    display: flex; flex: 1 0 auto; flex-direction: row; align-items: center;
+    justify-content: space-between; width: 100%; max-width: none; min-height: 0; margin: 0; padding: 1.5vh 2vw;
+  }
+  .space-kiosk-home .space-kiosk-intro { flex: 1 1 0; padding: 0 3vw 0 0; }
+  .space-kiosk-home .space-kiosk-intro h1 {
+    margin: 1.6vh 0; font-size: 7.2vh; line-height: 1.16; letter-spacing: 0;
+  }
+  .space-kiosk-home .space-kiosk-date, .space-kiosk-home .space-kiosk-intro > p { font-size: 2.1vh; }
+  .space-kiosk-home .space-kiosk-count {
+    position: static; margin-top: 2vh; padding: 0.9vh 1.2vw; font-size: 1.8vh;
+  }
+  .space-kiosk-home .space-kiosk-count strong { font-size: 3vh; margin: 0 0.35em; }
+  .space-kiosk-home .space-kiosk-ready, .space-kiosk-home .space-kiosk-recent {
+    margin-top: 2vh; font-size: 1.7vh;
+  }
+  .space-kiosk-home .space-kiosk-ready i { margin-right: 0.4em; }
+  .space-kiosk-home .space-kiosk-stage {
+    display: flex; flex-direction: column; align-items: center; flex: 0 1 46%;
+    width: 46%; min-width: 0; margin: 0;
+  }
+  .space-kiosk-home .space-face-action {
+    width: 46vh; max-width: 100%; height: 44vh; min-height: 0; aspect-ratio: auto;
+    padding: 2vh; border-radius: 7vh; gap: 0;
+  }
+  .space-kiosk-home .space-face-action > .ui-icon { width: 15vh; height: 15vh; }
+  .space-kiosk-home .space-face-action > b { margin: 1.8vh 0 0.7vh; font-size: 4.7vh; }
+  .space-kiosk-home .space-face-action > span, .space-kiosk-home .space-kiosk-stage > p { font-size: 2vh; }
+  .space-kiosk-home .space-kiosk-stage > p { margin: 1.2vh 0 1.5vh; }
+  .space-kiosk-home .space-alternative-methods { display: flex; width: 100%; max-width: 57vh; padding: 0.4vh 0; }
+  .space-kiosk-home .space-alternative-methods > button {
+    flex: 1 1 0; min-width: 0; min-height: 42px; height: 5.6vh; padding: 0 3px; font-size: 2vh; white-space: nowrap;
+  }
+  .space-kiosk-home .space-alternative-methods .ui-icon { margin-right: 0.35em; }
+  .kiosk-mode .space-kiosk-privacy { max-width: none; margin: 1vh 0 0; font-size: 1.5vh; }
+  .modal.pattern-modal { width: 55vw; max-width: 760px; padding: 2.5vh 2vw; }
+  .pattern-modal .modal-head { margin-bottom: 1.4vh; }
+  .pattern-modal .modal-head h2 { font-size: 3vh; }
+  .pattern-modal .modal-head p, .pattern-modal .pattern-message { font-size: 2vh; }
+  .pattern-modal .pattern-privacy, .pattern-modal .pattern-help { font-size: 1.6vh; }
+}
+
+/* Flexbox keeps the touch hit areas in a 3 by 3 grid on pre-Grid engines. */
+.pattern-modal .pattern-panel { display: flex; flex-direction: column; align-items: center; }
+.pattern-modal .pattern-message { display: block; min-height: 0; margin-bottom: 1.4vh; }
+.pattern-modal .pattern-board {
+  display: flex; flex-wrap: wrap; width: 38vh; height: 38vh; max-width: 420px; max-height: 420px;
+}
+.pattern-modal .pattern-board > svg { top: 0; left: 0; }
+.pattern-modal .pattern-node {
+  display: flex; justify-content: center; align-items: center; width: 33.333%; height: 33.333%;
+}
+.pattern-modal .pattern-node span { width: 2.5vh; height: 2.5vh; min-width: 12px; min-height: 12px; }
+.pattern-modal .pattern-actions { display: flex; width: 100%; max-width: 420px; }
+.pattern-modal .pattern-actions button { flex: 1 1 0; min-height: 44px; }
+.pattern-modal .pattern-actions button + button { margin-left: 12px; }
+.pattern-modal .pattern-privacy { margin: 1vh 0; }
+@supports not (width: min(610px, 100%)) {
+  .modal { width: 100%; max-width: 610px; }
+  .kiosk-mode .workspace { width: 100%; max-width: 1240px; }
+}
+@supports not (aspect-ratio: 16 / 10) {
+  .camera-frame { min-height: 220px; }
+}
+@supports not (display: grid) {
+  #appStartup { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #appStartup p { margin: 12px 0; }
+  .modal-backdrop:not(.hidden) { display: flex; align-items: center; justify-content: center; }
+  .simple-form > * + * { margin-top: 12px; }
+  .kiosk-mode .app-masthead { display: flex; justify-content: space-between; align-items: center; }
+  .space-kiosk-home { display: flex; justify-content: space-around; align-items: center; }
+  .space-kiosk-intro { flex: 1 1 auto; padding-right: 20px; }
+  .space-kiosk-intro h1 { font-size: 42px; }
+  .space-kiosk-stage { display: flex; flex-direction: column; align-items: center; flex: 0 0 auto; }
+  .space-face-action { width: 265px; min-height: 265px; }
+  .space-face-action > b { margin: 10px 0; }
+  @media (max-width: 760px) {
+    .space-kiosk-home { flex-direction: column; align-items: stretch; }
+    .space-kiosk-stage { margin-top: 20px; }
+  }
+}

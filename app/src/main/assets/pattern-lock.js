@@ -38,10 +38,40 @@ function openPatternBoard({title,subtitle,onPattern,extra=''}){
   const submit=async()=>{if(busy||!alive())return;if(points.length<4){status('至少连接 4 个不同的点',true);clear();return}busy=true;board.setAttribute('aria-busy','true');const selected=points.slice();try{await onPattern(selected,controller)}catch(error){if(alive())status(error.message||'解锁失败，请重试',true)}finally{busy=false;board.removeAttribute('aria-busy');if(alive())clear()}};
   const locate=event=>{const rect=board.getBoundingClientRect();return{x:(event.clientX-rect.left)/rect.width*300,y:(event.clientY-rect.top)/rect.height*300}};
   const pick=position=>{let best=-1,distance=33;for(let i=0;i<9;i++){const d=Math.hypot(position.x-(50+i%3*100),position.y-(50+Math.floor(i/3)*100));if(d<distance){distance=d;best=i}}if(best>=0)patternAddPoint(points,best);paint(position)};
-  board.onpointerdown=event=>{if(busy||event.isPrimary===false||event.button!==0)return;event.preventDefault();event.stopPropagation();points=[];drawing=true;pointerId=event.pointerId;suppressClickUntil=Date.now()+500;board.classList.remove('error');board.setPointerCapture(pointerId);pick(locate(event))};
-  board.onpointermove=event=>{if(drawing&&event.pointerId===pointerId){event.preventDefault();pick(locate(event))}};
-  board.onpointerup=event=>{if(!drawing||event.pointerId!==pointerId)return;event.preventDefault();event.stopPropagation();pick(locate(event));drawing=false;paint();submit()};
-  board.onpointercancel=()=>{clear();status('已取消本次绘制，请重新连接')};board.onlostpointercapture=()=>{if(drawing){clear();status('已取消本次绘制，请重试')}};
+  const start=(event,point,id)=>{
+    if(busy||drawing)return false;
+    event.preventDefault();event.stopPropagation();
+    points=[];drawing=true;pointerId=id;suppressClickUntil=Date.now()+500;
+    board.classList.remove('error');pick(locate(point));return true;
+  };
+  const move=(event,point,id)=>{if(drawing&&id===pointerId){event.preventDefault();pick(locate(point))}};
+  const finish=(event,point,id)=>{
+    if(!drawing||id!==pointerId)return;
+    event.preventDefault();event.stopPropagation();
+    pick(locate(point));drawing=false;paint();submit();
+  };
+  const cancel=()=>{if(drawing){clear();status('已取消本次绘制，请重新连接')}};
+  if(window.PointerEvent){
+    board.onpointerdown=event=>{
+      if(event.isPrimary!==false&&event.button===0&&start(event,event,event.pointerId))board.setPointerCapture(event.pointerId);
+    };
+    board.onpointermove=event=>move(event,event,event.pointerId);
+    board.onpointerup=event=>finish(event,event,event.pointerId);
+    board.onpointercancel=cancel;board.onlostpointercapture=cancel;
+  }else{
+    const activeTouch=event=>Array.from(event.changedTouches).find(touch=>touch.identifier===pointerId);
+    board.addEventListener('touchstart',event=>{
+      const touch=event.changedTouches[0];
+      if(event.touches.length===1&&touch)start(event,touch,touch.identifier);
+    },{passive:false});
+    board.addEventListener('touchmove',event=>{
+      const touch=activeTouch(event);if(touch)move(event,touch,touch.identifier);
+    },{passive:false});
+    board.addEventListener('touchend',event=>{
+      const touch=activeTouch(event);if(touch)finish(event,touch,touch.identifier);
+    },{passive:false});
+    board.addEventListener('touchcancel',event=>{if(activeTouch(event))cancel()});
+  }
   board.onclick=event=>{const node=event.target.closest('[data-pattern-point]');if(!node||busy||event.detail&&Date.now()<suppressClickUntil)return;patternAddPoint(points,Number(node.dataset.patternPoint));paint()};
   board.onkeydown=event=>{if(busy)return;if(/^[1-9]$/.test(event.key)){event.preventDefault();patternAddPoint(points,Number(event.key)-1);paint()}else if(event.key==='Enter'){event.preventDefault();submit()}else if(event.key==='Escape'){clear();status('已清除，请重新绘制')}};
   $('#patternSubmit').onclick=submit;$('#patternRedraw').onclick=()=>{if(busy)return;clear();if(controller.onRedraw)controller.onRedraw();else status('连接至少 4 个点，松手后自动确认')};

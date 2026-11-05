@@ -48,7 +48,9 @@ def install_class_teacher_routes(app,database,clock=None):
     @app.post('/v1/management/device/class-ready')
     def ready(data:MetadataReady,token:Token):return store.metadata_ready(token,data.generation)
     @app.get('/v1/management/device/class-next')
-    def next_event(token:Token,generation:Annotated[str,Query(min_length=1,max_length=80)]):return store.metadata_next(token,generation)
+    def next_event(token:Token,generation:Annotated[str,Query(min_length=1,max_length=80)],
+                   defer:Annotated[str,Query(max_length=3239)]=''):
+        return store.metadata_next(token,generation,defer)
     @app.post('/v1/management/device/class-receipt')
     def receipt(data:MetadataReceipt,token:Token):return store.metadata_ack(token,**data.model_dump())
     return store

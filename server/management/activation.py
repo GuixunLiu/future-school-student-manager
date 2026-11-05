@@ -34,6 +34,36 @@ def checksum(value):
 
 
 class ActivationOperations:
+    def renew_active_writer(self, token, *, activation_id, expected_expiry, expires_at, reason, command_ref):
+        reason, command_ref = label(reason), label(command_ref, 80)
+        if type(expected_expiry) is not int or type(expires_at) is not int or expires_at <= expected_expiry:
+            raise Problem(422,'invalid_activation_expiry','续期必须延长当前授权')
+        hashed=digest(dict(activation_id=activation_id,expected_expiry=expected_expiry,expires_at=expires_at,reason=reason))
+        def run(db,actor):
+            require(actor,'admin','settings.manage')
+            prior=self._activation_prior(db,actor,command_ref,hashed)
+            if prior:return prior
+            now=self.clock()
+            if not now < expected_expiry < expires_at <= now+90*86400:
+                raise Problem(422,'invalid_activation_expiry','只能续期未到期授权，最远续至90天后')
+            row=self._activation_row(db,actor['org_id'],activation_id)
+            org,device,generation=row['org_id'],row['device_id'],row['generation']
+            hold=db.execute("SELECT state FROM management_migration_holds WHERE id=? AND org_id=?",(row['hold_id'],org)).fetchone()
+            grant=db.execute('SELECT generation,enabled,expires_at FROM management_device_access WHERE org_id=? AND device_id=?',(org,device)).fetchone()
+            hardware=db.execute('SELECT active,expires_at FROM devices WHERE org_id=? AND id=?',(org,device)).fetchone()
+            if (row['phase']!='active' or row['active_until']!=expected_expiry or not hold or hold['state']!='held'
+                or not grant or tuple(grant)!=(generation,1,expected_expiry)
+                or not hardware or tuple(hardware)!=(1,expected_expiry)):
+                raise Problem(409,'activation_changed','当前平板授权、期限或启用状态与核对结果不一致')
+            db.execute('UPDATE devices SET expires_at=? WHERE org_id=? AND id=?',(expires_at,org,device))
+            db.execute('UPDATE management_device_access SET expires_at=? WHERE org_id=? AND device_id=? AND generation=?',(expires_at,org,device,generation))
+            db.execute('UPDATE management_activations SET active_until=?,revision=revision+1 WHERE id=?',(expires_at,row['id']))
+            result=dict(activation_id=row['id'],previous_expiry=expected_expiry,expires_at=expires_at,duplicate=False)
+            db.execute('INSERT INTO management_activation_commands VALUES(?,?,?,?,?,?)',(org,actor['id'],command_ref,hashed,row['id'],encoded(result)))
+            self.record_audit(db,actor,'admin','activation_renewed',row['id'],reason=reason,previous_expiry=expected_expiry,expires_at=expires_at)
+            return result
+        return self.command(token,run)
+
     @staticmethod
     def _activation_row(db,org,key):
         row=db.execute('SELECT * FROM management_activations WHERE org_id=? AND id=?',(org,key)).fetchone()

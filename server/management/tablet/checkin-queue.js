@@ -10,6 +10,27 @@
   const own=(o,k)=>Object.prototype.hasOwnProperty.call(o||{},k);
   const day=t=>new Date((t+28800)*1000).toISOString().slice(0,10);
   const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const receiptHistory=128;
+  const conflictCodes=new Set(['attendance_changed','balance_changed','checkin_scope','lesson_day','idempotency_conflict']);
+  const isConflict=entry=>entry.status==='blocked'&&conflictCodes.has(entry.error);
+  function nextEntry(queue){
+    const blockedStudents=new Set();
+    for(const entry of queue){
+      if(entry.status==='accepted')continue;
+      if(isConflict(entry)){blockedStudents.add(entry.payload.student_id);continue;}
+      if(!blockedStudents.has(entry.payload.student_id))return entry;
+    }
+    return null;
+  }
+  function compact(queue){
+    let remove=queue.filter(e=>e.status==='accepted').length-receiptHistory;
+    if(remove<=0)return queue;
+    return queue.filter(entry=>{
+      if(entry.status!=='accepted'||remove===0)return true;
+      remove--;
+      return false;
+    });
+  }
   const units=h=>{if(typeof h!=='number'||!Number.isFinite(h))fail('balance_changed');const n=Math.round(h*100);if(!integer(n)||Math.abs(n-h*100)>.00001)fail('balance_changed');return n;};
   function context(state){
     const s=state.managementSync;
@@ -27,10 +48,12 @@
       const raw=storage.read(),state=JSON.parse(raw),sync=context(state);
       const old=sync.queue.find(e=>e.eventRef===eventRef);
       if(old){if(['studentId','lessonId','occurredAt','eventRef'].some(k=>old.input[k]!==input[k]))fail('idempotency_conflict');return{ok:true,duplicate:true,eventRef};}
-      if(sync.queue.length>=10000)fail('queue_full'); // no automatic eviction of receipt history
+      sync.queue=compact(sync.queue);
+      if(sync.queue.length>=10000)fail('queue_full');
       if(!own(sync.students,studentId)||!own(sync.lessons,lessonId)||!own(sync.facts?.[lessonId],studentId))fail('mapping_changed');
       const binding=sync.students[studentId],lesson=sync.lessons[lessonId],fact=sync.facts[lessonId][studentId];
       if(!Array.isArray(state.students)||!Array.isArray(state.classes)||!Array.isArray(state.attendance)||!Array.isArray(state.transactions)||!Array.isArray(state.settings?.studentLeaves))fail('invalid_state');
+      if(state.attendance.some(a=>a.deviceEventRef===eventRef)||state.transactions.some(t=>t.deviceEventRef===eventRef))fail('idempotency_conflict');
       const students=state.students.filter(s=>s.id===binding.localId),classes=state.classes.filter(c=>c.id===binding.localClassId);
       if(students.length!==1||classes.length!==1)fail('mapping_changed');
       const student=students[0],course=classes[0];
@@ -54,7 +77,12 @@
       return{ok:true,duplicate:false,eventRef,attendanceId};
     });
   }
-  function next(storage){return attempt(()=>{const sync=context(JSON.parse(storage.read()));const e=sync.queue.find(q=>q.status!=='accepted');if(!e||e.status==='blocked')return{ok:true,item:null,blocked:!!e};if(e.status!=='pending'||!equal(JSON.parse(e.wire),{generation:sync.generation,event_ref:e.eventRef,...e.payload}))fail('invalid_queue');return{ok:true,item:{eventRef:e.eventRef,wire:e.wire},blocked:false};});}
+  function next(storage){return attempt(()=>{
+    const sync=context(JSON.parse(storage.read())),e=nextEntry(sync.queue);
+    if(!e)return{ok:true,item:null,blocked:sync.queue.some(isConflict)};
+    if(!['pending','blocked'].includes(e.status)||!equal(JSON.parse(e.wire),{generation:sync.generation,event_ref:e.eventRef,...e.payload}))fail('invalid_queue');
+    return{ok:true,item:{eventRef:e.eventRef,wire:e.wire},blocked:false};
+  });}
   // Match Python json.dumps(ensure_ascii=True, sort_keys=True, separators=(',',':')).
   // Check-in payload is flat, contains only string IDs and safe integers.
   function canonical(payload){const sorted={};Object.keys(payload).sort().forEach(k=>sorted[k]=payload[k]);return JSON.stringify(sorted).replace(/[\u007f-\uffff]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'));}
@@ -70,17 +98,27 @@
       const raw=storage.read(),state=JSON.parse(raw),sync=context(state),current=sync.queue.find(e=>e.eventRef===eventRef);
       if(sync.orgId!==initial.orgId||sync.deviceId!==initial.deviceId||sync.generation!==initial.generation||!current||current.wire!==entry.wire)fail('mapping_changed');
       if(current.status==='accepted')return{ok:true,duplicate:true};
-      const first=sync.queue.find(q=>q.status!=='accepted');
+      const first=nextEntry(sync.queue);
       if(first!==current)fail('receipt_order');
       current.status='accepted';current.receipt={digest,attendanceRevision:receipt.attendance_revision,balanceRevision:receipt.balance_revision,balanceUnits:receipt.balance_units};
+      sync.queue=compact(sync.queue);
       // Do not set hours from an old receipt: later offline check-ins may exist.
       write(storage,raw,state);return{ok:true,duplicate:false};
     }catch(e){return{ok:false,code:e.code||'invalid_receipt'};}
   }
   function block(storage,eventRef,code){return attempt(()=>{
-    if(!['attendance_changed','balance_changed','checkin_scope','delivery_not_granted','device_clock','lesson_day','idempotency_conflict'].includes(code))fail('invalid_conflict');
-    const raw=storage.read(),state=JSON.parse(raw),sync=context(state),entry=sync.queue.find(e=>e.status!=='accepted');
+    if(!conflictCodes.has(code))fail('invalid_conflict');
+    const raw=storage.read(),state=JSON.parse(raw),sync=context(state),entry=nextEntry(sync.queue);
     if(!entry||entry.eventRef!==eventRef)fail('receipt_order');entry.status='blocked';entry.error=code;write(storage,raw,state);return{ok:true};
+  });}
+  function retryConflict(storage,eventRef){return attempt(()=>{
+    const raw=storage.read(),state=JSON.parse(raw),sync=context(state);
+    const entry=sync.queue.find(e=>e.eventRef===eventRef);
+    if(!entry||!isConflict(entry))fail('invalid_conflict');
+    entry.status='pending';
+    delete entry.error;
+    write(storage,raw,state);
+    return{ok:true};
   });}
   const flights=new WeakSet();
   async function pump(storage,transport){
@@ -101,14 +139,15 @@
         }
         const status=response?.status;
         if(!status||status===429||status>=500)return{ok:false,code:'offline',uploaded,retry:true};
-        const code=status===401||status===403?'delivery_not_granted':response?.data?.error?.code;
+        const code=response?.data?.error?.code;
         if(status===409&&code==='migration_in_progress')return{ok:false,code,uploaded,retry:true,paused:true};
+        if(!conflictCodes.has(code))return{ok:false,code:code||'delivery_not_granted',uploaded,retry:true};
         const blocked=block(storage,eventRef,code);
-        return blocked.ok?{ok:false,code,uploaded,blocked:true}:{...blocked,uploaded};
+        if(!blocked.ok)return{...blocked,uploaded};
       }
       return{ok:true,uploaded,more:true};
     }finally{flights.delete(storage);}
   }
-  const api={record,next,acknowledge,block,pump};
+  const api={record,next,acknowledge,block,retryConflict,pump};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.ManagementCheckinQueue=api;
 })(globalThis);

@@ -26,7 +26,7 @@ def aggregate(rows):
     return summary('全部',expected,arrived,leave)|{kind:[summary(name,*values) for _,(name,values) in sorted(items.items())] for kind,items in groups.items()}
 
 
-def effective_history(db,org,data,source_sha,first,last,cut,links,own=None,*,apply_approved=True):
+def effective_history(db,org,data,source_sha,first,last,cut,links,own=None):
     """Read-only effective lessons: immutable originals plus approved amendments."""
     originals=[l for l in data.get('lessons',[]) if first<=l['date']<=last and l['date']<cut and (own is None or links.get(str(l['class_local_id'])) in own)]
     lessons=copy.deepcopy(originals);bykey={l['key']:l for l in lessons};changes=[]
@@ -46,7 +46,7 @@ def effective_history(db,org,data,source_sha,first,last,cut,links,own=None,*,app
                 if str(m['student_local_id']) in ids:m['expected']=True
             l['expected']+=len(ids);l['temporary_makeup_confirmed']=True
     from .historical import enabled as history_enabled
-    if apply_approved and history_enabled(db):
+    if history_enabled(db):
         seen=set()
         starts=int(datetime.combine(date.fromisoformat(first),time(),TZ).timestamp())
         ends=int(datetime.combine(date.fromisoformat(last)+timedelta(days=1),time(),TZ).timestamp())
@@ -64,6 +64,7 @@ def effective_history(db,org,data,source_sha,first,last,cut,links,own=None,*,app
             c=json.loads(r['context_json']);found=[m for m in l.get('members',[]) if str(m.get('student_local_id'))==str(c['local_student_id'])]
             if len(found)!=1 or found[0].get('expected')is not True or found[0].get('status')!='missing':raise Problem(503,'history_amendment_differs','批准记录与原缺签名单不一致')
             found[0]['status']=r['status'];l['arrived' if r['status']=='arrived' else 'leave_count']+=1
+            l['has_historical_corrections']=True
             changes.append(dict(class_name=c['class_name'],teacher_name=c['teacher_name'],student_name=r['student_name'],date=c['date'],kind='makeup' if r['status']=='arrived' else 'leave',approved_at=r['decided_at']))
     issues=[]
     for l in lessons:
@@ -155,8 +156,8 @@ class ReportOperations:
             links={str(r['local_id']):r['server_id'] for r in db.execute("SELECT local_id,server_id FROM management_source_links WHERE org_id=? AND kind='class'",(actor['org_id'],))} if 'management_source_links' in tables else {}
             if not links and 'web_class_links' in tables:links={str(r[0]):r[1] for r in db.execute('SELECT local_id,remote_id FROM web_class_links')}
             own={r[0] for r in db.execute('SELECT class_id FROM teacher_classes WHERE org_id=? AND user_id=?',(actor['org_id'],actor['id']))} if selected=='teacher' else None
-            _,lessons,_,_=effective_history(db,actor['org_id'],data,hashlib.sha256(saved[0].encode()).hexdigest(),on,on,boundary['canonical_from_day'],links,own,apply_approved=False)
-            items=[];seen=set()
+            _,lessons,_,_=effective_history(db,actor['org_id'],data,hashlib.sha256(saved[0].encode()).hexdigest(),on,on,boundary['canonical_from_day'],links,own)
+            items=[];seen=set();sources={}
             for lesson in lessons:
                 if lesson.get('date')!=on:continue
                 class_id=links.get(str(lesson.get('class_local_id','')))
@@ -173,7 +174,8 @@ class ReportOperations:
                     starts_at=starts_at,start_time=lesson.get('start_time',''),end_time=lesson.get('end_time',''),
                     teacher_name=lesson.get('teacher',''),expected=lesson.get('expected'),arrived=lesson.get('arrived'),
                     leave_count=lesson.get('leave_count'),missing=sum(m.get('expected') is True and m.get('status')=='missing' for m in members),
-                    source='legacy',read_only=True))
+                    source='legacy',read_only=True,
+                    **({'has_historical_corrections':True} if lesson.get('has_historical_corrections') else {})))
                 for member in members:
                     cursor=len(items)+1
                     item=dict(cursor=cursor,lesson_id=lid,student_id=str(member.get('student_local_id','')),
@@ -183,22 +185,21 @@ class ReportOperations:
                         expected=member.get('expected'),balance_units=member.get('remaining_units'),charge_units=None,
                         attendance_time=member.get('attendance_time',''),attendance_method=member.get('attendance_method',''),
                         makeup=member.get('makeup') is True,has_pending_request=False,source='legacy',read_only=True)
-                    from .historical import annotate
-                    item.update(annotate(db,actor['org_id'],lesson,member,boundary));items.append(item)
+                    items.append(item)
+                    sources[cursor]=lesson,member
                     if len(items)>10000:raise Problem(503,'attendance_scope_exceeded','当日原名单较多，需要分段核对')
-            for lesson in result['lessons']:
-                changes=[r for r in items if r['lesson_id']==lesson['lesson_id'] and r.get('corrected_at')]
-                if changes:
-                    arrivals=sum(r['status']=='arrived' for r in changes);leaves=sum(r['status']=='leave' for r in changes)
-                    lesson.update(arrived=lesson['arrived']+arrivals,leave_count=lesson['leave_count']+leaves,missing=max(0,lesson['missing']-arrivals-leaves),has_historical_corrections=True)
             result['lessons'].sort(key=lambda r:(r['starts_at'] or 0,r['class_name'],r['lesson_id']))
             filtered=[r for r in reversed(items) if (before is None or r['cursor']<before) and
                 (lesson_id is None or r['lesson_id']==lesson_id) and (status=='all' or r['status']==status) and
                 (not q or q in r['student_name'] or q in r['student_no'])]
             result['items']=filtered[:limit];result['next_before']=filtered[limit-1]['cursor'] if len(filtered)>limit else None
+            from .historical import annotate
+            for item in result['items']:
+                lesson,member=sources[item['cursor']]
+                item.update(annotate(db,actor['org_id'],lesson,member,boundary))
             result['source_captured_at']=data.get('source_captured_at')
             return result
-        return self.command(token,run)
+        return self.command(token,run,read_only=True)
 
     def legacy_requests(self,token,role,*,before=None,limit=50):
         if type(limit)is not int or not 1<=limit<=100 or before is not None and (type(before)is not int or before<1):raise Problem(422,'invalid_cursor','分页参数无效')
@@ -228,7 +229,7 @@ class ReportOperations:
                 if len(out)>limit:break
             from .legacy_approvals import enabled as legacy_enabled
             return dict(items=out[:limit],next_before=out[limit-1]['cursor'] if len(out)>limit else None,legacy_read_only=not legacy_enabled(db),balances_changed=False)
-        return self.command(token,run)
+        return self.command(token,run,read_only=True)
 
     def weekly_report(self,token,role,*,start=None):
         try:
@@ -290,4 +291,4 @@ class ReportOperations:
             return dict(workspace_role=selected,start=monday.isoformat(),end=sunday.isoformat(),weeks=sorted(weeks,reverse=True)[:260],sections=sections,
                         transition_week=monday.isoformat()<cut<=sunday.isoformat(),totals_merged=False,balances_changed=False,
                         source_captured_at=data.get('source_captured_at'),canonical_from_day=boundary['canonical_from_day'] if boundary else None)
-        return self.command(token,run)
+        return self.command(token,run,read_only=True)

@@ -2,6 +2,8 @@ plugins {
     id 'com.android.application'
 }
 
+def classboardCompat = providers.gradleProperty('classboardCompat').isPresent()
+
 android {
     namespace 'cn.mashangchengzhang.studentmanager'
     compileSdk 35
@@ -11,8 +13,8 @@ android {
         applicationId 'cn.mashangchengzhang.studentmanager'
         minSdk 24
         targetSdk 35
-        versionCode 84
-        versionName '4.12.3-history-requests'
+        versionCode classboardCompat ? 87 : 85
+        versionName classboardCompat ? '4.12.5-classboard-layout' : '4.12.4-sync-recovery'
 
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a'
@@ -37,6 +39,13 @@ android {
     buildFeatures { buildConfig true }
     // Same candidate JS sources in Node tests and Android assets; no copied fork.
     sourceSets.main.assets.srcDir(rootProject.file('server/management/tablet'))
+    if (classboardCompat) {
+        def compatAssets = layout.buildDirectory.dir('generated/classboard-assets').get().asFile
+        if (!new File(compatAssets, 'index.html').isFile()) {
+            throw new GradleException('Run app/compat/classboard/prepare.py with esbuild first.')
+        }
+        sourceSets.release.assets.srcDir(compatAssets)
+    }
 }
 
 dependencies {

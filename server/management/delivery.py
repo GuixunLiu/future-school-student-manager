@@ -2,7 +2,7 @@
 
 An explicit, reconciled migration must provision a generation and exact student
 bindings. Only one canonical writer device is bound to a student. Poll returns
-one oldest unacknowledged event, preventing a client cursor from skipping it.
+the oldest unacknowledged event outside this request's deferred student scope.
 Acknowledgements report device persistence; they NEVER mutate a balance.
 """
 import hashlib
@@ -19,6 +19,13 @@ from .migration_guard import require_not_held
 from .activation import ActivationOperations,SCHEMA as ACTIVATION_SCHEMA
 from .staging import StagingOperations,SCHEMA as STAGING_SCHEMA
 from .reports import ReportOperations
+
+
+def deferred_ids(value):
+    ids = value.split(',') if isinstance(value, str) and value else []
+    if not isinstance(value, str) or len(ids) > 40 or any(not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', i) for i in ids):
+        raise Problem(422, 'invalid_defer', '同步核对范围无效')
+    return json.dumps(ids)
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS management_device_access (
@@ -96,7 +103,8 @@ class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, M
           (actor['org_id'], actor['id'], event_id, event_id))
         return rows
 
-    def poll(self, token, generation):
+    def poll(self, token, generation, defer=''):
+        deferred = deferred_ids(defer)
         def run(db, actor):
             self.access(db, actor, generation)
             require_not_held(db,actor['org_id'],self.clock())
@@ -108,10 +116,11 @@ class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, M
               JOIN management_requests r ON r.id=o.request_id AND r.org_id=o.org_id
               '''+history_join+''' JOIN management_device_students b ON b.org_id=r.org_id AND b.student_id=r.student_id AND '''+class_condition+'''
               JOIN device_classes c ON c.org_id=b.org_id AND c.device_id=b.device_id AND c.class_id=b.class_id
-              WHERE o.org_id=? AND b.device_id=? AND NOT EXISTS (
+              WHERE o.org_id=? AND b.device_id=?
+              AND r.student_id NOT IN (SELECT value FROM json_each(?)) AND NOT EXISTS (
                 SELECT 1 FROM management_deliveries d WHERE d.org_id=o.org_id AND d.device_id=?
                   AND d.generation=? AND d.event_id=o.id AND d.status='applied')
-              ORDER BY o.seq LIMIT 1''', (actor['org_id'], actor['id'], actor['id'], generation)).fetchone()
+              ORDER BY o.seq LIMIT 1''', (actor['org_id'], actor['id'], deferred, actor['id'], generation)).fetchone()
             base = dict(org_id=actor['org_id'], device_id=actor['id'], generation=generation)
             if not event:
                 return base | {'item': None}

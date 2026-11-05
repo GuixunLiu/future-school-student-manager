@@ -130,11 +130,24 @@ function scheduleCanonicalSync(){
     try{
       if(!canonicalRuntime)canonicalRuntime=ManagementSyncRuntime.create({store:canonicalGuardedStore(),profile:canonicalProfile,request:canonicalNativeRequest,metadata:true,historical:true});
       const result=await canonicalRuntime.tick();
-      const node=document.getElementById('canonicalSyncStatus');if(node)node.textContent=result.paused?'管理员正在核对迁移，本机记录已保留':result.ok?'网页同步已核对':result.retry?'同步暂未完成，本机记录已保留':'同步资料需核对，本机记录已保留';
+      const node=document.getElementById('canonicalSyncStatus');
+      if(node&&!result.busy)node.textContent=result.paused?'管理员正在核对迁移，本机记录已保留':
+        result.blocked?'有同步冲突待核对，本机记录已保留':
+        result.more?'还有记录待同步':result.ok?'网页同步已核对':
+        result.retry?'同步暂未完成，本机记录已保留':'同步资料需核对，本机记录已保留';
     }catch(_){}
   },600);
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleCanonicalSync();});
+document.addEventListener('click',event=>{
+  const button=event.target?.closest?.('[data-retry-canonical-checkin]');
+  if(!button||!isAdminAuthenticated||!canonicalModeActive())return;
+  const result=ManagementCheckinQueue.retryConflict(canonicalGuardedStore(),button.dataset.retryCanonicalCheckin);
+  if(!result.ok)return toast('这条签到状态已变化，请重新打开设置核对',true);
+  button.disabled=true;
+  toast('已用原签到记录重新排队');
+  scheduleCanonicalSync();
+});
 window.addEventListener('focus',scheduleCanonicalSync);
 setTimeout(scheduleCanonicalSync,1500);
 setInterval(()=>{if(!document.hidden)scheduleCanonicalSync();},30000);

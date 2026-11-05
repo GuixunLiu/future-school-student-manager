@@ -306,8 +306,9 @@ def create_app(database, clock=None, *, allow_test_client=False):
         return store.finalize_enrollment_batch(token,data.workspace_role,batch_id=batch_id)
 
     @app.get('/v1/management/device/next')
-    def device_next(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):
-        return store.poll(token, generation)
+    def device_next(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)],
+                    defer: Annotated[str, Query(max_length=3239)] = ''):
+        return store.poll(token, generation, defer)
 
     @app.post('/v1/management/device/receipt')
     def device_receipt(data: DeliveryReceipt, token: Token):

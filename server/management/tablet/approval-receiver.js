@@ -62,7 +62,8 @@
       return {duplicate:true, nextRaw:raw}; // persisted once, even if later events changed its balance
     }
     if (Object.keys(receipts).length >= 10000) fail('storage_failed'); // explicit checkpoint required, never silently evict
-    if (!Array.isArray(sync.queue) || sync.queue.some(q => q.status !== 'accepted')) fail('local_changes');
+    if (!Array.isArray(sync.queue) || sync.queue.some(q => q.status !== 'accepted' &&
+        (!q.payload?.student_id || q.payload.student_id === e.student_id))) fail('local_changes');
     if (!own(sync.students, e.student_id)) fail('mapping_changed');
     if(e.historical){
       const h=e.historical,binding=sync.students[e.student_id];
