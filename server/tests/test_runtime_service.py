@@ -208,6 +208,64 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assert_problem(403, 'user_required', self.store.teacher_lessons, DEVICE_TOKEN)
         self.assert_problem(422, 'invalid_date', self.store.teacher_lessons, USER_TOKEN, '2026-02-30')
 
+    def test_teacher_weekly_report_is_weighted_scoped_and_excludes_pending(self):
+        initial = self.store.teacher_weekly_report(USER_TOKEN)
+        self.assertEqual(('1969-12-29', '1970-01-04', 1, 0, 1, 0.0),
+                         (initial['week_start'], initial['week_end'], initial['overall']['expected_count'],
+                          initial['overall']['arrived_count'], initial['overall']['missing_count'],
+                          initial['overall']['rate_percent']))
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("""
+                INSERT INTO teacher_classes VALUES('org-fiction','teacher-a','class-b');
+                INSERT INTO lesson_teachers VALUES('org-fiction','lesson-b','teacher-a','虚构教师甲');
+                UPDATE attendance_records SET status='arrived' WHERE lesson_id='lesson-a';
+                UPDATE attendance_records SET status='leave' WHERE lesson_id='lesson-b';
+                INSERT INTO lessons VALUES
+                    ('lesson-pending','org-fiction','class-a',500,1100,'scheduled',1),
+                    ('lesson-cancelled','org-fiction','class-a',600,700,'cancelled',1);
+                INSERT INTO lesson_teachers VALUES
+                    ('org-fiction','lesson-pending','teacher-a','虚构教师甲'),
+                    ('org-fiction','lesson-cancelled','teacher-a','虚构教师甲');
+                INSERT INTO lesson_students VALUES
+                    ('org-fiction','class-a','lesson-pending','student-a',TRUE,1),
+                    ('org-fiction','class-a','lesson-cancelled','student-a',TRUE,1);
+                INSERT INTO attendance_records VALUES
+                    ('org-fiction','lesson-pending','student-a','missing',0,NULL,1),
+                    ('org-fiction','lesson-cancelled','student-a','missing',0,NULL,1);
+            """)
+        result = self.store.teacher_weekly_report(USER_TOKEN, '1969-12-29')
+        self.assertEqual((2, 1, 1, 0, 2, 1, 50.0),
+                         tuple(result['overall'][key] for key in ('expected_count', 'arrived_count', 'leave_count',
+                               'missing_count', 'completed_lessons', 'pending_lessons', 'rate_percent')))
+        classes = {row['class_id']: row for row in result['classes']}
+        self.assertEqual((100.0, 1), (classes['class-a']['rate_percent'], classes['class-a']['pending_lessons']))
+        self.assertEqual((0.0, 1), (classes['class-b']['rate_percent'], classes['class-b']['leave_count']))
+        other = self.store.teacher_weekly_report(OTHER_USER_TOKEN, '1969-12-29')
+        self.assertEqual(['class-b'], [row['class_id'] for row in other['classes']])
+        self.assertEqual(1, other['overall']['expected_count'])
+        self.assert_problem(403, 'teacher_required', self.store.teacher_weekly_report, ADMIN_TOKEN)
+        self.assert_problem(403, 'user_required', self.store.teacher_weekly_report, DEVICE_TOKEN)
+        self.assert_problem(422, 'invalid_week', self.store.teacher_weekly_report, USER_TOKEN, '1970-01-04')
+
+    def test_http_teacher_weekly_report_reflects_current_attendance_and_scope(self):
+        from fastapi.testclient import TestClient
+        from management.runtime_api import create_app
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True))
+        teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        other = {'Authorization': 'Bearer ' + OTHER_USER_TOKEN}
+        response = client.get('/v1/teacher/reports/weekly?week_start=1969-12-29', headers=teacher)
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual((1, 0, 0.0), tuple(response.json()['overall'][key] for key in ('expected_count', 'arrived_count', 'rate_percent')))
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("UPDATE attendance_records SET status='arrived' WHERE lesson_id='lesson-a'")
+        updated = client.get('/v1/teacher/reports/weekly', headers=teacher)
+        self.assertEqual(100.0, updated.json()['overall']['rate_percent'])
+        scoped = client.get('/v1/teacher/reports/weekly', headers=other)
+        self.assertEqual(['class-b'], [row['class_id'] for row in scoped.json()['classes']])
+        self.assertEqual(403, client.get('/v1/teacher/reports/weekly', headers={'Authorization': 'Bearer ' + ADMIN_TOKEN}).status_code)
+        self.assertEqual(422, client.get('/v1/teacher/reports/weekly?week_start=1970-01-01', headers=teacher).status_code)
+        self.assertEqual(422, client.get('/v1/teacher/reports/weekly?week_start=bad', headers=teacher).status_code)
+
     def test_http_teacher_list_and_makeup_are_scoped_idempotent_and_versioned(self):
         from fastapi.testclient import TestClient
         from management.runtime_api import create_app

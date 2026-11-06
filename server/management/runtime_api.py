@@ -106,6 +106,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
     def teacher_runtime_script():
         return FileResponse(assets / 'teacher-runtime.js', media_type='application/javascript')
 
+    @app.get('/teacher-report.js')
+    def teacher_report_script():
+        return FileResponse(assets / 'teacher-report.js', media_type='application/javascript')
+
     @app.get('/workspace.css')
     def workspace_styles():
         return FileResponse(assets / 'workspace.css', media_type='text/css')
@@ -193,6 +197,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
         if result['duplicate']:
             response.status_code = 200
         return result
+
+    @app.get('/v1/teacher/reports/weekly')
+    def teacher_weekly_report(token: Token, week_start: str | None = None):
+        return store.teacher_weekly_report(token, week_start)
 
     @app.put('/v1/teacher/students/{student_id}/balance')
     def teacher_balance(student_id: str, data: BalanceAdjustmentInput, token: Token):
