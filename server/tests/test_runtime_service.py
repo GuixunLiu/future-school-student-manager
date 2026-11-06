@@ -334,6 +334,65 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assertEqual(422, client.get('/v1/admin/reports/weekly?week_start=bad', headers=admin).status_code)
         self.assertEqual(200, client.get('/admin-report.js').status_code)
 
+    def test_admin_monthly_report_uses_business_dates_and_distinct_records(self):
+        initial = self.store.admin_monthly_report(ADMIN_TOKEN)
+        self.assertEqual((0, 0, 0, 0), tuple(initial['overall'].values()))
+        self.assertFalse(initial['final_period'])
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("""
+                INSERT INTO enrollment_records VALUES
+                    ('enroll-a','org-fiction','student-a','class-a',100,'enroll-source-a','admin-a',9999),
+                    ('enroll-b','org-fiction','student-b','class-b',2678400,'enroll-source-b','admin-a',9999);
+                INSERT INTO renewal_records VALUES
+                    ('renewal-a1','org-fiction','student-a',20,100,'renewal-source-a1','admin-a','虚构续费一',9999),
+                    ('renewal-a2','org-fiction','student-a',30,200,'renewal-source-a2','admin-a','虚构续费二',9999),
+                    ('renewal-b1','org-fiction','student-b',10,300,'renewal-source-b1','admin-a','虚构续费三',9999),
+                    ('renewal-next','org-fiction','student-a',5,2678400,'renewal-source-next','admin-a','下月续费',9999);
+            """)
+        result = self.store.admin_monthly_report(ADMIN_TOKEN, '1970-01')
+        self.assertEqual(('1970-01-01', '1970-01-31'), (result['month_start'], result['month_end']))
+        self.assertEqual((1, 2, 3, 60), tuple(result['overall'][key] for key in (
+            'new_students', 'renewal_students', 'renewal_events', 'renewal_units')))
+        self.assertEqual(1, len(result['enrollments']))
+        self.assertEqual(3, len(result['renewals']))
+        self.assertEqual(['renewal-a1', 'renewal-a2', 'renewal-b1'], [row['id'] for row in result['renewals']])
+        self.assertEqual('虚构甲班', result['enrollments'][0]['class_name'])
+        self.assertFalse(result['details_truncated'])
+        following = self.store.admin_monthly_report(ADMIN_TOKEN, '1970-02')
+        self.assertEqual((1, 1, 1, 5), tuple(following['overall'].values()))
+        historical = self.store.admin_monthly_report(ADMIN_TOKEN, '1969-12')
+        self.assertEqual((0, 0, 0, 0), tuple(historical['overall'].values()))
+        self.assertTrue(historical['final_period'])
+        self.assert_problem(403, 'admin_required', self.store.admin_monthly_report, USER_TOKEN)
+        self.assert_problem(403, 'admin_required', self.store.admin_monthly_report, DEVICE_TOKEN)
+        for invalid in ('1970-13', '1970-1', 'bad'):
+            self.assert_problem(422, 'invalid_month', self.store.admin_monthly_report, ADMIN_TOKEN, invalid)
+
+    def test_http_admin_monthly_report_enforces_scope_and_month_validation(self):
+        from fastapi.testclient import TestClient
+        from management.runtime_api import create_app
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True))
+        admin = {'Authorization': 'Bearer ' + ADMIN_TOKEN}
+        teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        device = {'Authorization': 'Bearer ' + DEVICE_TOKEN}
+        response = client.get('/v1/admin/reports/monthly', headers=admin)
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual((0, 0, 0, 0), tuple(response.json()['overall'].values()))
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("""
+                INSERT INTO enrollment_records VALUES('enroll-http','org-fiction','student-a','class-a',100,'enroll-http-source','admin-a',9999);
+                INSERT INTO renewal_records VALUES('renewal-http','org-fiction','student-a',25,100,'renewal-http-source','admin-a','虚构续费',9999);
+            """)
+        updated = client.get('/v1/admin/reports/monthly?month=1970-01', headers=admin)
+        self.assertEqual((1, 1, 1, 25), tuple(updated.json()['overall'].values()))
+        self.assertEqual('虚构学生甲', updated.json()['renewals'][0]['student_name'])
+        self.assertEqual(403, client.get('/v1/admin/reports/monthly', headers=teacher).status_code)
+        self.assertEqual(403, client.get('/v1/admin/reports/monthly', headers=device).status_code)
+        self.assertEqual(401, client.get('/v1/admin/reports/monthly').status_code)
+        for invalid in ('1970-13', '1970-1', 'bad'):
+            self.assertEqual(422, client.get('/v1/admin/reports/monthly?month=' + invalid, headers=admin).status_code)
+        self.assertEqual(200, client.get('/admin-monthly.js').status_code)
+
     def test_http_teacher_list_and_makeup_are_scoped_idempotent_and_versioned(self):
         from fastapi.testclient import TestClient
         from management.runtime_api import create_app

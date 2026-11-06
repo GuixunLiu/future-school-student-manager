@@ -114,6 +114,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
     def admin_report_script():
         return FileResponse(assets / 'admin-report.js', media_type='application/javascript')
 
+    @app.get('/admin-monthly.js')
+    def admin_monthly_script():
+        return FileResponse(assets / 'admin-monthly.js', media_type='application/javascript')
+
     @app.get('/workspace.css')
     def workspace_styles():
         return FileResponse(assets / 'workspace.css', media_type='text/css')
@@ -149,6 +153,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
     @app.get('/v1/admin/reports/weekly')
     def admin_weekly_report(token: Token, week_start: str | None = None):
         return store.admin_weekly_report(token, week_start)
+
+    @app.get('/v1/admin/reports/monthly')
+    def admin_monthly_report(token: Token, month: str | None = None):
+        return store.admin_monthly_report(token, month)
 
     @app.get('/v1/admin/devices')
     def admin_devices(token: Token):

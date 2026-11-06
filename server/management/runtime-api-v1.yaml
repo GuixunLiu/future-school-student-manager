@@ -336,10 +336,13 @@ paths:
     get:
       tags: [admin]
       operationId: adminMonthlyReport
+      description: 已实现。按业务发生时间和北京时间自然月汇总独立招新、续费记录；续费人数按学生去重，笔数和课时按事件汇总。不从期初、签到或调账反推，不包含金额；明细每类最多返回前 1000 条，汇总不受明细上限影响。
       parameters:
-        - { name: month, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' } }
+        - { name: month, in: query, required: false, schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }, description: 北京时间自然月；缺省为服务器当前月 }
       responses:
         '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /v1/admin/reports/{kind}/{period}/generate:
     post:
       tags: [admin]

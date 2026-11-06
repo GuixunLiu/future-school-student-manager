@@ -655,6 +655,54 @@ class RuntimeStore:
             return self._weekly_result(monday, now, rows)
         return self.command(token, 'user', run)
 
+    def admin_monthly_report(self, token, month=None):
+        def run(db, actor):
+            self._require_admin(actor)
+            try:
+                selected = (datetime.strptime(month + '-01', '%Y-%m-%d').date() if month is not None
+                            else datetime.fromtimestamp(self.clock(), CHINA_TZ).date().replace(day=1))
+                if month is not None and selected.strftime('%Y-%m') != month:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise Problem(422, 'invalid_month', '月份格式应为 YYYY-MM') from None
+            next_month = (selected.replace(day=28) + timedelta(days=4)).replace(day=1)
+            start = int(datetime.combine(selected, datetime.min.time(), CHINA_TZ).timestamp())
+            end = int(datetime.combine(next_month, datetime.min.time(), CHINA_TZ).timestamp())
+            now = self.clock()
+            enrolled = db.execute('''SELECT count(*) AS new_students FROM enrollment_records
+                WHERE org_id=%s AND occurred_at>=%s AND occurred_at<%s''',
+                (actor['org_id'], start, end)).fetchone()
+            renewed = db.execute('''SELECT count(DISTINCT student_id) AS renewal_students,
+                    count(*) AS renewal_events,coalesce(sum(units_added),0) AS renewal_units
+                FROM renewal_records WHERE org_id=%s AND occurred_at>=%s AND occurred_at<%s''',
+                (actor['org_id'], start, end)).fetchone()
+            enrollments = db.execute('''SELECT e.id,e.student_id,s.name AS student_name,e.class_id,
+                    c.name AS class_name,e.occurred_at,e.source_ref,u.display_name AS actor_name
+                FROM enrollment_records e
+                JOIN students s ON s.org_id=e.org_id AND s.id=e.student_id
+                JOIN classes c ON c.org_id=e.org_id AND c.id=e.class_id
+                JOIN users u ON u.org_id=e.org_id AND u.id=e.actor_id
+                WHERE e.org_id=%s AND e.occurred_at>=%s AND e.occurred_at<%s
+                ORDER BY e.occurred_at,e.id LIMIT 1001''', (actor['org_id'], start, end)).fetchall()
+            renewals = db.execute('''SELECT r.id,r.student_id,s.name AS student_name,s.class_id,
+                    c.name AS class_name,r.units_added,r.occurred_at,r.source_ref,r.reason,
+                    u.display_name AS actor_name
+                FROM renewal_records r
+                JOIN students s ON s.org_id=r.org_id AND s.id=r.student_id
+                JOIN classes c ON c.org_id=s.org_id AND c.id=s.class_id
+                JOIN users u ON u.org_id=r.org_id AND u.id=r.actor_id
+                WHERE r.org_id=%s AND r.occurred_at>=%s AND r.occurred_at<%s
+                ORDER BY r.occurred_at,r.id LIMIT 1001''', (actor['org_id'], start, end)).fetchall()
+            truncated = len(enrollments) > 1000 or len(renewals) > 1000
+            overall = dict(enrolled)
+            overall.update(dict(renewed))
+            return {'month': selected.strftime('%Y-%m'), 'month_start': selected.isoformat(),
+                    'month_end': (next_month - timedelta(days=1)).isoformat(),
+                    'timezone': 'Asia/Shanghai', 'generated_at': now, 'final_period': now >= end,
+                    'overall': overall, 'enrollments': [dict(row) for row in enrollments[:1000]],
+                    'renewals': [dict(row) for row in renewals[:1000]], 'details_truncated': truncated}
+        return self.command(token, 'user', run)
+
     def teacher_lesson(self, token, lesson_id):
         def run(db, actor):
             lesson = db.execute('SELECT * FROM lessons WHERE org_id=%s AND id=%s',
