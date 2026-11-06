@@ -97,6 +97,14 @@ class DeliveryReceipt(Input):
                            'balance_changed', 'invalid_event', 'storage_failed'] | None = None
 
 
+class BalanceAdjustmentInput(Input):
+    workspace_role: Role
+    units: int = Field(ge=-1000000, le=10000000)
+    expected_revision: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
 class CheckinInput(Input):
     generation: str = Field(min_length=1, max_length=80)
     event_ref: str = Field(min_length=1, max_length=80)
@@ -377,6 +385,7 @@ def create_app(database, clock=None, *, allow_test_client=False):
                     'can_score': permits(actor, role, 'scores.record'),
                     'can_manage': permits(actor, role, 'accounts.manage'),
                     'can_unlock': permits(actor, role, 'submissions.unlock'),
+                    'balance_adjustments_enabled':'management_balance_adjustments' in tables and role in ('admin','teacher'),
                     'personnel_api_enabled':role=='admin' and getattr(app.state,'personnel_store',None)is not None,
                     'class_teachers_enabled':role in ('admin','principal') and getattr(app.state,'class_teacher_store',None)is not None}
         return store.command(token, run)
@@ -429,6 +438,12 @@ def create_app(database, clock=None, *, allow_test_client=False):
                    q: Annotated[str, Query(max_length=80)] = ''):
         return store.attendance_day(token,workspace_role,on=on,limit=limit,before=before,
                                     lesson_id=lesson_id,status=status,q=q)
+
+    if 'management_balance_adjustments' in tables:
+        @app.post('/v1/management/students/{student_id}/balance')
+        def adjust_balance(student_id: str, data: BalanceAdjustmentInput, token: Token):
+            return store.adjust_balance(token, data.workspace_role, student_id=student_id,
+                                        **data.model_dump(exclude={'workspace_role'}))
 
     @app.get('/v1/management/weekly-reports')
     def weekly_report(token: Token, workspace_role: Annotated[Role,Query()],

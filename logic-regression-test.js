@@ -1,7 +1,7 @@
 const fs=require('fs');
 const vm=require('vm');
 const assert=require('assert/strict');
-const source=['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','lesson-timing.js','student-leave.js','course-groups.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
+const source=['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','lesson-timing.js','student-leave.js','course-groups.js','web-mirror.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
 const fixture={
   students:[{id:1,name:'同名学生',studentNo:'26010001',className:'A班',teacher:'王老师',hours:10,createdAt:'2026-01-01'},{id:2,name:'同名学生',studentNo:'26010002',className:'B班',teacher:'李老师',hours:8,createdAt:'2026-01-01'}],
   classes:[{id:11,name:'A班',teacher:'王老师'},{id:12,name:'B班',teacher:'李老师'}],
@@ -12,7 +12,7 @@ class ClockDate extends Date{constructor(...args){super(...(args.length?args:[no
 const node=()=>({style:{},classList:{toggle(){},add(){},remove(){},contains(){return false}},innerHTML:'',textContent:'',addEventListener(){}});
 const elements=new Map(['#todayLabel','#navList','#quickAddBtn','#adminAccessBtn','#viewTitle','#viewSubtitle','#brandName','#content','#toast'].map(id=>[id,node()]));
 let stored=JSON.stringify(fixture),failWrites=false;
-const context={console,Date:ClockDate,Map,Set,setTimeout(){return 0},clearTimeout(){},requestAnimationFrame(){return 0},cancelAnimationFrame(){},btoa:value=>Buffer.from(value,'binary').toString('base64'),atob:value=>Buffer.from(value,'base64').toString('binary'),navigator:{},localStorage:{getItem:()=>stored,setItem:(key,value)=>{if(failWrites)throw Error('QuotaExceededError');stored=value}},document:{body:node(),querySelector:key=>elements.get(key)||null,querySelectorAll:()=>[]},window:{addEventListener(){},scrollTo(){}}};
+const context={console,Date:ClockDate,Map,Set,setTimeout(){return 0},clearTimeout(){},setInterval(){return 0},clearInterval(){},requestAnimationFrame(){return 0},cancelAnimationFrame(){},btoa:value=>Buffer.from(value,'binary').toString('base64'),atob:value=>Buffer.from(value,'base64').toString('binary'),navigator:{},localStorage:{getItem:()=>stored,setItem:(key,value)=>{if(failWrites)throw Error('QuotaExceededError');stored=value}},document:{body:node(),querySelector:key=>elements.get(key)||null,querySelectorAll:()=>[],addEventListener(){},visibilityState:'visible'},window:{addEventListener(){},scrollTo(){}}};
 vm.createContext(context);vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
 const json=code=>JSON.parse(run(`JSON.stringify(${code})`));

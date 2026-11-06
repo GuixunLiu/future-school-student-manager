@@ -218,17 +218,78 @@ final class CanonicalSyncTransport {
             reply("activation",result(true,200,new JSONObject().put("activated",true)));
         }catch(Exception e){reply("activation",result(false,0,null));}finally{busy.set(false);}});
     }
+    void activateRuntime(String baseline){
+        if(closed||baseline==null||!baseline.matches("[a-f0-9]{64}")||prefs.getBoolean("enabled",false))return;
+        android.widget.EditText input=new android.widget.EditText(activity);input.setHint("wxa_ 开头的一次性开通码");input.setSingleLine(true);
+        activity.runOnUiThread(()->new AlertDialog.Builder(activity).setTitle("开通这台签到平板")
+            .setMessage("请输入管理员刚刚生成的开通码。15 分钟内有效，只能使用一次；开通码和设备令牌不会交给页面脚本。")
+            .setView(input).setNegativeButton("取消",null)
+            .setPositiveButton("安全开通",(dialog,which)->activateRuntimeNow(input.getText().toString().trim(),baseline)).show());
+    }
+    private JSONObject runtimeProfile(String code,String baseline)throws Exception{
+        if(code==null||!code.matches("wxa_[A-Za-z0-9_-]{43}")||baseline==null||!baseline.matches("[a-f0-9]{64}"))throw new IOException("activation input");
+        JSONObject body=new JSONObject().put("activation_code",code);
+        JSONObject response=http("https://47.97.226.219:18083",null,"/v1/tablet/activate",body.toString().getBytes(StandardCharsets.UTF_8),16384);
+        if(!response.getBoolean("ok"))throw new IOException("activation");JSONObject data=response.getJSONObject("data");
+        if(data.getInt("protocol")!=2)throw new IOException("activation protocol");
+        JSONObject p=new JSONObject().put("e","https://47.97.226.219:18083").put("t",data.getString("access_token"))
+            .put("d",data.getString("device_id")).put("p",pin).put("o",data.getString("org_id"))
+            .put("g",data.getString("generation")).put("id",java.util.UUID.randomUUID().toString().replace("-",""))
+            .put("b",baseline).put("n",java.util.UUID.randomUUID().toString().replace("-","")).put("x",data.getLong("expires_at"));
+        validate(p);return p;
+    }
+    private void saveRuntimeProfile(JSONObject p)throws Exception{
+        if(!keys().containsAlias(AES)){KeyGenerator generator=KeyGenerator.getInstance("AES","AndroidKeyStore");generator.init(new KeyGenParameterSpec.Builder(AES,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes("GCM").setEncryptionPaddings("NoPadding").build());generator.generateKey();}
+        Cipher save=Cipher.getInstance("AES/GCM/NoPadding");save.init(Cipher.ENCRYPT_MODE,(SecretKey)keys().getKey(AES,null));
+        if(!prefs.edit().putString("secret",Base64.encodeToString(save.doFinal(p.toString().getBytes(StandardCharsets.UTF_8)),2))
+            .putString("iv",Base64.encodeToString(save.getIV(),2)).putBoolean("enabled",true).putBoolean("staged",false)
+            .putBoolean("activation_pending",false).putBoolean("activation_ready",false).commit())throw new IOException("save runtime profile");
+    }
+    private JSONObject runtimeReceipt(JSONObject p,boolean reissued)throws Exception{
+        return new JSONObject().put("activated",true).put("reissued",reissued).put("orgId",p.getString("o"))
+            .put("deviceId",p.getString("d")).put("generation",p.getString("g")).put("profileId",p.getString("id"));
+    }
+    synchronized void activateRuntimeNow(String code,String baseline){
+        if(closed||prefs.getBoolean("enabled",false))return;
+        if(!busy.compareAndSet(false,true)){reply("runtime-activation",result(false,429,null));return;}
+        worker.execute(()->{try{
+            JSONObject p=runtimeProfile(code,baseline);saveRuntimeProfile(p);
+            reply("runtime-activation",result(true,200,runtimeReceipt(p,false)));
+        }catch(Exception e){reply("runtime-activation",result(false,0,null));}finally{busy.set(false);}});
+    }
+    void reissueRuntime(){
+        if(closed||!prefs.getBoolean("enabled",false)||prefs.getBoolean("activation_pending",false))return;
+        try{profile();}catch(Exception e){return;}
+        android.widget.EditText input=new android.widget.EditText(activity);input.setHint("wxa_ 开头的新开通码");input.setSingleLine(true);
+        activity.runOnUiThread(()->new AlertDialog.Builder(activity).setTitle("安全换绑这台签到平板")
+            .setMessage("旧设备令牌已由管理员撤销。请输入同一设备的新开通码；换绑期间暂停签到，本机历史和未上传记录不会删除。")
+            .setView(input).setNegativeButton("取消",null)
+            .setPositiveButton("安全换绑",(dialog,which)->reissueRuntimeNow(input.getText().toString().trim())).show());
+    }
+    synchronized void reissueRuntimeNow(String code){
+        if(closed||!prefs.getBoolean("enabled",false)||prefs.getBoolean("activation_pending",false)){reply("runtime-reissue",result(false,409,null));return;}
+        if(!busy.compareAndSet(false,true)){reply("runtime-reissue",result(false,429,null));return;}
+        worker.execute(()->{try{
+            JSONObject previous=profile(),p=runtimeProfile(code,previous.getString("b"));
+            if(!p.getString("o").equals(previous.getString("o"))||!p.getString("d").equals(previous.getString("d"))||p.getString("g").equals(previous.getString("g")))throw new IOException("reissue identity");
+            saveRuntimeProfile(p);reply("runtime-reissue",result(true,200,runtimeReceipt(p,true)));
+        }catch(Exception e){reply("runtime-reissue",result(false,0,null));}finally{busy.set(false);}});
+    }
     synchronized void request(String id,String profileId,String kind,String text){
         if(closed||id==null||!id.matches("canonical:[a-f0-9]{32}")||text==null||text.length()>16000)return;
         if(!busy.compareAndSet(false,true)){reply(id,result(false,429,null));return;}
         worker.execute(()->{
             try{
                 JSONObject p=profile();if(!p.getString("id").equals(profileId))throw new IOException("profile changed");
-                JSONObject body=new JSONObject(text);
-                if(!body.getString("generation").equals(p.getString("g")))throw new IOException("generation");
+                JSONObject body=new JSONObject(text);boolean bootstrap=kind.equals("bootstrap");
+                if(!bootstrap&&!body.getString("generation").equals(p.getString("g")))throw new IOException("generation");
                 String route;
                 switch(kind){
-                    case "checkin":route="/v1/management/device/checkin";fields(body,"generation event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units remaining_units occurred_at");break;
+                    case "bootstrap":route="/v1/tablet/bootstrap";if(body.length()!=0)throw new IOException("fields");break;
+                    case "checkin":
+                        if(body.has("generation")){route="/v1/management/device/checkin";fields(body,"generation event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units remaining_units occurred_at");}
+                        else{route="/v1/tablet/checkins";fields(body,"event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units occurred_at");}
+                        break;
                     case "next":route="/v1/management/device/next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8")+deferredQuery(body);break;
                     case "class-ready":route="/v1/management/device/class-ready";fields(body,"generation");break;
                     case "history-ready":route="/v1/management/device/history-ready";fields(body,"generation");break;
@@ -238,7 +299,8 @@ final class CanonicalSyncTransport {
                         fields(body,body.optString("status").equals("applied")?"generation event_id receipt_token sha256 status attendance_revision balance_revision balance_units":"generation event_id receipt_token sha256 status conflict_code");break;
                     default:throw new IOException("route");
                 }
-                JSONObject response=http(p,route,kind.equals("next")||kind.equals("class-next")?null:text.getBytes(StandardCharsets.UTF_8));
+                boolean download=kind.equals("next")||kind.equals("class-next")||bootstrap;
+                JSONObject response=http(p,route,download?null:text.getBytes(StandardCharsets.UTF_8),bootstrap?2*1024*1024:65536);
                 if(!profile().getString("id").equals(profileId))throw new IOException("profile changed");
                 reply(id,response);
             }catch(Exception e){reply(id,result(false,0,null));}
@@ -259,7 +321,9 @@ final class CanonicalSyncTransport {
         if(row.length()!=allowed.size())throw new IOException("fields");java.util.Iterator<String> keys=row.keys();while(keys.hasNext())if(!allowed.contains(keys.next()))throw new IOException("fields");
     }
     private static String digest(byte[] value)throws Exception{StringBuilder out=new StringBuilder();for(byte b:MessageDigest.getInstance("SHA-256").digest(value))out.append(String.format(Locale.ROOT,"%02x",b&255));return out.toString();}
-    private JSONObject http(JSONObject p,String route,byte[] body)throws Exception{
+    private JSONObject http(JSONObject p,String route,byte[] body)throws Exception{return http(p,route,body,65536);}
+    private JSONObject http(JSONObject p,String route,byte[] body,int responseLimit)throws Exception{return http(p.getString("e"),p.getString("t"),route,body,responseLimit);}
+    private JSONObject http(String endpoint,String token,String route,byte[] body,int responseLimit)throws Exception{
         X509TrustManager trust=new X509TrustManager(){
             public X509Certificate[] getAcceptedIssuers(){return new X509Certificate[0];}
             public void checkClientTrusted(X509Certificate[] c,String a)throws java.security.cert.CertificateException{throw new java.security.cert.CertificateException();}
@@ -268,14 +332,14 @@ final class CanonicalSyncTransport {
                 catch(Exception e){throw new java.security.cert.CertificateException("server identity");}
             }};
         SSLContext ssl=SSLContext.getInstance("TLS");ssl.init(null,new TrustManager[]{trust},null);
-        HttpsURLConnection connection=(HttpsURLConnection)new URL(p.getString("e")+route).openConnection();
+        HttpsURLConnection connection=(HttpsURLConnection)new URL(endpoint+route).openConnection();
         try{
             connection.setSSLSocketFactory(ssl.getSocketFactory()); // Default hostname verification retained.
             connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(8000);connection.setReadTimeout(20000);connection.setUseCaches(false);
-            connection.setRequestProperty("Authorization","Bearer "+p.getString("t"));connection.setRequestProperty("Cookie","");connection.setRequestProperty("Connection","close");connection.setRequestProperty("Accept","application/json");
+            if(token!=null)connection.setRequestProperty("Authorization","Bearer "+token);connection.setRequestProperty("Cookie","");connection.setRequestProperty("Connection","close");connection.setRequestProperty("Accept","application/json");
             if(body!=null){connection.setRequestMethod("POST");connection.setRequestProperty("Content-Type","application/json");connection.setDoOutput(true);connection.setFixedLengthStreamingMode(body.length);try(OutputStream out=connection.getOutputStream()){out.write(body);}}
-            int status=connection.getResponseCode();InputStream in=status==200?connection.getInputStream():connection.getErrorStream();
-            JSONObject data=in==null?new JSONObject():new JSONObject(new String(read(in,65536),StandardCharsets.UTF_8));return result(status==200,status,data);
+            int status=connection.getResponseCode();boolean ok=status>=200&&status<300;InputStream in=ok?connection.getInputStream():connection.getErrorStream();
+            JSONObject data=in==null?new JSONObject():new JSONObject(new String(read(in,responseLimit),StandardCharsets.UTF_8));return result(ok,status,data);
         }finally{connection.disconnect();}
     }
     private static byte[] read(InputStream stream,int max)throws IOException{

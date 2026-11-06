@@ -220,7 +220,7 @@ async function prepareSFaceProfiles(students,status){
 function loadState(){
   try {
     let stored=localStorage.getItem(STORAGE_KEY);
-    let canonicalStored=false;try{canonicalStored=JSON.parse(stored)?.managementSync?.enabled===true}catch(_){}
+    let canonicalStored=false;try{const parsedStored=JSON.parse(stored);canonicalStored=!!(parsedStored&&parsedStored.managementSync&&parsedStored.managementSync.enabled===true)}catch(_){}
     if(!canonicalStored&&window.AndroidBridge&&typeof AndroidBridge.recoverLocalRepairCheckpoint==='function'){
       const approved=AndroidBridge.recoverLocalRepairCheckpoint(stored);
       if(approved){try{const checked=JSON.parse(approved);if(!Array.isArray(checked.students)||!Array.isArray(checked.attendance))throw Error('Invalid checkpoint');localStorage.setItem(STORAGE_KEY,approved);stored=approved;window.__localRepairRecovered=true}catch(_){}}
@@ -245,7 +245,7 @@ function nativeBackupInfo(){try{if(window.AndroidBridge&&typeof AndroidBridge.ge
 function createNativeBackup(reason='每日自动备份',force=false){try{if(!state.students.length&&!state.attendance.length&&!state.classes.length)return false;if(window.AndroidBridge&&typeof AndroidBridge.createAutoBackup==='function'&&(force||typeof AndroidBridge.shouldAutoBackup!=='function'||AndroidBridge.shouldAutoBackup())){return AndroidBridge.createAutoBackup(JSON.stringify(state),reason,Boolean(force))!==false}}catch(_){}return false}
 function requireSafetyBackup(reason){
   if(typeof canonicalModeActive==='function'&&canonicalModeActive()&&(reason==='恢复前备份'||reason==='清空前备份')){toast('网页主管理模式下不能在平板清空或恢复旧备份，请由管理员按迁移流程处理',true);return false;}
-  if(reason==='恢复前备份'||reason==='清空前备份'){try{window.AndroidBridge?.pauseWebMirror()}catch(_){}}
+  if(reason==='恢复前备份'||reason==='清空前备份'){try{if(window.AndroidBridge)window.AndroidBridge.pauseWebMirror()}catch(_){}}
   if(!state.students.length&&!state.classes.length&&!state.attendance.length&&!state.transactions.length)return true;
   try{
     if(window.AndroidBridge&&typeof AndroidBridge.createSafetyBackup==='function'){

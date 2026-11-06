@@ -49,7 +49,7 @@ class LocalGuard:
         origins = [v.decode("latin-1").lower() for k, v in scope.get("headers", []) if k.lower() == b"origin"]
         if origins and (len(origins) != 1 or origins[0] != scope.get("scheme", "http") + "://" + host):
             return await reject(403, "cross_origin_rejected")
-        if scope.get("path") in {"/", "/workspace.js", "/workspace.css"}:
+        if scope.get("path") in {"/", "/workspace.js", "/workspace.css", "/runtime", "/runtime.js", "/runtime.css"}:
             headers = [(k, v) if k != b"content-security-policy" else (k, b"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'") for k, v in headers]
         lengths = [value for key, value in scope.get("headers", []) if key.lower() == b"content-length"]
         if lengths and (len(lengths) != 1 or len(lengths[0]) > 5 or not lengths[0].isdigit() or int(lengths[0]) > 16384):

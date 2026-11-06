@@ -58,7 +58,7 @@ def permits(actor, selected, action, *, scope=Scope(), target_org=None,
     if role == 'admin':
         return action == 'submissions.export'
     if role == 'teacher':
-        if action in {'classes.read', 'attendance.start', 'attendance.request'}:
+        if action in {'classes.read', 'attendance.start', 'attendance.request', 'hours.manage'}:
             return class_id is not None and class_id in scope.teacher_classes
         if action in {'submissions.read', 'submissions.write', 'submissions.submit'}:
             return owner_id is not None and owner_id == actor['id']

@@ -116,6 +116,7 @@ class ReportOperations:
             selected=workspace(actor,role)
             if selected not in {'admin','teacher','principal'}:raise Problem(403,'permission_denied','此身份请在审批列表查看管辖范围申请')
             boundary=history_boundary(db,actor['org_id'])
+            balance_adjustments=bool(db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='management_balance_adjustments'").fetchone())
             # Without a sealed boundary, candidate fixtures continue to use the
             # canonical facts. A live admitted copy always has its boundary.
             legacy=bool(boundary and on<boundary['canonical_from_day'])
@@ -138,12 +139,13 @@ class ReportOperations:
                 if q:clauses.append('(instr(s.name,?)>0 OR instr(s.external_ref,?)>0)');params.extend([q,q])
                 if before is not None:clauses.append('a.rowid<?');params.append(before)
                 rows=db.execute('''SELECT a.*,a.rowid AS cursor,s.name AS student_name,s.external_ref AS student_no,c.name AS class_name,
-                    b.units AS balance_units,EXISTS(SELECT 1 FROM management_requests r WHERE r.org_id=a.org_id AND r.lesson_id=a.lesson_id
+                    b.units AS balance_units,b.revision AS balance_revision,EXISTS(SELECT 1 FROM management_requests r WHERE r.org_id=a.org_id AND r.lesson_id=a.lesson_id
                     AND r.student_id=a.student_id AND r.status='pending') AS has_pending_request
                     FROM management_attendance a JOIN students s ON s.org_id=a.org_id AND s.id=a.student_id
                     JOIN classes c ON c.org_id=a.org_id AND c.id=a.class_id JOIN management_balances b ON b.org_id=a.org_id AND b.student_id=a.student_id
                     WHERE '''+' AND '.join(clauses)+' ORDER BY a.rowid DESC LIMIT ?',(*params,limit+1)).fetchall()
-                result['items']=[dict(r,source='canonical',read_only=False) for r in rows[:limit]]
+                result['items']=[dict(r,source='canonical',read_only=False,
+                    can_adjust_balance=balance_adjustments and selected in {'admin','teacher'}) for r in rows[:limit]]
                 result['next_before']=result['items'][-1]['cursor'] if len(rows)>limit else None
                 return result
             tables={r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}

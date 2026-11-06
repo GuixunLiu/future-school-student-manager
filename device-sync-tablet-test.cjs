@@ -2,7 +2,7 @@
 process.env.TZ='Asia/Shanghai';
 // Dedicated .synctest package only. Never attach to the production WebView or read its records.
 const fs=require('fs'),path=require('path'),os=require('os'),net=require('net'),assert=require('assert/strict'),{spawn,execFileSync}=require('child_process');
-const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'C:/Users/liugu/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const {chromium}=require('playwright');
 const root=__dirname,adb=path.resolve(root,'../android-toolchain/sdk/platform-tools/adb.exe'),serial=process.env.TABLET_SERIAL||'HVA13XVR',pkg='cn.mashangchengzhang.studentmanager.synctest';
 const folder=fs.mkdtempSync(path.join(os.tmpdir(),'wxnotify-tablet-test-'));
 let server,browser,reversePort,forwardPort,testPage,acceptanceReport,serverError;

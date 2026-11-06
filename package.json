@@ -1,0 +1,28 @@
+{
+  "name": "projects",
+  "version": "1.0.0",
+  "description": "面向培训机构的学生签到与教务管理系统，由 **安卓平板 App** 和 **网页工作台** 组成。学生可以在平板上离线签到，教师和管理员通过网页处理考勤与教务。已接入同步的班级可在两端查看考勤变化。",
+  "main": "logic-regression-test.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GuixunLiu/future-school-student-manager.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/GuixunLiu/future-school-student-manager/issues"
+  },
+  "homepage": "https://github.com/GuixunLiu/future-school-student-manager#readme",
+  "dependencies": {
+    "playwright": "^1.64.1"
+  }
+}

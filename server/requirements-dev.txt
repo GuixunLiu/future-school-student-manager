@@ -1,3 +1,4 @@
 -r app/requirements.txt
 httpx>=0.28.1,<1
 PyYAML>=6.0.3,<7
+psycopg[binary]>=3.3,<4

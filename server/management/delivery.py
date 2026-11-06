@@ -19,6 +19,7 @@ from .migration_guard import require_not_held
 from .activation import ActivationOperations,SCHEMA as ACTIVATION_SCHEMA
 from .staging import StagingOperations,SCHEMA as STAGING_SCHEMA
 from .reports import ReportOperations
+from .balances import BalanceOperations, SCHEMA as BALANCE_SCHEMA
 
 
 def deferred_ids(value):
@@ -56,7 +57,7 @@ CONFLICTS = frozenset({'mapping_changed', 'local_changes', 'attendance_changed',
                       'balance_changed', 'invalid_event', 'storage_failed'})
 
 
-class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, MigrationOperations, EnrollmentOperations, UplinkOperations, AssessmentStore):
+class DeliveryStore(BalanceOperations, ReportOperations, StagingOperations, ActivationOperations, MigrationOperations, EnrollmentOperations, UplinkOperations, AssessmentStore):
     def delivery_status(self, db, org, request_id, request_status):
         if request_status != 'approved':
             return 'not_created'
@@ -78,7 +79,7 @@ class DeliveryStore(ReportOperations, StagingOperations, ActivationOperations, M
         super().initialize()
         db = self.connect()
         try:
-            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + UPLINK_SCHEMA + '\n' + ENROLLMENT_SCHEMA + '\n' + MIGRATION_SCHEMA + '\n' + ACTIVATION_SCHEMA + '\n' + STAGING_SCHEMA + '\nCOMMIT;')
+            db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + '\n' + BALANCE_SCHEMA + '\n' + UPLINK_SCHEMA + '\n' + ENROLLMENT_SCHEMA + '\n' + MIGRATION_SCHEMA + '\n' + ACTIVATION_SCHEMA + '\n' + STAGING_SCHEMA + '\nCOMMIT;')
         finally:
             db.close()
 

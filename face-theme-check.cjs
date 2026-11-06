@@ -1,6 +1,6 @@
 // Synthetic data only. Exercise production dialogs without a camera or attendance writes.
 const fs=require('fs'),path=require('path'),http=require('http'),assert=require('assert/strict');
-const {chromium}=require('C:/Users/liugu/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const {chromium}=require('playwright');
 const root=path.join(__dirname,'app/src/main/assets');
 const css=fs.readFileSync(path.join(root,'class-space.css'),'utf8');
 const brandBlock=css.split('/* Check-in brand completion:')[1].split('/* Use native orientation')[0];

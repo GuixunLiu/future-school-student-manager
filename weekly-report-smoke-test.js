@@ -33,19 +33,21 @@ const context = {
   console,
   setTimeout,
   clearTimeout,
+  setInterval(){return 0},
+  clearInterval(){},
   btoa:value=>Buffer.from(value,'binary').toString('base64'),
   atob:value=>Buffer.from(value,'base64').toString('binary'),
   Date:TestDate,
   Map,
   Set,
   localStorage:{getItem:()=>persistedState,setItem:(key,value)=>{persistedState=value}},
-  document:{body:element(),querySelector:selector=>elements.get(selector)||null,querySelectorAll:()=>[]},
+  document:{body:element(),querySelector:selector=>elements.get(selector)||null,querySelectorAll:()=>[],addEventListener(){},visibilityState:'visible'},
   window:{scrollTo(){},addEventListener(){}},
   navigator:{},
   confirm:()=>true
 };
 vm.createContext(context);
-const appSource = ['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','lesson-timing.js','student-leave.js','course-groups.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
+const appSource = ['pattern-lock.js','class-space.js','lesson-review.js','wechat-notices.js','lesson-cycle.js','lesson-timing.js','student-leave.js','course-groups.js','web-mirror.js','app.js'].map(file=>fs.readFileSync('app/src/main/assets/'+file,'utf8')).join('\n');
 assert(!appSource.includes('?.'),'主程序不能包含旧版 Android WebView 无法解析的可选链语法');
 assert(!appSource.includes('??'),'主程序不能包含旧版 Android WebView 无法解析的空值合并语法');
 assert(!appSource.includes('||='),'主程序不能包含旧版 Android WebView 无法解析的逻辑赋值语法');

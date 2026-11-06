@@ -11,7 +11,7 @@
   const day=t=>new Date((t+28800)*1000).toISOString().slice(0,10);
   const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
   const receiptHistory=128;
-  const conflictCodes=new Set(['attendance_changed','balance_changed','checkin_scope','lesson_day','idempotency_conflict']);
+  const conflictCodes=new Set(['attendance_changed','balance_changed','checkin_scope','lesson_day','idempotency_conflict','attendance_conflict','lesson_unavailable','device_clock']);
   const isConflict=entry=>entry.status==='blocked'&&conflictCodes.has(entry.error);
   function nextEntry(queue){
     const blockedStudents=new Set();
@@ -34,10 +34,14 @@
   const units=h=>{if(typeof h!=='number'||!Number.isFinite(h))fail('balance_changed');const n=Math.round(h*100);if(!integer(n)||Math.abs(n-h*100)>.00001)fail('balance_changed');return n;};
   function context(state){
     const s=state.managementSync;
-    if(!s||s.protocol!==1||s.enabled!==true||s.mode!=='server_authoritative'||!s.orgId||!s.deviceId||!s.generation)fail('mapping_changed');
+    if(!s||![1,2].includes(s.protocol)||s.enabled!==true||s.mode!=='server_authoritative'||!s.orgId||!s.deviceId||!s.generation)fail('mapping_changed');
     if(s.legacyMirrorDisabled!==true||state.deviceSync?.captureEnabled)fail('legacy_writer_active');
     if(!Array.isArray(s.queue)||s.queue.length>10000)fail('invalid_queue');
     return s;
+  }
+  function wireFor(sync,eventRef,payload){
+    if(sync.protocol===2){const {remaining_units,...upload}=payload;return{event_ref:eventRef,...upload};}
+    return{generation:sync.generation,event_ref:eventRef,...payload};
   }
   function write(storage,before,after){try{if(storage.compareAndSwap(before,JSON.stringify(after))!==true)fail('storage_failed');}catch(_){fail('storage_failed');}}
   function attempt(fn){try{return fn();}catch(e){return{ok:false,code:e.code||'invalid_state'};}}
@@ -57,7 +61,7 @@
       const students=state.students.filter(s=>s.id===binding.localId),classes=state.classes.filter(c=>c.id===binding.localClassId);
       if(students.length!==1||classes.length!==1)fail('mapping_changed');
       const student=students[0],course=classes[0];
-      if(student.studentNo!==binding.studentNo||student.name!==binding.name||student.className!==binding.className||course.name!==binding.className||course.teacher!==binding.teacher||student.longTermAbsent===true||student.status==='archived'||lesson.classId!==binding.classId||!lesson.studentIds?.includes(studentId))fail('mapping_changed');
+      if(student.studentNo!==binding.studentNo||student.name!==binding.name||student.className!==binding.className||course.name!==binding.className||course.teacher!==binding.teacher||student.longTermAbsent===true||student.status==='archived'||lesson.classId!==binding.classId||!lesson.studentIds?.includes(studentId)||(sync.protocol===2&&lesson.state!=='scheduled'))fail('mapping_changed');
       if(!integer(lesson.startsAt)||lesson.date!==day(lesson.startsAt)||day(occurredAt)!==lesson.date)fail('lesson_day');
       if(fact.expected!==true||fact.status!=='missing'||!integer(fact.revision)||!integer(fact.revision+1)||fact.revision<0||!integer(fact.chargeUnits)||fact.chargeUnits<=0)fail('attendance_changed');
       if(!integer(binding.balanceRevision)||!integer(binding.balanceRevision+1)||binding.balanceRevision<0||!integer(binding.balanceUnits)||units(student.hours)!==binding.balanceUnits)fail('balance_changed');
@@ -72,7 +76,7 @@
       state.attendance.push({id:attendanceId,studentId:student.id,date:lesson.date,time,method:'平板签到',...snapshot});
       state.transactions.push({id:id(),attendanceId,studentId:student.id,amount:-fact.chargeUnits/100,reason:'平板签到扣减',date:lesson.date,time,...snapshot});
       student.hours=payload.remaining_units/100;binding.balanceUnits=payload.remaining_units;binding.balanceRevision++;fact.status='arrived';fact.revision++;
-      sync.queue.push({eventRef,input:{...input},status:'pending',payload,wire:JSON.stringify({generation:sync.generation,event_ref:eventRef,...payload}),receipt:null});
+      sync.queue.push({eventRef,input:{...input},status:'pending',payload,wire:JSON.stringify(wireFor(sync,eventRef,payload)),receipt:null});
       write(storage,raw,state);
       return{ok:true,duplicate:false,eventRef,attendanceId};
     });
@@ -80,7 +84,7 @@
   function next(storage){return attempt(()=>{
     const sync=context(JSON.parse(storage.read())),e=nextEntry(sync.queue);
     if(!e)return{ok:true,item:null,blocked:sync.queue.some(isConflict)};
-    if(!['pending','blocked'].includes(e.status)||!equal(JSON.parse(e.wire),{generation:sync.generation,event_ref:e.eventRef,...e.payload}))fail('invalid_queue');
+    if(!['pending','blocked'].includes(e.status)||!equal(JSON.parse(e.wire),wireFor(sync,e.eventRef,e.payload)))fail('invalid_queue');
     return{ok:true,item:{eventRef:e.eventRef,wire:e.wire},blocked:false};
   });}
   // Match Python json.dumps(ensure_ascii=True, sort_keys=True, separators=(',',':')).
@@ -90,10 +94,12 @@
     try{
       const before=JSON.parse(storage.read()),initial=context(before),entry=initial.queue.find(e=>e.eventRef===eventRef);
       if(!entry)fail('unknown_receipt');
-      const hashed=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical(entry.payload)));
-      const digest=Array.from(new Uint8Array(hashed),b=>b.toString(16).padStart(2,'0')).join('');
-      const p=entry.payload;
-      if(!receipt||receipt.protocol!==1||receipt.accepted!==true||receipt.apply_local_debit!==false||receipt.status!=='arrived'||receipt.org_id!==initial.orgId||receipt.device_id!==initial.deviceId||receipt.generation!==initial.generation||receipt.event_ref!==eventRef||receipt.student_id!==p.student_id||receipt.lesson_id!==p.lesson_id||receipt.digest!==digest||receipt.attendance_revision!==p.attendance_revision+1||receipt.balance_revision!==p.balance_revision+1||receipt.balance_units!==p.remaining_units)fail('receipt_mismatch');
+      const p=entry.payload;let digest=null;
+      if(initial.protocol===1){
+        const hashed=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical(entry.payload)));
+        digest=Array.from(new Uint8Array(hashed),b=>b.toString(16).padStart(2,'0')).join('');
+      }
+      if(!receipt||receipt.protocol!==initial.protocol||receipt.accepted!==true||receipt.apply_local_debit!==false||receipt.status!=='arrived'||receipt.org_id!==initial.orgId||receipt.device_id!==initial.deviceId||receipt.generation!==initial.generation||receipt.event_ref!==eventRef||receipt.student_id!==p.student_id||receipt.lesson_id!==p.lesson_id||receipt.attendance_revision!==p.attendance_revision+1||receipt.balance_revision!==p.balance_revision+1||receipt.balance_units!==p.remaining_units||(initial.protocol===1&&receipt.digest!==digest))fail('receipt_mismatch');
       // Re-read after hashing, preserving check-ins recorded in the meantime.
       const raw=storage.read(),state=JSON.parse(raw),sync=context(state),current=sync.queue.find(e=>e.eventRef===eventRef);
       if(sync.orgId!==initial.orgId||sync.deviceId!==initial.deviceId||sync.generation!==initial.generation||!current||current.wire!==entry.wire)fail('mapping_changed');

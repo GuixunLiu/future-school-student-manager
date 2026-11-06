@@ -2,7 +2,7 @@
 // Only the separate .synctest package, using invented records. Never attach to production.
 const path=require('node:path'),net=require('node:net'),assert=require('node:assert/strict'),crypto=require('node:crypto'),{execFileSync}=require('node:child_process');
 const {fixture,makePlan}=require('./local-data-repair-regression.cjs');
-const {chromium}=require('C:/Users/liugu/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const {chromium}=require('playwright');
 const adb=path.resolve('../android-toolchain/sdk/platform-tools/adb.exe'),pkg='cn.mashangchengzhang.studentmanager.synctest',serial='HVA13XVR';
 const run=args=>execFileSync(adb,['-s',serial,...args],{timeout:60000,maxBuffer:8*1024*1024});
 let browser,port;

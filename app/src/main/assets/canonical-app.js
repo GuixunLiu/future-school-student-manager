@@ -1,7 +1,7 @@
 /* Dormant until an explicitly reconciled server-authoritative migration.
  * No credentials, automatic enrolment, legacy snapshot import, or mode switch.
  */
-let canonicalStore=null,canonicalRuntime=null,canonicalTimer=null;
+let canonicalStore=null,canonicalRuntime=null,canonicalTimer=null,canonicalRebindPending=false;
 const canonicalRequests=new Map();
 function canonicalModeActive(){return typeof state!=='undefined'&&state.managementSync?.enabled===true&&state.managementSync.mode==='server_authoritative';}
 function canonicalProfile(){try{return JSON.parse(AndroidBridge.getCanonicalSyncProfile());}catch(_){return{configured:false};}}
@@ -36,6 +36,7 @@ function canonicalOrdinarySave(){
   }
 }
 function canonicalRecordStudentAttendance(studentId){
+  if(canonicalRebindPending)return{ok:false,error:'设备正在安全换绑，请完成名单核对后再签到'};
   try{
     const sync=state.managementSync,p=canonicalProfile();
     if(!p.configured||p.orgId!==sync.orgId||p.deviceId!==sync.deviceId||p.generation!==sync.generation||p.profileId!==sync.profileId)throw Error('profile');
@@ -61,6 +62,14 @@ function canonicalNativeRequest(kind,payload){
   });
 }
 window.onCanonicalSyncNativeResult=(id,raw)=>{
+  if(id==='runtime-activation'){
+    try{const r=typeof raw==='string'?JSON.parse(raw):raw;if(r.ok&&r.data?.activated){finishRuntimeActivation();return;}
+      toast('开通码无效、已使用或已过期，请由管理员重新核对',true);}catch(_){}return;
+  }
+  if(id==='runtime-reissue'){
+    try{const r=typeof raw==='string'?JSON.parse(raw):raw;if(r.ok&&r.data?.activated&&r.data?.reissued){finishRuntimeReissue();return;}
+      canonicalRebindPending=false;toast('换绑未完成，请核对新开通码；原设备资料仍保留',true);}catch(_){canonicalRebindPending=false;}return;
+  }
   if(id==='activation'){
     try{const r=typeof raw==='string'?JSON.parse(raw):raw;
       if(r.ok&&r.data?.prepared){finishCanonicalActivation();return;}
@@ -80,9 +89,51 @@ window.onCanonicalSyncNativeResult=(id,raw)=>{
 };
 function canonicalEnrollmentSettingsMarkup(){
   const p=canonicalProfile(),active=canonicalModeActive();
-  return `<details class="settings-card"><summary>网页主管理连接</summary><p id="canonicalEnrollmentStatus">${active?(p.configured?'已启用网页主管理':'新资料已保存，连接确认尚未完成'):p.staged?'新连接已暂存，尚未切换资料':'尚未准备新连接'}</p><p>先采集当前资料，再由管理员核对并准备加密连接和完整名单。两端确认成功后，网页负责管理，平板负责签到。</p><button class="secondary-btn" data-canonical-enrollment="capture" ${active?'disabled':''}>采集当前核对资料</button> <button class="secondary-btn" data-canonical-enrollment="prepare" ${active?'disabled':''}>准备连接申请</button> <button class="secondary-btn" data-canonical-enrollment="stage" ${active?'disabled':''}>核对加密连接</button> <button class="secondary-btn" data-canonical-enrollment="activate" ${!p.staged&&!p.activationPending||p.configured?'disabled':''}>启用／完成同步</button></details>`;
+  return `<details class="settings-card"><summary>网页主管理连接</summary><p id="canonicalEnrollmentStatus">${active?(p.configured?'已启用网页主管理':'新资料已保存，连接确认尚未完成'):p.configured?'设备已开通，等待下载课堂名单':p.staged?'新连接已暂存，尚未切换资料':'尚未准备新连接'}</p><p>新版开通只需管理员生成一次性开通码；原有资料核对流程仍保留供旧迁移使用。成功后网页负责管理，平板负责签到。</p><button data-canonical-enrollment="runtime" ${active?'disabled':''}>${p.configured?'完成新版名单下载':'使用一次性开通码（新版）'}</button> ${active?'<button class="secondary-btn" data-canonical-enrollment="reissue">安全换绑</button>':''} <button class="secondary-btn" data-canonical-enrollment="capture" ${active?'disabled':''}>采集当前核对资料</button> <button class="secondary-btn" data-canonical-enrollment="prepare" ${active?'disabled':''}>准备连接申请</button> <button class="secondary-btn" data-canonical-enrollment="stage" ${active?'disabled':''}>核对加密连接</button> <button class="secondary-btn" data-canonical-enrollment="activate" ${!p.staged&&!p.activationPending||p.configured?'disabled':''}>启用／完成同步</button></details>`;
 }
-document.addEventListener('click',event=>{const action=event.target?.closest?.('[data-canonical-enrollment]')?.getAttribute('data-canonical-enrollment');if(action==='capture')captureCanonicalEnrollment();if(action==='prepare')prepareCanonicalEnrollment();if(action==='stage')stageCanonicalEnrollment();if(action==='activate')startCanonicalActivation();});
+document.addEventListener('click',event=>{const action=event.target?.closest?.('[data-canonical-enrollment]')?.getAttribute('data-canonical-enrollment');if(action==='runtime')startRuntimeActivation();if(action==='reissue')startRuntimeReissue();if(action==='capture')captureCanonicalEnrollment();if(action==='prepare')prepareCanonicalEnrollment();if(action==='stage')stageCanonicalEnrollment();if(action==='activate')startCanonicalActivation();});
+async function startRuntimeActivation(){
+  if(typeof isAdminAuthenticated==='undefined'||!isAdminAuthenticated)return toast('请先解锁后台',true);
+  if(canonicalModeActive())return toast('这台平板已完成开通');
+  if(canonicalProfile().configured){await finishRuntimeActivation();return;}
+  try{
+    const raw=localStorage.getItem(STORAGE_KEY);if(!raw||raw!==committedStateSnapshot||JSON.stringify(state)!==raw)throw Error('unsaved');
+    const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
+    if(localStorage.getItem(STORAGE_KEY)!==raw||committedStateSnapshot!==raw||JSON.stringify(state)!==raw)throw Error('changed');
+    AndroidBridge.activateRuntime(Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join(''));
+  }catch(_){toast('资料尚未保存或已变化，请先保存后重试',true);}
+}
+async function finishRuntimeActivation(){
+  try{
+    const response=await canonicalNativeRequest('bootstrap',{});
+    if(!response?.ok)throw Error('bootstrap');
+    const profile=canonicalProfile(),store=canonicalGuardedStore();
+    const result=canonicalModeActive()?ManagementRuntimeBootstrap.apply(store,response.data,profile):ManagementRuntimeBootstrap.initialize(store,response.data,profile);
+    if(!result.ok)throw Error(result.code);
+    canonicalRuntime=null;toast('平板开通成功，课堂名单已更新');scheduleCanonicalSync();
+  }catch(_){toast('设备已保留，名单尚未下载；请核对本地学生姓名、学号和班级后重试',true);}
+}
+async function startRuntimeReissue(){
+  if(typeof isAdminAuthenticated==='undefined'||!isAdminAuthenticated)return toast('请先解锁后台',true);
+  if(!canonicalModeActive())return toast('请先完成平板开通',true);
+  const profile=canonicalProfile(),sync=state.managementSync;
+  if(!profile.configured||profile.orgId!==sync.orgId||profile.deviceId!==sync.deviceId)return toast('设备连接资料不一致，请联系管理员',true);
+  if(canonicalRebindPending||sync.rebindPending||profile.generation!==sync.generation||profile.profileId!==sync.profileId){await finishRuntimeReissue();return;}
+  try{
+    const raw=canonicalGuardedStore().read();
+    if(raw!==committedStateSnapshot||JSON.stringify(state)!==raw)throw Error('unsaved');
+    if(sync.queue.some(entry=>entry.status!=='accepted'))throw Error('offline_queue');
+    canonicalRebindPending=true;AndroidBridge.reissueRuntime();
+  }catch(error){canonicalRebindPending=false;toast(error.code==='offline_queue'||error.message==='offline_queue'?'还有未上传或待核对的签到，请先联网同步后再换绑':'资料有未保存变化，请先核对后再换绑',true);}
+}
+async function finishRuntimeReissue(){
+  canonicalRebindPending=true;
+  try{
+    const response=await canonicalNativeRequest('bootstrap',{});if(!response?.ok)throw Error('bootstrap');
+    const result=ManagementRuntimeBootstrap.rebind(canonicalGuardedStore(),response.data,canonicalProfile());if(!result.ok)throw Error(result.code);
+    canonicalRebindPending=false;canonicalRuntime=null;toast('安全换绑完成，课堂名单和本机历史已保留');scheduleCanonicalSync();
+  }catch(_){toast('新凭据已保留，名单换绑尚未完成；本机记录未删除，请联网后重试',true);}
+}
 async function startCanonicalActivation(){
   if(typeof isAdminAuthenticated==='undefined'||!isAdminAuthenticated)return toast('请先解锁后台',true);
   if(canonicalProfile().configured)return toast('网页主管理连接已启用');
@@ -123,10 +174,10 @@ async function stageCanonicalEnrollment(){
   }catch(_){toast('资料尚未保存或已变化，请先保存并重新核对备份',true);}
 }
 function scheduleCanonicalSync(){
-  if(!canonicalModeActive()||canonicalTimer!==null||!canonicalProfile().configured)return;
+  if(canonicalRebindPending||!canonicalModeActive()||canonicalTimer!==null||!canonicalProfile().configured)return;
   canonicalTimer=setTimeout(async()=>{
     canonicalTimer=null;
-    if(!canonicalModeActive())return;
+    if(canonicalRebindPending||!canonicalModeActive())return;
     try{
       if(!canonicalRuntime)canonicalRuntime=ManagementSyncRuntime.create({store:canonicalGuardedStore(),profile:canonicalProfile,request:canonicalNativeRequest,metadata:true,historical:true});
       const result=await canonicalRuntime.tick();

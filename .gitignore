@@ -1,7 +1,19 @@
 .gradle/
+.android-build/
+node_modules/
+.qa*/
 .idea/
 local.properties
 *.iml
+*.log
+tools/*.exe
+tools/*.dat
+tools/*.bin
+android-shell/verification/
+docs/screenshots/
+web/e2e-*.png
+web/e2e-seed.json
+web/shell-*.png
 
 **/build/
 **/.cxx/

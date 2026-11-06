@@ -7,6 +7,7 @@
   const queue=typeof module!=='undefined'&&module.exports?require('./checkin-queue.js'):root.ManagementCheckinQueue;
   const receiver=typeof module!=='undefined'&&module.exports?require('./approval-receiver.js'):root.ManagementApprovalReceiver;
   const classTeachers=typeof module!=='undefined'&&module.exports?require('./class-teacher-receiver.js'):root.ManagementClassTeacherReceiver;
+  const runtimeBootstrap=typeof module!=='undefined'&&module.exports?require('./runtime-bootstrap.js'):root.ManagementRuntimeBootstrap;
   function create({store,profile,request,metadata=false,historical=false}){
     let busy=false;
     function identity(){
@@ -23,6 +24,13 @@
         const send=async(kind,body)=>{check();const response=await request(kind,body);check();return response;};
         const uploaded=await queue.pump(guarded,body=>send('checkin',body));
         if(!uploaded.ok||uploaded.more)return{...uploaded,phase:'upload'};
+        if(store.snapshot().managementSync.protocol===2){
+          if(uploaded.blocked)return{...uploaded,phase:'upload'};
+          const response=await send('bootstrap',{});
+          if(!response?.ok){const paused=response?.status===409&&response?.data?.error?.code==='migration_in_progress';return{ok:false,phase:'bootstrap',code:paused?'migration_in_progress':'connection_failed',retry:true,...(paused?{paused:true}:{})};}
+          const applied=runtimeBootstrap.apply(guarded,response.data,initial);
+          return{...applied,uploaded:uploaded.uploaded,...(applied.ok?{}:{phase:'bootstrap',retry:['local_changes','offline_queue'].includes(applied.code)})};
+        }
         const deferredStudents=new Set(),deferredClasses=new Set();
         let conflictCode;
         const snapshot=store.snapshot().managementSync;

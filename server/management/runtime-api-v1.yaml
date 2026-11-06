@@ -1,0 +1,470 @@
+openapi: 3.1.0
+info:
+  title: 未来学校统一业务 API
+  version: 1.0.0-draft
+  description: 最终三端范围契约草案。服务器是唯一数据中心；所有写操作支持幂等和审计。
+servers:
+  - url: /api
+security:
+  - userBearer: []
+tags:
+  - name: tablet
+  - name: teacher
+  - name: admin
+  - name: wechat
+paths:
+  /health/ready:
+    get:
+      security: []
+      operationId: readiness
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/auth/login:
+    post:
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [organization, login, password]
+              properties:
+                organization: { type: string, maxLength: 80 }
+                login: { type: string, maxLength: 80 }
+                password: { type: string, format: password, maxLength: 200 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/me:
+    get:
+      operationId: currentIdentity
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/admin/devices:
+    get:
+      tags: [admin]
+      operationId: adminListDevices
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateDevice
+      description: 创建待激活平板并签发15分钟一次性开通码；开通码不写入命令回执或审计。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, class_ids, command_ref]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                class_ids: { type: array, minItems: 1, maxItems: 200, uniqueItems: true, items: { type: string } }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/devices/{device_id}/activation:
+    post:
+      tags: [admin]
+      operationId: adminReissueDeviceActivation
+      description: 作废旧设备凭据和未使用开通码，签发15分钟一次性开通码；重复回执不返回开通码。
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/devices/{device_id}/disable:
+    post:
+      tags: [admin]
+      operationId: adminDisableDevice
+      description: 停用平板并撤销设备凭据和未使用开通码，不删除课堂、签到或课时数据。
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/tablet/activate:
+    post:
+      tags: [tablet]
+      security: []
+      operationId: tabletActivate
+      description: 原生安全层使用一次性开通码换取设备凭据，令牌不进入页面脚本。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [activation_code]
+              properties:
+                activation_code: { type: string, pattern: '^wxa_[A-Za-z0-9_-]{43}$' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /v1/tablet/bootstrap:
+    get:
+      tags: [tablet]
+      security: [{ deviceBearer: [] }]
+      operationId: tabletBootstrap
+      description: 返回设备获授权班级的课堂、学生及余额版本，不返回管理后台资料。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/tablet/checkins:
+    post:
+      tags: [tablet]
+      security: [{ deviceBearer: [] }]
+      operationId: tabletCheckin
+      description: 断网续传使用同一 event_ref；旧余额版本返回 409，绝不覆盖服务器余额。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TabletCheckin' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons:
+    get:
+      tags: [teacher]
+      operationId: teacherLessons
+      parameters:
+        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/teacher/lessons/{lessonId}:
+    get:
+      tags: [teacher]
+      operationId: teacherLesson
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}/face-checkin:
+    post:
+      tags: [teacher]
+      operationId: teacherFaceCheckin
+      description: 仅识别该教师本节课学生；传输特征而非原始照片，识别结果仍需满足签到与课时规则。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [event_ref, model_version, descriptor]
+              properties:
+                event_ref: { $ref: '#/components/schemas/EventRef' }
+                model_version: { type: string, maxLength: 40 }
+                descriptor:
+                  type: array
+                  minItems: 128
+                  maxItems: 128
+                  items: { type: number }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}/makeup:
+    post:
+      tags: [teacher]
+      operationId: teacherMakeup
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}/leave:
+    post:
+      tags: [teacher]
+      operationId: teacherLeave
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+  /v1/teacher/students/{studentId}/balance:
+    put:
+      tags: [teacher]
+      operationId: teacherAdjustBalance
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BalanceAdjustment' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/teacher/reports/weekly:
+    get:
+      tags: [teacher]
+      operationId: teacherWeeklyReport
+      parameters:
+        - { $ref: '#/components/parameters/WeekStart' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/admin/students:
+    get:
+      tags: [admin]
+      operationId: adminStudents
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+    post:
+      tags: [admin]
+      operationId: adminCreateStudent
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+  /v1/admin/classes:
+    get:
+      tags: [admin]
+      operationId: adminClasses
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+    post:
+      tags: [admin]
+      operationId: adminCreateClass
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+  /v1/admin/devices:
+    get:
+      tags: [admin]
+      operationId: adminDevices
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+    post:
+      tags: [admin]
+      operationId: adminIssueDevice
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+  /v1/admin/renewals:
+    post:
+      tags: [admin]
+      operationId: adminRenewal
+      description: 续费记录、课时入账、审计和家长通知任务在同一业务边界内创建。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [student_id, units_added, occurred_at, source_ref, reason, command_ref]
+              properties:
+                student_id: { type: string }
+                units_added: { type: integer, minimum: 1, maximum: 11000000 }
+                occurred_at: { type: integer, minimum: 0 }
+                source_ref: { type: string, maxLength: 100 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/reports/weekly:
+    get:
+      tags: [admin]
+      operationId: adminWeeklyReport
+      parameters:
+        - { $ref: '#/components/parameters/WeekStart' }
+        - { name: history, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/admin/reports/monthly:
+    get:
+      tags: [admin]
+      operationId: adminMonthlyReport
+      parameters:
+        - { name: month, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/admin/reports/{kind}/{period}/generate:
+    post:
+      tags: [admin]
+      operationId: adminGenerateReport
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [weekly, monthly] } }
+        - { name: period, in: path, required: true, schema: { type: string } }
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '202': { $ref: '#/components/responses/Object' }
+  /v1/wechat/callback:
+    get:
+      tags: [wechat]
+      security: []
+      operationId: wechatVerifyCallback
+      responses:
+        '200': { description: 微信签名验证通过后返回原 echostr }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [wechat]
+      security: []
+      operationId: wechatReceiveCallback
+      responses:
+        '200': { description: 验证签名后接收事件 }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/wechat/bindings:
+    post:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatBindStudent
+      requestBody: { $ref: '#/components/requestBodies/WechatCommand' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/wechat/bindings/{bindingId}:
+    delete:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatUnbindStudent
+      parameters:
+        - { name: bindingId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/wechat/students:
+    get:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatStudents
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/wechat/students/{studentId}/balance:
+    get:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatStudentBalance
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    userBearer: { type: http, scheme: bearer }
+    deviceBearer: { type: http, scheme: bearer }
+    wechatOpenId:
+      type: apiKey
+      in: cookie
+      name: fs_wechat_session
+      description: 服务器在验证微信身份后签发、绑定 HttpOnly 安全会话。
+  parameters:
+    LessonId: { name: lessonId, in: path, required: true, schema: { type: string } }
+    StudentId: { name: studentId, in: path, required: true, schema: { type: string } }
+    WeekStart: { name: week_start, in: query, required: true, schema: { type: string, format: date }, description: 北京时间周一 }
+  schemas:
+    EventRef: { type: string, minLength: 1, maxLength: 80 }
+    TabletCheckin:
+      type: object
+      additionalProperties: false
+      required: [event_ref, lesson_id, student_id, occurred_at, attendance_revision, balance_revision, previous_balance_units, consumed_units]
+      properties:
+        event_ref: { $ref: '#/components/schemas/EventRef' }
+        lesson_id: { type: string }
+        student_id: { type: string }
+        occurred_at: { type: integer, minimum: 0 }
+        attendance_revision: { type: integer, minimum: 0 }
+        balance_revision: { type: integer, minimum: 0 }
+        previous_balance_units: { type: integer }
+        consumed_units: { type: integer, minimum: 1 }
+    AttendanceCorrection:
+      type: object
+      additionalProperties: false
+      required: [student_id, reason, event_ref, expected_revision]
+      properties:
+        student_id: { type: string }
+        reason: { type: string, minLength: 1, maxLength: 200 }
+        event_ref: { $ref: '#/components/schemas/EventRef' }
+        expected_revision: { type: integer, minimum: 0 }
+    BalanceAdjustment:
+      type: object
+      additionalProperties: false
+      required: [units, reason, expected_revision, command_ref]
+      properties:
+        units: { type: integer, minimum: -1000000, maximum: 10000000 }
+        reason: { type: string, minLength: 1, maxLength: 200 }
+        expected_revision: { type: integer, minimum: 0 }
+        command_ref: { $ref: '#/components/schemas/EventRef' }
+  requestBodies:
+    AdminCommand:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [command_ref]
+            properties:
+              command_ref: { $ref: '#/components/schemas/EventRef' }
+    WechatCommand:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [binding_proof]
+            properties:
+              binding_proof: { type: string, maxLength: 200 }
+  responses:
+    Object:
+      description: 成功响应
+      content:
+        application/json:
+          schema: { type: object }
+    Error:
+      description: 业务或权限错误；响应不包含学生隐私或凭据
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: { type: string }
+                  message: { type: string }
