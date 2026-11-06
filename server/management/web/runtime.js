@@ -20,7 +20,7 @@ async function dashboard(){
  const [classData,deviceData]=await Promise.all([api('/v1/admin/classes'),api('/v1/admin/devices')]);classes=classData.items;
  $('identity').replaceChildren(node('span',identity.display_name),button('退出',logout,'secondary'));
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','平板设备管理'),node('p','为一台新平板选择可签到班级并生成一次性开通码。开通码 15 分钟内有效，只在生成时显示一次。'));
- const actions=node('div',undefined,'toolbar');actions.append(button('刷新',dashboard,'secondary'),button('全校周报',()=>adminWeeklyReport(),'secondary'),button('招新续费月报',()=>adminMonthlyReport(),'secondary'),button('开通新平板',openEnrollment));heading.append(copy,actions);const list=node('section',undefined,'device-list');
+ const actions=node('div',undefined,'toolbar');actions.append(button('刷新',dashboard,'secondary'),button('全校周报',()=>adminWeeklyReport(),'secondary'),button('招新续费月报',()=>adminMonthlyReport(),'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'),button('开通新平板',openEnrollment));heading.append(copy,actions);const list=node('section',undefined,'device-list');
  if(!deviceData.items.length)list.append(node('div','尚未开通平板','empty'));
  for(const device of deviceData.items){const row=node('article',undefined,'item device-row'),title=node('div');title.append(node('h2',device.name),node('p','设备编号 '+device.id));
   const names=(device.class_ids||[]).map(id=>classes.find(item=>item.id===id)?.name||id),status=node('div',undefined,'device-status'),operations=node('div',undefined,'device-actions');

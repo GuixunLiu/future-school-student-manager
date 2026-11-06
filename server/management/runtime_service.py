@@ -203,7 +203,98 @@ class RuntimeStore:
     @staticmethod
     def _require_admin(actor):
         if actor['kind'] != 'user' or 'admin' not in actor['roles']:
-            raise Problem(403, 'admin_required', '仅管理员可以开通平板')
+            raise Problem(403, 'admin_required', '仅管理员可以执行此操作')
+
+    def admin_students(self, token):
+        def run(db, actor):
+            self._require_admin(actor)
+            rows = db.execute('''SELECT s.id,s.name,s.external_ref,s.active,s.class_id,
+                    c.name AS class_name,c.course_name,sb.units AS balance_units,
+                    sb.revision AS balance_revision
+                FROM students s
+                JOIN classes c ON c.org_id=s.org_id AND c.id=s.class_id
+                JOIN student_balances sb ON sb.org_id=s.org_id AND sb.student_id=s.id
+                WHERE s.org_id=%s ORDER BY s.active DESC,c.name,s.name,s.id''',
+                (actor['org_id'],)).fetchall()
+            return {'items': [dict(row) for row in rows]}
+        return self.command(token, 'user', run)
+
+    def admin_renewal(self, token, data):
+        reference = data['command_ref']
+        digest = canonical_digest('admin_renewal', data)
+        def run(db, actor):
+            self._require_admin(actor)
+            self._lock_command(db, actor, reference)
+            student = db.execute('''SELECT s.name,s.active,sb.units,sb.revision
+                FROM students s
+                JOIN student_balances sb ON sb.org_id=s.org_id AND sb.student_id=s.id
+                WHERE s.org_id=%s AND s.id=%s FOR UPDATE OF sb''',
+                (actor['org_id'], data['student_id'])).fetchone()
+            if not student:
+                raise Problem(404, 'student_missing', '未找到学生或课时余额')
+            if not student['active']:
+                raise Problem(409, 'student_inactive', '学生已停用，请先核对学籍状态')
+            # Permission and current student state are rechecked even for retries.
+            prior = self._prior(db, actor, reference, digest)
+            if prior:
+                return prior
+            if not data['source_ref'].strip():
+                raise Problem(422, 'invalid_source_ref', '请填写业务来源编号')
+            if db.execute('SELECT 1 FROM renewal_records WHERE org_id=%s AND source_ref=%s',
+                          (actor['org_id'], data['source_ref'])).fetchone():
+                raise Problem(409, 'source_ref_conflict', '该业务来源编号已登记，请核对后更换')
+            now = self.clock()
+            if data['occurred_at'] > now + 120:
+                raise Problem(409, 'renewal_clock', '续费时间超前，请核对业务发生时间')
+            units = student['units'] + data['units_added']
+            if not MIN_UNITS <= units <= MAX_UNITS:
+                raise Problem(409, 'balance_limit', '续费后余额超出允许范围，请核对课时')
+            renewal_id, ledger_id = uid(), uid()
+            revision = student['revision'] + 1
+            db.execute('''INSERT INTO renewal_records
+                (id,org_id,student_id,units_added,occurred_at,source_ref,actor_id,reason,created_at)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                (renewal_id, actor['org_id'], data['student_id'], data['units_added'],
+                 data['occurred_at'], data['source_ref'], actor['id'], data['reason'], now))
+            db.execute('''UPDATE student_balances SET units=%s,revision=%s,updated_at=%s
+                WHERE org_id=%s AND student_id=%s AND revision=%s''',
+                (units, revision, now, actor['org_id'], data['student_id'], student['revision']))
+            db.execute('''INSERT INTO balance_ledger
+                (id,org_id,student_id,kind,source_event_id,previous_units,units_delta,units,
+                 previous_revision,revision,actor_type,actor_id,reason,created_at)
+                VALUES(%s,%s,%s,'renewal',%s,%s,%s,%s,%s,%s,'user',%s,%s,%s)''',
+                (ledger_id, actor['org_id'], data['student_id'], renewal_id, student['units'],
+                 data['units_added'], units, student['revision'], revision, actor['id'],
+                 data['reason'], now))
+            bindings = db.execute('''SELECT id FROM parent_student_bindings
+                WHERE org_id=%s AND student_id=%s AND unbound_at IS NULL ORDER BY id''',
+                (actor['org_id'], data['student_id'])).fetchall()
+            for binding in bindings:
+                payload = {'student_name': student['name'], 'units_added': data['units_added'],
+                           'balance_units': units, 'occurred_at': data['occurred_at'],
+                           'source_ref': data['source_ref']}
+                db.execute('''INSERT INTO notification_outbox
+                    (id,org_id,binding_id,student_id,kind,source_event_id,payload,status,
+                     attempts,next_attempt_at,created_at)
+                    VALUES(%s,%s,%s,%s,'renewal',%s,%s,'pending',0,%s,%s)''',
+                    (uid(), actor['org_id'], binding['id'], data['student_id'], renewal_id,
+                     Jsonb(payload), now, now))
+            response = {'accepted': True, 'duplicate': False, 'renewal_id': renewal_id,
+                        'ledger_id': ledger_id, 'student_id': data['student_id'],
+                        'units_added': data['units_added'],
+                        'previous_balance_units': student['units'], 'balance_units': units,
+                        'balance_revision': revision, 'occurred_at': data['occurred_at'],
+                        'source_ref': data['source_ref'], 'notification_tasks': len(bindings),
+                        'notification_status': 'pending' if bindings else 'no_active_bindings',
+                        'wechat_sending_enabled': False, 'audited': True}
+            self._audit(db, actor, 'admin_renewal_recorded', renewal_id,
+                        {'student_id': data['student_id'], 'units_added': data['units_added'],
+                         'previous_balance_units': student['units'], 'balance_units': units,
+                         'occurred_at': data['occurred_at'], 'source_ref': data['source_ref'],
+                         'reason': data['reason'], 'notification_tasks': len(bindings)}, now)
+            self._save_command(db, actor, reference, digest, response, now)
+            return response
+        return self.command(token, 'user', run)
 
     def admin_classes(self, token):
         def run(db, actor):

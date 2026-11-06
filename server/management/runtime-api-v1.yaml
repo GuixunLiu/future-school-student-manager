@@ -266,8 +266,10 @@ paths:
     get:
       tags: [admin]
       operationId: adminStudents
+      description: 已实现。返回本机构学生、当前班级、最新课时余额和余额版本，供管理员续费核对；不向教师或设备凭据开放。
       responses:
         '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
     post:
       tags: [admin]
       operationId: adminCreateStudent
@@ -302,7 +304,7 @@ paths:
     post:
       tags: [admin]
       operationId: adminRenewal
-      description: 续费记录、课时入账、审计和家长通知任务在同一业务边界内创建。
+      description: 已实现。管理员按最新服务器余额累加课时；续费记录、余额更新、不可变流水、审计和每名有效绑定家长的待发送通知任务在同一事务内创建。操作编号安全重试不重复入账，业务来源编号在本机构内唯一；不记录金额，不启用真实微信发送。
       requestBody:
         required: true
         content:
@@ -312,15 +314,19 @@ paths:
               additionalProperties: false
               required: [student_id, units_added, occurred_at, source_ref, reason, command_ref]
               properties:
-                student_id: { type: string }
+                student_id: { type: string, minLength: 1, maxLength: 80 }
                 units_added: { type: integer, minimum: 1, maximum: 11000000 }
-                occurred_at: { type: integer, minimum: 0 }
-                source_ref: { type: string, maxLength: 100 }
+                occurred_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间业务发生时间对应的 Unix 秒；不得明显晚于服务器时间 }
+                source_ref: { type: string, minLength: 1, maxLength: 100 }
                 reason: { type: string, minLength: 1, maxLength: 200 }
                 command_ref: { $ref: '#/components/schemas/EventRef' }
       responses:
+        '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复，不重复入账 }
         '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /v1/admin/reports/weekly:
     get:
       tags: [admin]

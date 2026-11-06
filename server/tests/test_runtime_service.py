@@ -393,6 +393,127 @@ class RuntimeBusinessTests(unittest.TestCase):
             self.assertEqual(422, client.get('/v1/admin/reports/monthly?month=' + invalid, headers=admin).status_code)
         self.assertEqual(200, client.get('/admin-monthly.js').status_code)
 
+    @staticmethod
+    def renewal_data(command='renewal-command', source='renewal-source', **changes):
+        data = dict(student_id='student-a', units_added=20, occurred_at=100,
+                    source_ref=source, reason='虚构续费入账', command_ref=command)
+        data.update(changes)
+        return data
+
+    def test_admin_renewal_commits_balance_ledger_audit_and_parent_tasks(self):
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("""
+                INSERT INTO wechat_identities VALUES
+                    ('org-fiction','fiction-open-a',NULL,1),
+                    ('org-fiction','fiction-open-b',NULL,1),
+                    ('org-fiction','fiction-open-old',NULL,1);
+                INSERT INTO parent_student_bindings VALUES
+                    ('binding-a','org-fiction','fiction-open-a','student-a',1,NULL),
+                    ('binding-b','org-fiction','fiction-open-b','student-a',1,NULL),
+                    ('binding-old','org-fiction','fiction-open-old','student-a',1,2);
+            """)
+        result = self.store.admin_renewal(ADMIN_TOKEN, self.renewal_data())
+        self.assertEqual((False, 10, 30, 2, 2, 'pending', False),
+                         tuple(result[key] for key in ('duplicate', 'previous_balance_units',
+                               'balance_units', 'balance_revision', 'notification_tasks',
+                               'notification_status', 'wechat_sending_enabled')))
+        self.assertEqual((30, 2), tuple(self.read(
+            "SELECT units,revision FROM student_balances WHERE student_id='student-a'").values()))
+        ledger = self.read("SELECT kind,source_event_id,previous_units,units_delta,units,revision FROM balance_ledger WHERE id=%s",
+                           (result['ledger_id'],))
+        self.assertEqual(('renewal', result['renewal_id'], 10, 20, 30, 2),
+                         tuple(ledger[key] for key in ('kind', 'source_event_id', 'previous_units',
+                               'units_delta', 'units', 'revision')))
+        self.assertEqual(2, self.read("SELECT count(*) AS n FROM notification_outbox WHERE kind='renewal'")['n'])
+        self.assertEqual(0, self.read("SELECT count(*) AS n FROM notification_outbox WHERE binding_id='binding-old'")['n'])
+        self.assertEqual('30', self.read("SELECT payload->>'balance_units' AS units FROM notification_outbox WHERE binding_id='binding-a'")['units'])
+        self.assertEqual(1, self.read("SELECT count(*) AS n FROM audit_log WHERE action='admin_renewal_recorded'")['n'])
+        students = self.store.admin_students(ADMIN_TOKEN)['items']
+        self.assertEqual(30, next(row for row in students if row['id'] == 'student-a')['balance_units'])
+        report = self.store.admin_monthly_report(ADMIN_TOKEN, '1970-01')
+        self.assertEqual((1, 1, 20), tuple(report['overall'][key] for key in (
+            'renewal_students', 'renewal_events', 'renewal_units')))
+
+    def test_admin_renewal_concurrent_retry_and_source_conflict_never_double_credit(self):
+        data = self.renewal_data()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: self.store.admin_renewal(ADMIN_TOKEN, data), range(2)))
+        self.assertEqual(1, sum(not result['duplicate'] for result in results))
+        self.assertEqual(1, sum(result['duplicate'] for result in results))
+        self.assertEqual(results[0]['renewal_id'], results[1]['renewal_id'])
+        self.assertEqual(30, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
+        self.assert_problem(409, 'idempotency_conflict', self.store.admin_renewal,
+                            ADMIN_TOKEN, self.renewal_data(units_added=21))
+        self.assert_problem(409, 'source_ref_conflict', self.store.admin_renewal,
+                            ADMIN_TOKEN, self.renewal_data(command='renewal-other-command'))
+        self.assertEqual(1, self.read('SELECT count(*) AS n FROM renewal_records')['n'])
+        self.assertEqual(3, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
+        self.assertEqual(1, self.read('SELECT count(*) AS n FROM api_commands')['n'])
+
+    def test_admin_renewal_scope_limits_and_failure_roll_back_everything(self):
+        self.assert_problem(403, 'admin_required', self.store.admin_students, USER_TOKEN)
+        self.assert_problem(403, 'admin_required', self.store.admin_students, DEVICE_TOKEN)
+        self.assert_problem(403, 'admin_required', self.store.admin_renewal, USER_TOKEN, self.renewal_data())
+        self.assert_problem(403, 'admin_required', self.store.admin_renewal, DEVICE_TOKEN, self.renewal_data())
+        self.assert_problem(404, 'student_missing', self.store.admin_renewal,
+                            ADMIN_TOKEN, self.renewal_data(student_id='missing'))
+        self.assert_problem(422, 'invalid_source_ref', self.store.admin_renewal,
+                            ADMIN_TOKEN, self.renewal_data(source='   '))
+        self.assert_problem(409, 'renewal_clock', self.store.admin_renewal,
+                            ADMIN_TOKEN, self.renewal_data(occurred_at=1121))
+        self.assert_problem(409, 'balance_limit', self.store.admin_renewal,
+                            ADMIN_TOKEN, self.renewal_data(units_added=10_000_000))
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("UPDATE students SET active=FALSE WHERE id='student-a'")
+        self.assert_problem(409, 'student_inactive', self.store.admin_renewal,
+                            ADMIN_TOKEN, self.renewal_data())
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("UPDATE students SET active=TRUE WHERE id='student-a'")
+        with patch.object(self.store, '_audit', side_effect=RuntimeError('deliberate')):
+            with self.assertRaisesRegex(RuntimeError, 'deliberate'):
+                self.store.admin_renewal(ADMIN_TOKEN, self.renewal_data())
+        self.assertEqual(10, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
+        self.assertEqual(0, self.read('SELECT count(*) AS n FROM renewal_records')['n'])
+        self.assertEqual(0, self.read('SELECT count(*) AS n FROM notification_outbox')['n'])
+        self.assertEqual(0, self.read('SELECT count(*) AS n FROM api_commands')['n'])
+        self.assertEqual(2, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
+
+    def test_http_admin_renewal_enforces_scope_validation_and_duplicate_status(self):
+        from fastapi.testclient import TestClient
+        from management.runtime_api import create_app
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True))
+        admin = {'Authorization': 'Bearer ' + ADMIN_TOKEN}
+        teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        device = {'Authorization': 'Bearer ' + DEVICE_TOKEN}
+        listed = client.get('/v1/admin/students', headers=admin)
+        self.assertEqual(200, listed.status_code, listed.text)
+        self.assertEqual({'student-a', 'student-b'}, {row['id'] for row in listed.json()['items']})
+        self.assertEqual(403, client.get('/v1/admin/students', headers=teacher).status_code)
+        self.assertEqual(403, client.get('/v1/admin/students', headers=device).status_code)
+        self.assertEqual(401, client.get('/v1/admin/students').status_code)
+        created = client.post('/v1/admin/renewals', headers=admin, json=self.renewal_data())
+        self.assertEqual(201, created.status_code, created.text)
+        self.assertEqual((10, 30, 2), tuple(created.json()[key] for key in (
+            'previous_balance_units', 'balance_units', 'balance_revision')))
+        duplicate = client.post('/v1/admin/renewals', headers=admin, json=self.renewal_data())
+        self.assertEqual(200, duplicate.status_code, duplicate.text)
+        self.assertTrue(duplicate.json()['duplicate'])
+        self.assertEqual(403, client.post('/v1/admin/renewals', headers=teacher,
+                                         json=self.renewal_data(command='denied-teacher')).status_code)
+        self.assertEqual(403, client.post('/v1/admin/renewals', headers=device,
+                                         json=self.renewal_data(command='denied-device')).status_code)
+        self.assertEqual(401, client.post('/v1/admin/renewals', json=self.renewal_data()).status_code)
+        self.assertEqual(422, client.post('/v1/admin/renewals', headers=admin,
+                                         json=self.renewal_data(command='bad-units', units_added=0)).status_code)
+        self.assertEqual(422, client.post('/v1/admin/renewals', headers=admin,
+                                         json=self.renewal_data(command='extra', unexpected=True)).status_code)
+        self.assertEqual(409, client.post('/v1/admin/renewals', headers=admin,
+                                         json=self.renewal_data(command='same-source')).status_code)
+        self.assertEqual(404, client.post('/v1/admin/renewals', headers=admin,
+                                         json=self.renewal_data(command='missing', student_id='missing')).status_code)
+        self.assertEqual(200, client.get('/admin-renewal.js').status_code)
+        self.assertEqual(30, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
+
     def test_http_teacher_list_and_makeup_are_scoped_idempotent_and_versioned(self):
         from fastapi.testclient import TestClient
         from management.runtime_api import create_app

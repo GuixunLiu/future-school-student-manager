@@ -38,6 +38,15 @@ class BalanceAdjustmentInput(Input):
     command_ref: str = Field(min_length=1, max_length=80)
 
 
+class RenewalInput(Input):
+    student_id: str = Field(min_length=1, max_length=80)
+    units_added: int = Field(gt=0, le=11_000_000)
+    occurred_at: int = Field(ge=0, le=253402185599)
+    source_ref: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
 class DeviceEnrollmentInput(Input):
     name: str = Field(min_length=1, max_length=80)
     class_ids: list[str] = Field(min_length=1, max_length=200)
@@ -118,6 +127,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
     def admin_monthly_script():
         return FileResponse(assets / 'admin-monthly.js', media_type='application/javascript')
 
+    @app.get('/admin-renewal.js')
+    def admin_renewal_script():
+        return FileResponse(assets / 'admin-renewal.js', media_type='application/javascript')
+
     @app.get('/workspace.css')
     def workspace_styles():
         return FileResponse(assets / 'workspace.css', media_type='text/css')
@@ -145,6 +158,17 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
     @app.post('/v1/auth/logout')
     def logout(token: Token):
         return store.logout(token)
+
+    @app.get('/v1/admin/students')
+    def admin_students(token: Token):
+        return store.admin_students(token)
+
+    @app.post('/v1/admin/renewals', status_code=201)
+    def admin_renewal(data: RenewalInput, response: Response, token: Token):
+        result = store.admin_renewal(token, data.model_dump())
+        if result['duplicate']:
+            response.status_code = 200
+        return result
 
     @app.get('/v1/admin/classes')
     def admin_classes(token: Token):
