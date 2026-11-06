@@ -575,20 +575,42 @@ class RuntimeStore:
             return {'date': selected.isoformat(), 'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
 
+    def _weekly_period(self, week_start):
+        try:
+            selected = (datetime.strptime(week_start, '%Y-%m-%d').date() if week_start is not None
+                        else datetime.fromtimestamp(self.clock(), CHINA_TZ).date())
+            monday = selected - timedelta(days=selected.weekday())
+            if week_start is not None and week_start != monday.isoformat():
+                raise ValueError()
+        except (TypeError, ValueError):
+            raise Problem(422, 'invalid_week', '请选择周一开始的周次') from None
+        start = int(datetime.combine(monday, datetime.min.time(), CHINA_TZ).timestamp())
+        return monday, start
+
+    @staticmethod
+    def _weekly_result(monday, now, rows):
+        overall = {key: 0 for key in ('expected_count', 'arrived_count', 'leave_count',
+                                      'missing_count', 'completed_lessons', 'pending_lessons')}
+        classes = []
+        for row in rows:
+            item = dict(row)
+            for key in overall:
+                overall[key] += item[key]
+            item['rate_percent'] = (round(item['arrived_count'] / item['expected_count'] * 100, 1)
+                                    if item['expected_count'] else None)
+            classes.append(item)
+        overall['rate_percent'] = (round(overall['arrived_count'] / overall['expected_count'] * 100, 1)
+                                   if overall['expected_count'] else None)
+        return {'week_start': monday.isoformat(), 'week_end': (monday + timedelta(days=6)).isoformat(),
+                'timezone': 'Asia/Shanghai', 'generated_at': now,
+                'overall': overall, 'classes': classes}
+
     def teacher_weekly_report(self, token, week_start=None):
         def run(db, actor):
             self._require_kind(actor, 'user')
             if 'teacher' not in actor['roles']:
                 raise Problem(403, 'teacher_required', '需要教师身份')
-            try:
-                selected = (datetime.strptime(week_start, '%Y-%m-%d').date() if week_start is not None
-                            else datetime.fromtimestamp(self.clock(), CHINA_TZ).date())
-                monday = selected - timedelta(days=selected.weekday())
-                if week_start is not None and week_start != monday.isoformat():
-                    raise ValueError()
-            except (TypeError, ValueError):
-                raise Problem(422, 'invalid_week', '请选择周一开始的周次') from None
-            start = int(datetime.combine(monday, datetime.min.time(), CHINA_TZ).timestamp())
+            monday, start = self._weekly_period(week_start)
             now = self.clock()
             rows = db.execute('''SELECT c.id AS class_id,c.name AS class_name,c.course_name,
                     count(ls.student_id) FILTER (WHERE ls.expected AND l.state='scheduled' AND l.ends_at<=%s) AS expected_count,
@@ -607,21 +629,30 @@ class RuntimeStore:
                 WHERE lt.org_id=%s AND lt.user_id=%s AND l.starts_at>=%s AND l.starts_at<%s
                 GROUP BY c.id ORDER BY c.name,c.id''',
                 (now, now, now, now, now, now, actor['org_id'], actor['id'], start, start + 7 * 86400)).fetchall()
-            overall = {key: 0 for key in ('expected_count', 'arrived_count', 'leave_count',
-                                          'missing_count', 'completed_lessons', 'pending_lessons')}
-            classes = []
-            for row in rows:
-                item = dict(row)
-                for key in overall:
-                    overall[key] += item[key]
-                item['rate_percent'] = (round(item['arrived_count'] / item['expected_count'] * 100, 1)
-                                        if item['expected_count'] else None)
-                classes.append(item)
-            overall['rate_percent'] = (round(overall['arrived_count'] / overall['expected_count'] * 100, 1)
-                                       if overall['expected_count'] else None)
-            return {'week_start': monday.isoformat(), 'week_end': (monday + timedelta(days=6)).isoformat(),
-                    'timezone': 'Asia/Shanghai', 'generated_at': now,
-                    'overall': overall, 'classes': classes}
+            return self._weekly_result(monday, now, rows)
+        return self.command(token, 'user', run)
+
+    def admin_weekly_report(self, token, week_start=None):
+        def run(db, actor):
+            self._require_admin(actor)
+            monday, start = self._weekly_period(week_start)
+            now = self.clock()
+            rows = db.execute('''SELECT c.id AS class_id,c.name AS class_name,c.course_name,
+                    count(ls.student_id) FILTER (WHERE ls.expected AND l.state='scheduled' AND l.ends_at<=%s) AS expected_count,
+                    count(ls.student_id) FILTER (WHERE ls.expected AND ar.status='arrived' AND l.state='scheduled' AND l.ends_at<=%s) AS arrived_count,
+                    count(ls.student_id) FILTER (WHERE ls.expected AND ar.status='leave' AND l.state='scheduled' AND l.ends_at<=%s) AS leave_count,
+                    count(ls.student_id) FILTER (WHERE ls.expected AND ar.status='missing' AND l.state='scheduled' AND l.ends_at<=%s) AS missing_count,
+                    count(DISTINCT l.id) FILTER (WHERE l.state='scheduled' AND l.ends_at<=%s) AS completed_lessons,
+                    count(DISTINCT l.id) FILTER (WHERE l.state='scheduled' AND l.ends_at>%s) AS pending_lessons
+                FROM lessons l
+                JOIN classes c ON c.org_id=l.org_id AND c.id=l.class_id
+                LEFT JOIN lesson_students ls ON ls.org_id=l.org_id AND ls.lesson_id=l.id
+                LEFT JOIN attendance_records ar ON ar.org_id=ls.org_id
+                    AND ar.lesson_id=ls.lesson_id AND ar.student_id=ls.student_id
+                WHERE l.org_id=%s AND l.starts_at>=%s AND l.starts_at<%s
+                GROUP BY c.id ORDER BY c.name,c.id''',
+                (now, now, now, now, now, now, actor['org_id'], start, start + 7 * 86400)).fetchall()
+            return self._weekly_result(monday, now, rows)
         return self.command(token, 'user', run)
 
     def teacher_lesson(self, token, lesson_id):

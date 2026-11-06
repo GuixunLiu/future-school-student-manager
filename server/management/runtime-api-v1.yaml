@@ -325,11 +325,13 @@ paths:
     get:
       tags: [admin]
       operationId: adminWeeklyReport
+      description: 已实现。按北京时间自然周汇总本机构全部课堂；实到除以已结束且未取消课堂的应到人次，请假计入应到，未结束课次单列。任意历史周使用相同口径实时查询，不改写历史数据。
       parameters:
-        - { $ref: '#/components/parameters/WeekStart' }
-        - { name: history, in: query, schema: { type: boolean, default: false } }
+        - { name: week_start, in: query, required: false, schema: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }, description: 北京时间周一；缺省为服务器当前周 }
       responses:
         '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /v1/admin/reports/monthly:
     get:
       tags: [admin]
