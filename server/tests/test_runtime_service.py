@@ -194,6 +194,60 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assert_problem(409, 'device_clock', self.store.tablet_checkin, DEVICE_TOKEN, future)
         self.assertEqual(0, self.read('SELECT count(*) AS n FROM attendance_events')['n'])
 
+    def test_teacher_lesson_list_is_date_and_scope_limited(self):
+        result = self.store.teacher_lessons(USER_TOKEN, '1970-01-01')
+        self.assertEqual('1970-01-01', result['date'])
+        self.assertEqual(['lesson-a'], [row['id'] for row in result['items']])
+        lesson = result['items'][0]
+        self.assertEqual(('虚构甲班', 1, 0, 0, 1),
+                         (lesson['class_name'], lesson['expected_count'], lesson['arrived_count'],
+                          lesson['leave_count'], lesson['missing_count']))
+        self.assertEqual(['lesson-b'], [row['id'] for row in self.store.teacher_lessons(OTHER_USER_TOKEN)['items']])
+        self.assertEqual([], self.store.teacher_lessons(USER_TOKEN, '1970-01-02')['items'])
+        self.assert_problem(403, 'teacher_required', self.store.teacher_lessons, ADMIN_TOKEN)
+        self.assert_problem(403, 'user_required', self.store.teacher_lessons, DEVICE_TOKEN)
+        self.assert_problem(422, 'invalid_date', self.store.teacher_lessons, USER_TOKEN, '2026-02-30')
+
+    def test_http_teacher_list_and_makeup_are_scoped_idempotent_and_versioned(self):
+        from fastapi.testclient import TestClient
+        from management.runtime_api import create_app
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True))
+        teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        other = {'Authorization': 'Bearer ' + OTHER_USER_TOKEN}
+        listed = client.get('/v1/teacher/lessons?date=1970-01-01', headers=teacher)
+        self.assertEqual(200, listed.status_code, listed.text)
+        self.assertEqual(['lesson-a'], [row['id'] for row in listed.json()['items']])
+        self.assertEqual(422, client.get('/v1/teacher/lessons?date=not-a-date', headers=teacher).status_code)
+        path = '/v1/teacher/lessons/lesson-a/makeup'
+        stale = client.post(path, headers=teacher,
+                            json=dict(correction('http-makeup-stale'), expected_revision=2))
+        self.assertEqual(409, stale.status_code, stale.text)
+        self.assertEqual('attendance_changed', stale.json()['error']['code'])
+        created = client.post(path, headers=teacher, json=correction('http-makeup'))
+        self.assertEqual(201, created.status_code, created.text)
+        duplicate = client.post(path, headers=teacher, json=correction('http-makeup'))
+        self.assertEqual(200, duplicate.status_code, duplicate.text)
+        self.assertTrue(duplicate.json()['duplicate'])
+        self.assertEqual(created.json()['event_id'], duplicate.json()['event_id'])
+        denied = client.post('/v1/teacher/lessons/lesson-a/leave', headers=other,
+                             json=correction('http-other-scope'))
+        self.assertEqual(403, denied.status_code, denied.text)
+        self.assertEqual(9, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
+
+    def test_http_teacher_leave_is_idempotent_and_does_not_debit(self):
+        from fastapi.testclient import TestClient
+        from management.runtime_api import create_app
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True))
+        teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        path = '/v1/teacher/lessons/lesson-a/leave'
+        created = client.post(path, headers=teacher, json=correction('http-leave'))
+        self.assertEqual(201, created.status_code, created.text)
+        self.assertEqual(('leave', 10, 1),
+                         (created.json()['status'], created.json()['balance_units'], created.json()['balance_revision']))
+        self.assertEqual(200, client.post(path, headers=teacher, json=correction('http-leave')).status_code)
+        self.assertEqual(10, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
+        self.assertEqual(2, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
+
     def test_teacher_makeup_debits_once_and_duplicate_is_safe(self):
         result = self.store.teacher_correction(USER_TOKEN, 'lesson-a', 'makeup', correction())
         self.assertEqual(('arrived', 9, 2), (result['status'], result['balance_units'], result['balance_revision']))

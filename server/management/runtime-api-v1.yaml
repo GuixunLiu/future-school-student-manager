@@ -157,10 +157,13 @@ paths:
     get:
       tags: [teacher]
       operationId: teacherLessons
+      description: 已实现。按北京时间日期返回当前教师同时获授课和班级授权的课堂；缺省为服务器当天。
       parameters:
-        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+        - { name: date, in: query, required: false, schema: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' } }
       responses:
         '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /v1/teacher/lessons/{lessonId}:
     get:
       tags: [teacher]
@@ -202,6 +205,7 @@ paths:
     post:
       tags: [teacher]
       operationId: teacherMakeup
+      description: 已实现。仅本人授课班级；首次操作201，同一操作编号及内容的安全重复返回200。
       parameters:
         - { $ref: '#/components/parameters/LessonId' }
       requestBody:
@@ -210,12 +214,16 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AttendanceCorrection' }
       responses:
+        '200': { $ref: '#/components/responses/Object' }
         '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /v1/teacher/lessons/{lessonId}/leave:
     post:
       tags: [teacher]
       operationId: teacherLeave
+      description: 已实现。请假不扣课时；首次操作201，同一操作编号及内容的安全重复返回200。
       parameters:
         - { $ref: '#/components/parameters/LessonId' }
       requestBody:
@@ -224,7 +232,11 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AttendanceCorrection' }
       responses:
+        '200': { $ref: '#/components/responses/Object' }
         '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /v1/teacher/students/{studentId}/balance:
     put:
       tags: [teacher]

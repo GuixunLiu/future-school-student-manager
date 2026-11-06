@@ -545,6 +545,36 @@ class RuntimeStore:
             return response
         return self.command(token, 'user', run)
 
+    def teacher_lessons(self, token, day=None):
+        def run(db, actor):
+            self._require_kind(actor, 'user')
+            if 'teacher' not in actor['roles']:
+                raise Problem(403, 'teacher_required', '需要教师身份')
+            try:
+                selected = (datetime.strptime(day, '%Y-%m-%d').date() if day is not None
+                            else datetime.fromtimestamp(self.clock(), CHINA_TZ).date())
+            except (TypeError, ValueError):
+                raise Problem(422, 'invalid_date', '日期格式应为 YYYY-MM-DD') from None
+            start = int(datetime.combine(selected, datetime.min.time(), CHINA_TZ).timestamp())
+            rows = db.execute('''SELECT l.id,l.class_id,l.starts_at,l.ends_at,l.state,
+                    c.name AS class_name,c.course_name,
+                    count(ls.student_id) FILTER (WHERE ls.expected) AS expected_count,
+                    count(ls.student_id) FILTER (WHERE ar.status='arrived') AS arrived_count,
+                    count(ls.student_id) FILTER (WHERE ar.status='leave') AS leave_count,
+                    count(ls.student_id) FILTER (WHERE ls.expected AND ar.status='missing') AS missing_count
+                FROM lesson_teachers lt
+                JOIN lessons l ON l.org_id=lt.org_id AND l.id=lt.lesson_id
+                JOIN teacher_classes tc ON tc.org_id=lt.org_id AND tc.user_id=lt.user_id AND tc.class_id=l.class_id
+                JOIN classes c ON c.org_id=l.org_id AND c.id=l.class_id
+                LEFT JOIN lesson_students ls ON ls.org_id=l.org_id AND ls.lesson_id=l.id
+                LEFT JOIN attendance_records ar ON ar.org_id=ls.org_id
+                    AND ar.lesson_id=ls.lesson_id AND ar.student_id=ls.student_id
+                WHERE lt.org_id=%s AND lt.user_id=%s AND l.starts_at>=%s AND l.starts_at<%s
+                GROUP BY l.id,c.id ORDER BY l.starts_at,l.id''',
+                (actor['org_id'], actor['id'], start, start + 86400)).fetchall()
+            return {'date': selected.isoformat(), 'items': [dict(row) for row in rows]}
+        return self.command(token, 'user', run)
+
     def teacher_lesson(self, token, lesson_id):
         def run(db, actor):
             lesson = db.execute('SELECT * FROM lessons WHERE org_id=%s AND id=%s',

@@ -102,6 +102,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
     def runtime_styles():
         return FileResponse(assets / 'runtime.css', media_type='text/css')
 
+    @app.get('/teacher-runtime.js')
+    def teacher_runtime_script():
+        return FileResponse(assets / 'teacher-runtime.js', media_type='application/javascript')
+
     @app.get('/workspace.css')
     def workspace_styles():
         return FileResponse(assets / 'workspace.css', media_type='text/css')
@@ -167,6 +171,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False):
         if result['duplicate']:
             response.status_code = 200
         return result
+
+    @app.get('/v1/teacher/lessons')
+    def teacher_lessons(token: Token, date: str | None = None):
+        return store.teacher_lessons(token, date)
 
     @app.get('/v1/teacher/lessons/{lesson_id}')
     def teacher_lesson(lesson_id: str, token: Token):
