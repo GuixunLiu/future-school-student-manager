@@ -60,6 +60,32 @@ class RuntimePreflightTests(unittest.TestCase):
             self.assertEqual('owner_must_be_root_or_current_user',
                              preflight.check_private_environment(path)['detail'])
 
+    def test_standard_linux_venv_python_symlink_requires_a_real_venv(self):
+        with tempfile.TemporaryDirectory(prefix='runtime-preflight-venv-') as folder:
+            base = Path(folder)
+            root = base / 'runtime'
+            binary = base / 'venv' / 'bin'
+            root.mkdir()
+            binary.mkdir(parents=True)
+            interpreter = binary / 'python'
+            interpreter.write_text('test interpreter', encoding='utf-8')
+            config = binary.parent / 'pyvenv.cfg'
+            config.write_text('home = /usr/bin\n', encoding='utf-8')
+            symlink_path = type('SymlinkPath', (type(Path()),), {
+                'is_symlink': lambda self: self.name == 'python',
+            })
+            python = symlink_path(interpreter)
+            with patch.object(preflight.os, 'access', return_value=True), patch.object(
+                    preflight, 'check_private_environment',
+                    return_value=preflight.outcome('environment_file', 'pass', 'test')):
+                accepted = preflight.check_directories(root, python, base / 'private.env')
+                self.assertEqual('pass', accepted['status'], accepted)
+                config.unlink()
+                rejected = preflight.check_directories(root, python, base / 'private.env')
+            self.assertEqual('fail', rejected['status'])
+            self.assertEqual('python_symlink_requires_valid_venv', rejected['detail'])
+            self.assertFalse(preflight.valid_venv_python_symlink(base / 'python'))
+
     def test_database_failure_never_leaks_dsn_or_driver_error_text(self):
         secret = 'host=example.invalid password=do-not-print-this dbname=private'
         driver = types.ModuleType('psycopg')

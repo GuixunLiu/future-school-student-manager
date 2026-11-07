@@ -9,17 +9,17 @@ import zipfile
 
 SERVER = Path(__file__).resolve().parents[1]
 FORMAT = 'future-school-unified-runtime-release-v1'
-SCHEMA = 'fresh-start-runtime-v1'
+SCHEMA = 'fresh-start-runtime-v2'
 ENTRYPOINT = 'management.runtime_main:app'
 CODE = [
     *(f'business/{name}.py' for name in ('__init__', 'api', 'models', 'security', 'store')),
     *(f'management/{name}.py' for name in (
         '__init__', 'fresh_start', 'fresh_start_postgres', 'runtime_api', 'runtime_faces',
-        'runtime_main', 'runtime_release', 'runtime_schema', 'runtime_service')),
+        'runtime_main', 'runtime_release', 'runtime_reports', 'runtime_schema', 'runtime_service')),
 ]
 WEB = [
     'runtime.html', 'runtime.js', 'runtime.css', 'workspace.css', 'teacher-runtime.js',
-    'teacher-report.js', 'teacher-face.js', 'admin-report.js', 'admin-monthly.js',
+    'teacher-report.js', 'teacher-face.js', 'report-history.js', 'admin-report.js', 'admin-monthly.js',
     'admin-renewal.js', 'admin-enrollment.js', 'admin-roster-sync.js', 'admin-accounts.js',
     'admin-schedule.js', 'admin-directory.js', 'admin-face.js', 'face-engine.js',
     'face-api.min.js', 'ort.wasm.min.js', 'ort-wasm-simd-threaded.mjs',

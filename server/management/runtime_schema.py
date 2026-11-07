@@ -82,6 +82,7 @@ CREATE TABLE lessons (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     class_id TEXT NOT NULL,
+    schedule_id TEXT,
     starts_at BIGINT NOT NULL,
     ends_at BIGINT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('scheduled','cancelled')),
@@ -89,6 +90,7 @@ CREATE TABLE lessons (
     UNIQUE(org_id, id),
     UNIQUE(org_id, class_id, id),
     FOREIGN KEY(org_id, class_id) REFERENCES classes(org_id, id),
+    FOREIGN KEY(org_id, schedule_id) REFERENCES class_schedule_templates(org_id, id),
     CHECK(ends_at > starts_at)
 );
 CREATE UNIQUE INDEX lessons_scheduled_class_time
@@ -119,8 +121,6 @@ CREATE TABLE lesson_teachers (
     FOREIGN KEY(org_id, lesson_id) REFERENCES lessons(org_id, id),
     FOREIGN KEY(org_id, user_id) REFERENCES users(org_id, id)
 );
-ALTER TABLE students
-    ADD CONSTRAINT students_org_class_id_key UNIQUE(org_id, class_id, id);
 CREATE TABLE class_versions (
     org_id TEXT NOT NULL,
     class_id TEXT NOT NULL,
@@ -228,7 +228,10 @@ CREATE TABLE renewal_records (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     student_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
     units_added INTEGER NOT NULL CHECK(units_added > 0),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents >= 0),
+    unit_price_cents INTEGER NOT NULL CHECK(unit_price_cents >= 0),
     occurred_at BIGINT NOT NULL,
     source_ref TEXT NOT NULL,
     actor_id TEXT NOT NULL,
@@ -236,6 +239,7 @@ CREATE TABLE renewal_records (
     created_at BIGINT NOT NULL,
     UNIQUE(org_id, source_ref),
     FOREIGN KEY(org_id, student_id) REFERENCES students(org_id, id),
+    FOREIGN KEY(org_id, course_id) REFERENCES courses(org_id, id),
     FOREIGN KEY(org_id, actor_id) REFERENCES users(org_id, id)
 );
 CREATE TABLE face_profiles (
@@ -351,7 +355,7 @@ BEGIN
 END;
 $$;
 INSERT INTO schema_migrations VALUES(
-    'fresh-start-runtime-v1', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+    'fresh-start-runtime-v2', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
 );
 """.strip() + "\n"
 

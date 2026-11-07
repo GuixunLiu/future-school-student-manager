@@ -55,15 +55,20 @@ class RuntimePostgresSchemaTests(unittest.TestCase):
     def seed(connection):
         connection.execute("""
             INSERT INTO organizations VALUES('org-fiction','fiction',1);
+            INSERT INTO courses VALUES
+                ('course-a','org-fiction','虚构课程','虚构课程内容',12800,TRUE,1);
             INSERT INTO classes VALUES
-                ('class-a','org-fiction','虚构甲班','虚构课程',1),
-                ('class-b','org-fiction','虚构乙班','虚构课程',1);
-            INSERT INTO students(id,org_id,class_id,name,external_ref,active) VALUES
-                ('student-a','org-fiction','class-a','虚构学生甲','fiction-a',TRUE),
-                ('student-b','org-fiction','class-b','虚构学生乙','fiction-b',TRUE);
+                ('class-a','org-fiction','虚构甲班','course-a',1),
+                ('class-b','org-fiction','虚构乙班','course-a',1);
+            INSERT INTO students(id,org_id,name,external_ref,active) VALUES
+                ('student-a','org-fiction','虚构学生甲','fiction-a',TRUE),
+                ('student-b','org-fiction','虚构学生乙','fiction-b',TRUE);
+            INSERT INTO student_class_enrollments VALUES
+                ('enrollment-a','org-fiction','student-a','class-a',0,NULL,0),
+                ('enrollment-b','org-fiction','student-b','class-b',0,NULL,0);
             INSERT INTO users VALUES
                 ('teacher-a','org-fiction','fiction-teacher','虚构教师',TRUE,1,FALSE);
-            INSERT INTO lessons VALUES
+            INSERT INTO lessons(id,org_id,class_id,starts_at,ends_at,state,created_at) VALUES
                 ('lesson-a','org-fiction','class-a',100,200,'scheduled',1),
                 ('lesson-b','org-fiction','class-b',100,200,'scheduled',1);
             INSERT INTO lesson_students VALUES
@@ -102,9 +107,9 @@ class RuntimePostgresSchemaTests(unittest.TestCase):
         constraints = {row[0] for row in connection.execute(
             "SELECT conname FROM pg_constraint WHERE connamespace='public'::regnamespace")}
         self.assertIn('attendance_records_last_event_fk', constraints)
-        self.assertIn('students_org_class_id_key', constraints)
+        self.assertTrue({'courses', 'student_class_enrollments'} <= tables)
         applied_at = connection.execute(
-            "SELECT applied_at FROM schema_migrations WHERE version='fresh-start-runtime-v1'").fetchone()[0]
+            "SELECT applied_at FROM schema_migrations WHERE version='fresh-start-runtime-v2'").fetchone()[0]
         self.assertGreater(applied_at, 0)
 
     def test_roster_and_enrollment_keep_class_snapshots_but_reject_unknown_students(self):
@@ -113,7 +118,8 @@ class RuntimePostgresSchemaTests(unittest.TestCase):
             connection.execute("INSERT INTO lesson_students VALUES('org-fiction','class-b','lesson-b','student-a',TRUE,1)")
             connection.execute("""INSERT INTO enrollment_records VALUES
                 ('enroll-snapshot','org-fiction','student-a','class-b',1,'enroll-ref-snapshot','teacher-a',1)""")
-            connection.execute("UPDATE students SET class_id='class-b' WHERE id='student-a'")
+            connection.execute("UPDATE student_class_enrollments SET left_at=2 WHERE student_id='student-a' AND class_id='class-a'")
+            connection.execute("INSERT INTO student_class_enrollments VALUES('enrollment-a-b','org-fiction','student-a','class-b',2,NULL,2)")
         snapshot = connection.execute("""SELECT class_id FROM lesson_students
             WHERE lesson_id='lesson-a' AND student_id='student-a'""").fetchone()[0]
         self.assertEqual('class-a', snapshot)

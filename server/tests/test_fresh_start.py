@@ -71,6 +71,10 @@ class FreshStartTests(unittest.TestCase):
         for entry in review["entries"]:
             entry.update(opening_units=entry["suggested_opening_units"] or 0,
                          confirmed=True, review_ref="fictional-review-2026")
+        for entry in review["course_entries"]:
+            entry.update(content="虚构课程内容", unit_price_cents=12800, confirmed=True)
+        for entry in review["schedule_entries"]:
+            entry.update(teacher_id="user", confirmed=True)
         return review
 
     def test_matched_balances_export_without_history_or_credentials(self):
@@ -78,7 +82,7 @@ class FreshStartTests(unittest.TestCase):
             db.execute("DELETE FROM students WHERE id IN ('different','missing')")
             db.execute("DELETE FROM management_balances WHERE student_id IN ('different','missing')")
         self.sha256 = fresh_start.file_sha256(self.source)
-        review = self.template()
+        review = self.complete_review()
         self.assertEqual(review["entries"], [])
         bundle = fresh_start.build_bundle(self.source, self.sha256, review)
         self.assertEqual(bundle["counts"]["opening_balances"], 1)
@@ -110,9 +114,9 @@ class FreshStartTests(unittest.TestCase):
         first = fresh_start.build_bundle(self.source, self.sha256, review)
         second = fresh_start.build_bundle(self.source, self.sha256, copy.deepcopy(review))
         self.assertEqual(fresh_start.bundle_bytes(first), fresh_start.bundle_bytes(second))
-        self.assertEqual(first["counts"], dict(organizations=1, classes=1,
-            class_schedule_templates=1, students=3, opening_balances=3, users=1,
-            roles=1, teacher_classes=1, devices=1))
+        self.assertEqual(first["counts"], dict(organizations=1, courses=1, classes=1,
+            student_class_enrollments=3, class_schedule_templates=1, students=3,
+            opening_balances=3, users=1, roles=1, teacher_classes=1, devices=1))
         sources = {row["student_id"]: row["source"] for row in first["opening_balances"]}
         self.assertEqual(sources, dict(matched="matched_management_balance",
                                        different="manual_review", missing="manual_review"))
@@ -123,6 +127,21 @@ class FreshStartTests(unittest.TestCase):
         self.assertEqual(first["devices"], [dict(id="device", org_id="org", name="虚构设备",
             active=True, created_at=100, token_reissue_required=True)])
         self.assertNotIn("token_hash", first["devices"][0])
+
+    def test_course_and_schedule_require_explicit_valid_confirmation(self):
+        review = self.complete_review()
+        review["course_entries"][0]["unit_price_cents"] = None
+        with self.assertRaisesRegex(fresh_start.FreshStartError, "price"):
+            fresh_start.build_bundle(self.source, self.sha256, review)
+        review = self.complete_review()
+        review["schedule_entries"][0]["teacher_id"] = "unknown"
+        with self.assertRaisesRegex(fresh_start.FreshStartError, "assigned to its class"):
+            fresh_start.build_bundle(self.source, self.sha256, review)
+        review = self.template()
+        self.assertFalse(review["course_entries"][0]["confirmed"])
+        self.assertFalse(review["schedule_entries"][0]["confirmed"])
+        with self.assertRaises(fresh_start.FreshStartError):
+            fresh_start.build_bundle(self.source, self.sha256, review)
 
     def test_changed_source_and_invalid_review_sets_are_refused(self):
         wrong_hash = "0" * 64

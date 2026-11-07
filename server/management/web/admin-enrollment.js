@@ -10,17 +10,17 @@ async function adminEnrollmentDashboard(receipt=null){
  const classLabel=node('label','入班班级'),classSelect=node('select');classSelect.required=true;classSelect.setAttribute('aria-label','入班班级');for(const item of data.items){const option=node('option',item.name+(item.course_name?' · '+item.course_name:''));option.value=item.id;classSelect.append(option);}classLabel.append(classSelect);form.append(classLabel);
  const name=field(form,'学生姓名');name.maxLength=80;name.autocomplete='off';
  const external=field(form,'学生学号');external.maxLength=80;external.placeholder='机构内唯一学号';external.autocomplete='off';
- const units=field(form,'期初课时','number');units.min='0';units.max='10000000';units.step='1';units.value='0';units.inputMode='numeric';
+ const units=field(form,'期初课时（允许负数）','number');units.min='-1000000';units.max='10000000';units.step='1';units.value='0';units.inputMode='numeric';
  const occurred=field(form,'业务发生时间（北京时间）','datetime-local');occurred.value=chinaDateTimeLocal();
  const source=field(form,'业务来源编号');source.maxLength=100;source.placeholder='例如：报名单据或业务流水编号';
  const reasonLabel=node('label','入班说明','enrollment-wide'),reason=node('textarea');reason.className='enrollment-reason';reason.required=true;reason.maxLength=200;reason.value='新生入班期初课时';reasonLabel.append(reason);form.append(reasonLabel);
  const confirmation=node('label',undefined,'check renewal-confirmation enrollment-wide'),check=node('input');check.type='checkbox';check.required=true;confirmation.append(check,node('span','已核对学生、学号、入班班级、期初课时和来源编号'));form.append(confirmation);
- const hint=node('p','只建立学生当前班级，不回填历史签到，也不修改已生成课次的应到名单。本操作不记录金额。','hint enrollment-wide');form.append(hint);
+ const hint=node('p','只建立学生当前班级，不回填历史签到，也不修改已生成课次的应到名单。期初欠课可填负整数；本操作不记录金额。','hint enrollment-wide');form.append(hint);
  const submit=node('button','确认招新并入班');submit.type='submit';form.append(submit);panel.append(form);sections.push(panel);$('main').replaceChildren(...sections);
  let previousPayload='',commandRef='';
  form.addEventListener('submit',async event=>{
   event.preventDefault();const opening=Number(units.value),occurredAt=Math.floor(Date.parse(occurred.value+':00+08:00')/1000);
-  if(!Number.isInteger(opening)||opening<0){units.setCustomValidity('期初课时必须是零或正整数');units.reportValidity();return;}units.setCustomValidity('');
+  if(!Number.isInteger(opening)||opening < -1000000||opening>10000000){units.setCustomValidity('期初课时必须是 -1000000 至 10000000 的整数');units.reportValidity();return;}units.setCustomValidity('');
   if(!Number.isFinite(occurredAt)){occurred.setCustomValidity('请选择有效的业务发生时间');occurred.reportValidity();return;}occurred.setCustomValidity('');
   const payload={class_id:classSelect.value,name:name.value.trim(),external_ref:external.value.trim(),opening_units:opening,occurred_at:occurredAt,source_ref:source.value.trim(),reason:reason.value.trim(),command_ref:''};
   if(!payload.name){name.setCustomValidity('请填写学生姓名');name.reportValidity();return;}name.setCustomValidity('');if(!payload.external_ref){external.setCustomValidity('请填写学生学号');external.reportValidity();return;}external.setCustomValidity('');

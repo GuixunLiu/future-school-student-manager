@@ -323,7 +323,7 @@ paths:
                 class_id: { type: string, minLength: 1, maxLength: 80 }
                 name: { type: string, minLength: 1, maxLength: 80 }
                 external_ref: { type: string, minLength: 1, maxLength: 80 }
-                opening_units: { type: integer, minimum: 0, maximum: 10000000 }
+                opening_units: { type: integer, minimum: -1000000, maximum: 10000000 }
                 occurred_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间业务发生时间对应的 Unix 秒；不得明显晚于服务器时间 }
                 source_ref: { type: string, minLength: 1, maxLength: 100 }
                 reason: { type: string, minLength: 1, maxLength: 200 }
@@ -339,7 +339,7 @@ paths:
     put:
       tags: [admin]
       operationId: adminUpdateStudent
-      description: 已实现。管理员编辑姓名、学号、学籍状态和当前班级，使用独立资料版本防止并发覆盖。转班或停用只移除未开始且无签到处理的旧班名单；转班或恢复在读时按目标班每节课规则加入未来名单，规则不一致则留待核对。已处理课次和招新记录保留当时班级快照，历史签到、余额和流水不变。
+      description: 已实现。管理员编辑姓名、学号、学籍状态和一个或多个当前班级，使用独立资料版本防止并发覆盖。退出某个班只移除该班未开始且无签到处理的名单，不影响其他班；新增班级或恢复在读时按目标班每节课规则加入未来名单，规则不一致则留待核对。已处理课次和招新记录保留当时班级快照，历史签到、余额和流水不变。
       parameters:
         - { $ref: '#/components/parameters/StudentId' }
       requestBody:
@@ -349,9 +349,9 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [class_id, name, external_ref, active, expected_version, reason, command_ref]
+              required: [class_ids, name, external_ref, active, expected_version, reason, command_ref]
               properties:
-                class_id: { type: string, minLength: 1, maxLength: 80 }
+                class_ids: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 1, maxLength: 80 } }
                 name: { type: string, minLength: 1, maxLength: 80 }
                 external_ref: { type: string, minLength: 1, maxLength: 80 }
                 active: { type: boolean }
@@ -506,7 +506,7 @@ paths:
     post:
       tags: [admin]
       operationId: adminCreateLesson
-      description: 已实现。管理员为本机构班级创建尚未开始的课次，授课教师必须在职且已获该班级授权，同班同一时间的有效课次不可重复，时长最多12小时。课次、资料版本0、教师、版本1的默认扣课规则、该班全部当前在读学生的应到名单及未签到版本0记录在同一事务内创建；空班也可建立课次和规则。首次201、安全重复200，不扣课时、不改余额或历史。
+      description: 已实现。管理员为启用课程的本机构班级创建尚未开始的课次，授课教师必须在职且已获该班级授权；选择排课模板时课次教师必须与模板一致。同班同一时间的有效课次不可重复，时长最多12小时。课次、资料版本0、教师、版本1的默认扣课规则、该班全部当前在读学生的应到名单及未签到版本0记录在同一事务内创建；空班也可建立课次和规则。首次201、安全重复200，不扣课时、不改余额或历史。
       requestBody:
         required: true
         content:
@@ -518,6 +518,7 @@ paths:
               properties:
                 class_id: { type: string, minLength: 1, maxLength: 80 }
                 teacher_id: { type: string, minLength: 1, maxLength: 80 }
+                schedule_id: { type: [string, 'null'], minLength: 1, maxLength: 80 }
                 starts_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间开始时间对应的 Unix 秒；必须晚于服务器当前时间 }
                 ends_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间结束时间对应的 Unix 秒；最长12小时 }
                 charge_units: { type: integer, minimum: 1, maximum: 10000000 }
@@ -690,6 +691,69 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/courses:
+    get:
+      tags: [admin]
+      operationId: adminCourses
+      description: 已实现。返回本机构全部课程、课程内容、当前标准单价、启停状态和关联班级数。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateCourse
+      description: 已实现。创建启用课程；名称在机构内唯一，金额使用非负整数分。操作编号安全重复返回200，不重复建档。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, content, unit_price_cents, reason, command_ref]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                content: { type: string, minLength: 1, maxLength: 2000 }
+                unit_price_cents: { type: integer, minimum: 0, maximum: 100000000 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/courses/{courseId}:
+    put:
+      tags: [admin]
+      operationId: adminUpdateCourse
+      description: 已实现。编辑课程内容、标准单价和启停状态。courses 无版本字段，并发写入由事务行锁序列化，不提供乐观版本校验。停用保留现有班级及历史，但禁止新建班级、续费和新建课次；调价不改写续费快照。
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, content, unit_price_cents, active, reason, command_ref]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                content: { type: string, minLength: 1, maxLength: 2000 }
+                unit_price_cents: { type: integer, minimum: 0, maximum: 100000000 }
+                active: { type: boolean }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /v1/admin/classes:
     get:
       tags: [admin]
@@ -701,7 +765,7 @@ paths:
     post:
       tags: [admin]
       operationId: adminCreateClass
-      description: 已实现。创建机构内唯一名称的班级，初始资料版本为0；安全重复返回200。
+      description: 已实现。按启用课程创建机构内唯一名称的班级，初始资料版本为0；安全重复返回200。
       requestBody:
         required: true
         content:
@@ -709,10 +773,10 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [name, course_name, reason, command_ref]
+              required: [name, course_id, reason, command_ref]
               properties:
                 name: { type: string, minLength: 1, maxLength: 80 }
-                course_name: { type: string, minLength: 1, maxLength: 80 }
+                course_id: { type: string, minLength: 1, maxLength: 80 }
                 reason: { type: string, minLength: 1, maxLength: 200 }
                 command_ref: { $ref: '#/components/schemas/EventRef' }
       responses:
@@ -725,7 +789,7 @@ paths:
     put:
       tags: [admin]
       operationId: adminUpdateClass
-      description: 已实现。编辑班级和课程名称；资料版本不匹配或名称重复时拒绝，不改写历史课次或签到。
+      description: 已实现。编辑班级名称和所属课程；资料版本不匹配或名称重复时拒绝，不改写历史课次或签到。保留当前已停用课程的归属，但不能换入另一个已停用课程。
       parameters:
         - { $ref: '#/components/parameters/ClassId' }
       requestBody:
@@ -735,10 +799,10 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [name, course_name, expected_version, reason, command_ref]
+              required: [name, course_id, expected_version, reason, command_ref]
               properties:
                 name: { type: string, minLength: 1, maxLength: 80 }
-                course_name: { type: string, minLength: 1, maxLength: 80 }
+                course_id: { type: string, minLength: 1, maxLength: 80 }
                 expected_version: { type: integer, minimum: 0 }
                 reason: { type: string, minLength: 1, maxLength: 200 }
                 command_ref: { $ref: '#/components/schemas/EventRef' }
@@ -752,7 +816,7 @@ paths:
     put:
       tags: [admin]
       operationId: adminSetClassTeacher
-      description: 已实现。设置一名在职教师或清空班级任课。仅同步调整未开始且无任何签到处理课次的授课教师；已开始或已处理课次保留原教师快照。返回两类课次数量，余额和历史不变。
+      description: 已实现。设置多名在职教师轮流授课或清空班级任课授权。仍被本班排课模板引用的教师不能直接移除，须先调整模板。无模板的未处理未来课次按首位教师调整，有模板的课次保留模板教师；已开始或已处理课次保留原教师快照。返回两类课次数量，余额和历史不变。
       parameters:
         - { $ref: '#/components/parameters/ClassId' }
       requestBody:
@@ -762,14 +826,84 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [teacher_id, expected_version, reason, command_ref]
+              required: [teacher_ids, expected_version, reason, command_ref]
               properties:
-                teacher_id: { type: [string, 'null'], maxLength: 80 }
+                teacher_ids: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 80 } }
                 expected_version: { type: integer, minimum: 0 }
                 reason: { type: string, minLength: 1, maxLength: 200 }
                 command_ref: { $ref: '#/components/schemas/EventRef' }
       responses:
         '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/schedule-templates:
+    get:
+      tags: [admin]
+      operationId: adminScheduleTemplates
+      description: 已实现。返回本机构全部每周或隔周排课模板、轮课教师、生效日期和关联课次数；时区固定为北京时间。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateScheduleTemplate
+      description: 已实现。创建每周或隔周模板，支持次日结束。锚点日期星期必须与排课星期一致；教师须在职且已授权给该班，课程须启用。不会自动生成整学期课次。相同命令安全重复返回200。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleTemplateCreate' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/schedule-templates/{scheduleId}:
+    put:
+      tags: [admin]
+      operationId: adminUpdateScheduleTemplate
+      description: 已实现。编辑周期、时间、生效日期和教师；班级身份不可改变。模板无版本字段，由班级及模板事务行锁序列化并发写入。已有课次、签到、余额和历史保持不变。
+      parameters:
+        - { $ref: '#/components/parameters/ScheduleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleTemplateUpdate' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/schedule-templates/{scheduleId}/delete:
+    post:
+      tags: [admin]
+      operationId: adminDeleteScheduleTemplate
+      description: 已实现。使用带原因的删除操作而非 HTTP DELETE，以保留幂等回执和审计。已被课次引用的模板禁止删除；未引用模板可删除，重复命令返回原回执。
+      parameters:
+        - { $ref: '#/components/parameters/ScheduleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, command_ref]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -790,7 +924,7 @@ paths:
     post:
       tags: [admin]
       operationId: adminRenewal
-      description: 已实现。管理员按最新服务器余额累加课时；续费记录、余额更新、不可变流水、审计和每名有效绑定家长的待发送通知任务在同一事务内创建。操作编号安全重试不重复入账，业务来源编号在本机构内唯一；不记录金额，不启用真实微信发送。
+      description: 已实现。管理员按最新服务器余额累加课时；续费记录、余额更新、不可变流水、审计和每名有效绑定家长的待发送通知任务在同一事务内创建。保存课程、整数分实收金额与成交单价快照；课程调价不改写历史。操作编号安全重试不重复入账，业务来源编号在本机构内唯一；已停用课程不能续费，不启用真实微信发送。
       requestBody:
         required: true
         content:
@@ -798,10 +932,13 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [student_id, units_added, occurred_at, source_ref, reason, command_ref]
+              required: [student_id, course_id, units_added, amount_cents, unit_price_cents, occurred_at, source_ref, reason, command_ref]
               properties:
                 student_id: { type: string, minLength: 1, maxLength: 80 }
+                course_id: { type: string, minLength: 1, maxLength: 80 }
                 units_added: { type: integer, minimum: 1, maximum: 11000000 }
+                amount_cents: { type: integer, minimum: 0, maximum: 100000000 }
+                unit_price_cents: { type: integer, minimum: 0, maximum: 100000000 }
                 occurred_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间业务发生时间对应的 Unix 秒；不得明显晚于服务器时间 }
                 source_ref: { type: string, minLength: 1, maxLength: 100 }
                 reason: { type: string, minLength: 1, maxLength: 200 }
@@ -828,23 +965,81 @@ paths:
     get:
       tags: [admin]
       operationId: adminMonthlyReport
-      description: 已实现。按业务发生时间和北京时间自然月汇总独立招新、续费记录；续费人数按学生去重，笔数和课时按事件汇总。不从期初、签到或调账反推，不包含金额；明细每类最多返回前 1000 条，汇总不受明细上限影响。
+      description: 已实现。按业务发生时间和北京时间自然月汇总独立招新、续费记录；续费人数按学生去重，笔数、课时和整数分实收金额按事件汇总，明细保留课程、实收金额与成交单价快照。不从期初、签到或调账反推；明细每类最多返回前 1000 条，汇总不受明细上限影响。
       parameters:
         - { name: month, in: query, required: false, schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }, description: 北京时间自然月；缺省为服务器当前月 }
       responses:
         '200': { $ref: '#/components/responses/Object' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
-  /v1/admin/reports/{kind}/{period}/generate:
+  /v1/admin/report-runs:
+    get:
+      tags: [admin]
+      operationId: adminListReportRuns
+      description: 已实现。按机构和周期列出生成版本，最新版本在前；失败与完成版本均保留。
+      parameters:
+        - { name: kind, in: query, required: true, schema: { type: string, enum: [weekly, monthly] } }
+        - { name: period_start, in: query, required: true, schema: { type: string }, description: 周报为北京时间周一 YYYY-MM-DD，月报为 YYYY-MM }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
     post:
       tags: [admin]
       operationId: adminGenerateReport
-      parameters:
-        - { name: kind, in: path, required: true, schema: { type: string, enum: [weekly, monthly] } }
-        - { name: period, in: path, required: true, schema: { type: string } }
-      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      description: 已实现。同步生成不可变快照并新增版本；当前周期标记为进行中，未来周期拒绝。相同操作编号返回原回执，失败也保存版本。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind, period_start, command_ref]
+              properties:
+                kind: { type: string, enum: [weekly, monthly] }
+                period_start: { type: string, minLength: 7, maxLength: 10 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
       responses:
-        '202': { $ref: '#/components/responses/Object' }
+        '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复 }
+        '201': { $ref: '#/components/responses/Object', description: 新版本已保存；run.status 可为 complete 或 failed }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/report-runs/{run_id}:
+    get:
+      tags: [admin]
+      operationId: adminGetReportRun
+      description: 已实现。返回本机构指定版本的元数据与不可变 payload；失败版本 payload 为 null。
+      parameters:
+        - { name: run_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 80 } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/admin/report-runs/{run_id}/retry:
+    post:
+      tags: [admin]
+      operationId: adminRetryReportRun
+      description: 已实现。仅允许失败版本；新增版本并保留原失败记录，不覆盖历史。自动任务对上一周和上一月遵循同样的新版本重试规则。
+      parameters:
+        - { name: run_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 80 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [command_ref]
+              properties:
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object', description: 安全重复，返回原重试回执 }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /v1/wechat/callback:
     get:
       tags: [wechat]
@@ -908,9 +1103,43 @@ components:
     LessonId: { name: lessonId, in: path, required: true, schema: { type: string } }
     ClassId: { name: classId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 80 } }
     StudentId: { name: studentId, in: path, required: true, schema: { type: string } }
+    ScheduleId: { name: scheduleId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 80 } }
     WeekStart: { name: week_start, in: query, required: true, schema: { type: string, format: date }, description: 北京时间周一 }
   schemas:
     EventRef: { type: string, minLength: 1, maxLength: 80 }
+    ScheduleTemplateUpdate:
+      type: object
+      additionalProperties: false
+      required: [weekday, interval_weeks, anchor_date, start_time, end_time, duration_minutes, end_day_offset, effective_date, teacher_id, reason, command_ref]
+      properties:
+        weekday: { type: integer, minimum: 1, maximum: 7, description: 周一至周日对应1至7 }
+        interval_weeks: { type: integer, enum: [1, 2] }
+        anchor_date: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
+        start_time: { type: string, pattern: '^[0-9]{2}:[0-9]{2}$' }
+        end_time: { type: string, pattern: '^[0-9]{2}:[0-9]{2}$' }
+        duration_minutes: { type: integer, minimum: 1, maximum: 720 }
+        end_day_offset: { type: integer, enum: [0, 1] }
+        effective_date: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
+        teacher_id: { type: string, minLength: 1, maxLength: 80 }
+        reason: { type: string, minLength: 1, maxLength: 200 }
+        command_ref: { $ref: '#/components/schemas/EventRef' }
+    ScheduleTemplateCreate:
+      type: object
+      additionalProperties: false
+      required: [class_id, weekday, interval_weeks, anchor_date, start_time, end_time, duration_minutes, end_day_offset, effective_date, teacher_id, reason, command_ref]
+      properties:
+        class_id: { type: string, minLength: 1, maxLength: 80 }
+        weekday: { type: integer, minimum: 1, maximum: 7 }
+        interval_weeks: { type: integer, enum: [1, 2] }
+        anchor_date: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
+        start_time: { type: string, pattern: '^[0-9]{2}:[0-9]{2}$' }
+        end_time: { type: string, pattern: '^[0-9]{2}:[0-9]{2}$' }
+        duration_minutes: { type: integer, minimum: 1, maximum: 720 }
+        end_day_offset: { type: integer, enum: [0, 1] }
+        effective_date: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
+        teacher_id: { type: string, minLength: 1, maxLength: 80 }
+        reason: { type: string, minLength: 1, maxLength: 200 }
+        command_ref: { $ref: '#/components/schemas/EventRef' }
     TabletCheckin:
       type: object
       additionalProperties: false

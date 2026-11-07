@@ -19,7 +19,7 @@ from . import fresh_start, fresh_start_postgres
 from .runtime_schema import POSTGRES_RUNTIME_SCHEMA, full_schema
 
 
-SCHEMA_VERSION = 'fresh-start-runtime-v1'
+SCHEMA_VERSION = 'fresh-start-runtime-v2'
 RECEIPT_FORMAT = 'future-school-runtime-local-backup-v1'
 DATABASE_PREFIX = 'runtime_rehearsal_'
 

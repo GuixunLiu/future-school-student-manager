@@ -35,6 +35,19 @@ def absolute_path(path):
     return path.is_absolute() and not path.is_symlink()
 
 
+def valid_venv_python_symlink(path):
+    """Permit the standard Linux venv launcher, not an arbitrary Python symlink."""
+    if path.parent.name != 'bin':
+        return False
+    config = path.parent.parent / 'pyvenv.cfg'
+    if config.is_symlink() or not config.is_file():
+        return False
+    try:
+        return path.resolve(strict=True).is_file()
+    except (OSError, RuntimeError):
+        return False
+
+
 def check_directories(root, python, environment_file):
     if not all(path.is_absolute() for path in (root, python, environment_file)):
         return outcome('paths', 'fail', 'absolute_paths_required')
@@ -42,7 +55,9 @@ def check_directories(root, python, environment_file):
         return outcome('paths', 'fail', 'runtime_root_must_be_a_real_directory')
     if not os.access(root, os.R_OK | os.X_OK):
         return outcome('paths', 'fail', 'runtime_root_not_readable')
-    if python.is_symlink() or not python.is_file() or not os.access(python, os.R_OK):
+    if python.is_symlink() and not valid_venv_python_symlink(python):
+        return outcome('paths', 'fail', 'python_symlink_requires_valid_venv')
+    if not python.is_file() or not os.access(python, os.R_OK):
         return outcome('paths', 'fail', 'python_executable_not_readable')
     if os.name == 'posix' and not os.access(python, os.X_OK):
         return outcome('paths', 'fail', 'python_executable_not_executable')

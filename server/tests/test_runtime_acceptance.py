@@ -37,7 +37,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                     connection.execute(runtime_schema.full_schema())
                     fixtures.RuntimeBusinessTests.seed(connection)
                     connection.execute("""
-                        INSERT INTO lessons VALUES
+                        INSERT INTO lessons(id,org_id,class_id,starts_at,ends_at,state,created_at) VALUES
                             ('lesson-web','org-fiction','class-a',300,400,'scheduled',1);
                         INSERT INTO lesson_teachers VALUES
                             ('org-fiction','lesson-web','teacher-a','虚构教师甲');
@@ -53,9 +53,10 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                 with TestClient(create_app(source, lambda: 1000, allow_test_client=True)) as client:
                     self.assertEqual(200, client.get('/v1/me', headers=admin).status_code)
                     renewal = client.post('/v1/admin/renewals', headers=admin, json={
-                        'student_id': 'student-a', 'units_added': 5, 'occurred_at': 100,
-                        'source_ref': 'acceptance-renewal-source', 'reason': '虚构端到端续费',
-                        'command_ref': 'acceptance-renewal-command'})
+                        'student_id': 'student-a', 'course_id': 'course-a',
+                        'units_added': 5, 'amount_cents': 64000, 'unit_price_cents': 12800,
+                        'occurred_at': 100, 'source_ref': 'acceptance-renewal-source',
+                        'reason': '虚构端到端续费', 'command_ref': 'acceptance-renewal-command'})
                     self.assertEqual(201, renewal.status_code, renewal.text)
                     self.assertEqual((15, 2), (renewal.json()['balance_units'],
                                                renewal.json()['balance_revision']))

@@ -42,7 +42,7 @@ class StudentEnrollmentInput(Input):
     class_id: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=80)
     external_ref: str = Field(min_length=1, max_length=80)
-    opening_units: int = Field(ge=0, le=10_000_000)
+    opening_units: int = Field(ge=-1_000_000, le=10_000_000)
     occurred_at: int = Field(ge=0, le=253402185599)
     source_ref: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=200)
@@ -50,7 +50,7 @@ class StudentEnrollmentInput(Input):
 
 
 class StudentUpdateInput(Input):
-    class_id: str = Field(min_length=1, max_length=80)
+    class_ids: list[str] = Field(min_length=1, max_length=20)
     name: str = Field(min_length=1, max_length=80)
     external_ref: str = Field(min_length=1, max_length=80)
     active: bool
@@ -59,9 +59,21 @@ class StudentUpdateInput(Input):
     command_ref: str = Field(min_length=1, max_length=80)
 
 
+class CourseCreateInput(Input):
+    name: str = Field(min_length=1, max_length=80)
+    content: str = Field(min_length=1, max_length=2000)
+    unit_price_cents: int = Field(ge=0, le=100_000_000)
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class CourseUpdateInput(CourseCreateInput):
+    active: bool
+
+
 class ClassCreateInput(Input):
     name: str = Field(min_length=1, max_length=80)
-    course_name: str = Field(min_length=1, max_length=80)
+    course_id: str = Field(min_length=1, max_length=80)
     reason: str = Field(min_length=1, max_length=200)
     command_ref: str = Field(min_length=1, max_length=80)
 
@@ -71,8 +83,35 @@ class ClassUpdateInput(ClassCreateInput):
 
 
 class ClassTeacherInput(Input):
-    teacher_id: str | None = Field(default=None, max_length=80)
+    teacher_ids: list[str] = Field(default_factory=list, max_length=20)
     expected_version: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class ScheduleTemplateInput(Input):
+    weekday: int = Field(ge=1, le=7)
+    interval_weeks: int = Field(ge=1, le=2)
+    anchor_date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
+    start_time: str = Field(pattern=r'^\d{2}:\d{2}$')
+    end_time: str = Field(pattern=r'^\d{2}:\d{2}$')
+    duration_minutes: int = Field(ge=1, le=720)
+    end_day_offset: int = Field(ge=0, le=1)
+    effective_date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
+    teacher_id: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class ScheduleTemplateCreateInput(ScheduleTemplateInput):
+    class_id: str = Field(min_length=1, max_length=80)
+
+
+class ScheduleTemplateUpdateInput(ScheduleTemplateInput):
+    pass
+
+
+class ScheduleTemplateDeleteInput(Input):
     reason: str = Field(min_length=1, max_length=200)
     command_ref: str = Field(min_length=1, max_length=80)
 
@@ -101,7 +140,10 @@ class AccountPasswordInput(Input):
 
 class RenewalInput(Input):
     student_id: str = Field(min_length=1, max_length=80)
+    course_id: str = Field(min_length=1, max_length=80)
     units_added: int = Field(gt=0, le=11_000_000)
+    amount_cents: int = Field(ge=0, le=100_000_000)
+    unit_price_cents: int = Field(ge=0, le=100_000_000)
     occurred_at: int = Field(ge=0, le=253402185599)
     source_ref: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=200)
@@ -121,6 +163,7 @@ class LessonChargeRuleInput(Input):
 class LessonCreateInput(Input):
     class_id: str = Field(min_length=1, max_length=80)
     teacher_id: str = Field(min_length=1, max_length=80)
+    schedule_id: str | None = Field(default=None, min_length=1, max_length=80)
     starts_at: int = Field(ge=0, le=253402185599)
     ends_at: int = Field(ge=0, le=253402185599)
     charge_units: int = Field(gt=0, le=10_000_000)
@@ -138,6 +181,16 @@ class LessonRescheduleInput(Input):
 class LessonCancelInput(Input):
     expected_version: int = Field(ge=0)
     reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class ReportGenerateInput(Input):
+    kind: str = Field(pattern=r'^(weekly|monthly)$')
+    period_start: str = Field(min_length=7, max_length=10)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class ReportRetryInput(Input):
     command_ref: str = Field(min_length=1, max_length=80)
 
 
@@ -226,6 +279,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     def teacher_report_script():
         return FileResponse(assets / 'teacher-report.js', media_type='application/javascript')
 
+    @app.get('/report-history.js')
+    def report_history_script():
+        return FileResponse(assets / 'report-history.js', media_type='application/javascript')
+
     @app.get('/admin-report.js')
     def admin_report_script():
         return FileResponse(assets / 'admin-report.js', media_type='application/javascript')
@@ -304,9 +361,9 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     @app.get('/health/ready')
     def health():
         with store.connect() as db:
-            row = db.execute("SELECT applied_at FROM schema_migrations WHERE version='fresh-start-runtime-v1'").fetchone()
+            row = db.execute("SELECT applied_at FROM schema_migrations WHERE version='fresh-start-runtime-v2'").fetchone()
         return {'status': 'ready' if row else 'not_initialized',
-                'schema': 'fresh-start-runtime-v1', 'initialized': bool(row),
+                'schema': 'fresh-start-runtime-v2', 'initialized': bool(row),
                 'production_ready': False, 'wechat_sending_enabled': False}
 
     @app.get('/v1/me')
@@ -368,6 +425,21 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
             response.status_code = 200
         return result
 
+    @app.get('/v1/admin/courses')
+    def admin_courses(token: Token):
+        return store.admin_courses(token)
+
+    @app.post('/v1/admin/courses', status_code=201)
+    def admin_create_course(data: CourseCreateInput, response: Response, token: Token):
+        result = store.admin_create_course(token, data.model_dump())
+        if result['duplicate']:
+            response.status_code = 200
+        return result
+
+    @app.put('/v1/admin/courses/{course_id}')
+    def admin_update_course(course_id: str, data: CourseUpdateInput, token: Token):
+        return store.admin_update_course(token, course_id, data.model_dump())
+
     @app.get('/v1/admin/classes')
     def admin_classes(token: Token):
         return store.admin_classes(token)
@@ -409,6 +481,25 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     @app.put('/v1/admin/accounts/{user_id}/password')
     def admin_reset_account_password(user_id: str, data: AccountPasswordInput, token: Token):
         return store.admin_reset_account_password(token, user_id, data.model_dump())
+
+    @app.get('/v1/admin/schedule-templates')
+    def admin_schedule_templates(token: Token):
+        return store.admin_schedule_templates(token)
+
+    @app.post('/v1/admin/schedule-templates', status_code=201)
+    def admin_create_schedule_template(data: ScheduleTemplateCreateInput, response: Response, token: Token):
+        result = store.admin_create_schedule_template(token, data.model_dump())
+        if result['duplicate']:
+            response.status_code = 200
+        return result
+
+    @app.put('/v1/admin/schedule-templates/{schedule_id}')
+    def admin_update_schedule_template(schedule_id: str, data: ScheduleTemplateUpdateInput, token: Token):
+        return store.admin_update_schedule_template(token, schedule_id, data.model_dump())
+
+    @app.post('/v1/admin/schedule-templates/{schedule_id}/delete')
+    def admin_delete_schedule_template(schedule_id: str, data: ScheduleTemplateDeleteInput, token: Token):
+        return store.admin_delete_schedule_template(token, schedule_id, data.model_dump())
 
     @app.get('/v1/admin/lessons')
     def admin_lessons(token: Token, date: str | None = None):
@@ -454,6 +545,28 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     @app.get('/v1/admin/reports/monthly')
     def admin_monthly_report(token: Token, month: str | None = None):
         return store.admin_monthly_report(token, month)
+
+    @app.get('/v1/admin/report-runs')
+    def admin_report_runs(token: Token, kind: str, period_start: str):
+        return store.admin_report_runs(token, kind, period_start)
+
+    @app.post('/v1/admin/report-runs', status_code=201)
+    def admin_generate_report(data: ReportGenerateInput, response: Response, token: Token):
+        result = store.admin_generate_report(token, data.model_dump())
+        if result['duplicate']:
+            response.status_code = 200
+        return result
+
+    @app.get('/v1/admin/report-runs/{run_id}')
+    def admin_report_run(run_id: str, token: Token):
+        return store.admin_report_run(token, run_id)
+
+    @app.post('/v1/admin/report-runs/{run_id}/retry', status_code=201)
+    def admin_retry_report(run_id: str, data: ReportRetryInput, response: Response, token: Token):
+        result = store.admin_retry_report(token, run_id, data.model_dump())
+        if result['duplicate']:
+            response.status_code = 200
+        return result
 
     @app.get('/v1/admin/devices')
     def admin_devices(token: Token):

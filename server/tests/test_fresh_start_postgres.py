@@ -68,16 +68,16 @@ class FakeConnection:
 
 def fictional_bundle():
     org = "org"
-    return {
-        "format": fresh_start.FORMAT,
-        "source_sha256": "a" * 64,
+    tables = {
         "organizations": [dict(id=org, slug="fictional", created_at=100)],
-        "classes": [dict(id="class", org_id=org, name="虚构班", course_name="虚构课程", created_at=100)],
-        "class_schedule_templates": [dict(org_id=org, class_id="class", weekday=6,
-            interval_weeks=1, anchor_date="2026-11-01", start_time="14:00", end_time="15:30",
-            duration_minutes=90, end_day_offset=0, effective_date="2026-11-01", teacher_label="虚构教师")],
-        "students": [dict(id="student-a", org_id=org, class_id="class", name="虚构学生甲", external_ref="F001", active=True),
-                     dict(id="student-b", org_id=org, class_id="class", name="虚构学生乙", external_ref="F002", active=False)],
+        "courses": [dict(id="course", org_id=org, name="虚构课程", content="虚构课程内容",
+                         unit_price_cents=12800, active=True, created_at=100)],
+        "classes": [dict(id="class", org_id=org, name="虚构班", course_id="course", created_at=100)],
+        "students": [dict(id="student-a", org_id=org, name="虚构学生甲", external_ref="F001", active=True),
+                     dict(id="student-b", org_id=org, name="虚构学生乙", external_ref="F002", active=False)],
+        "student_class_enrollments": [
+            dict(id="enrollment-a", org_id=org, student_id="student-a", class_id="class", joined_at=0, left_at=None, created_at=0),
+            dict(id="enrollment-b", org_id=org, student_id="student-b", class_id="class", joined_at=0, left_at=None, created_at=0)],
         "opening_balances": [dict(org_id=org, student_id="student-a", units=900,
                                   source="matched_management_balance", review_ref=None),
                              dict(org_id=org, student_id="student-b", units=850,
@@ -86,10 +86,17 @@ def fictional_bundle():
                        active=True, created_at=100, password_reset_required=True)],
         "roles": [dict(org_id=org, user_id="user", role="teacher")],
         "teacher_classes": [dict(org_id=org, user_id="user", class_id="class")],
+        "class_schedule_templates": [dict(id="schedule", org_id=org, class_id="class", weekday=6,
+            interval_weeks=1, anchor_date="2026-11-01", start_time="14:00", end_time="15:30",
+            duration_minutes=90, end_day_offset=0, effective_date="2026-11-01", teacher_id="user")],
         "devices": [dict(id="device", org_id=org, name="虚构设备", active=True,
                          created_at=100, token_reissue_required=True)],
-        "counts": dict(organizations=1, classes=1, class_schedule_templates=1, students=2,
-                       opening_balances=2, users=1, roles=1, teacher_classes=1, devices=1),
+    }
+    return {
+        "format": fresh_start.FORMAT,
+        "source_sha256": "a" * 64,
+        **tables,
+        "counts": {table: len(rows) for table, rows in tables.items()},
         "history_migrated": False,
         "archived_students_migrated": 0,
         "historical_attendance_migrated": 0,
@@ -120,7 +127,7 @@ class PostgresWriterTests(unittest.TestCase):
         self.assertFalse(receipt["live_apply_authorized"])
         self.assertEqual(receipt["counts"], self.bundle["counts"])
         inserted = [sql for sql, _ in connection.statements if sql.startswith("INSERT INTO")]
-        self.assertEqual(len(inserted), 10)
+        self.assertEqual(len(inserted), 12)
         self.assertEqual(connection.counts["migration_receipts"], 1)
         self.assertFalse(any(sql.lstrip().startswith(("DELETE", "UPDATE", "DROP", "TRUNCATE"))
                              for sql, _ in connection.statements))
@@ -153,7 +160,7 @@ class PostgresWriterTests(unittest.TestCase):
         changed = copy.deepcopy(self.bundle)
         changed["opening_balances"].pop()
         changed["counts"]["opening_balances"] = 1
-        with self.assertRaisesRegex(pg.FreshStartError, "unique and complete"):
+        with self.assertRaisesRegex(pg.FreshStartError, "uniquely and exactly"):
             pg.validate_bundle(changed, fresh_start.bundle_bytes(changed))
         changed = copy.deepcopy(self.bundle)
         changed["users"][0]["password_reset_required"] = False

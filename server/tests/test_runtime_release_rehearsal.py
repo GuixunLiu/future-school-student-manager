@@ -62,7 +62,7 @@ class RuntimeReleaseRehearsalTests(unittest.TestCase):
             connection.execute("""
                 UPDATE devices SET token_reissue_required=FALSE WHERE id='device';
                 INSERT INTO device_classes VALUES('org','device','class');
-                INSERT INTO lessons VALUES('lesson','org','class',100,200,'scheduled',1);
+                INSERT INTO lessons(id,org_id,class_id,starts_at,ends_at,state,created_at) VALUES('lesson','org','class',100,200,'scheduled',1);
                 INSERT INTO lesson_students VALUES('org','class','lesson','student-a',TRUE,1);
                 INSERT INTO attendance_records VALUES('org','lesson','student-a','missing',0,NULL,1);
             """)
@@ -112,7 +112,7 @@ class RuntimeReleaseRehearsalTests(unittest.TestCase):
         from management.runtime_api import create_app
         health = TestClient(create_app(restored, lambda: 1000, allow_test_client=True)).get('/health/ready')
         self.assertEqual(200, health.status_code)
-        self.assertEqual(('ready', SCHEMA_VERSION := 'fresh-start-runtime-v1', False),
+        self.assertEqual(('ready', SCHEMA_VERSION := 'fresh-start-runtime-v2', False),
                          (health.json()['status'], health.json()['schema'], health.json()['production_ready']))
         self.assertEqual(SCHEMA_VERSION, migrated['schema'])
 
