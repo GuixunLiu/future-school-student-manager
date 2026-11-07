@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN" data-app-startup="pending">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#0165b3">
+  <title>未来学校学生管理系统</title>
+  <style>
+    html[data-app-startup="pending"],html[data-app-startup="pending"] body{margin:0;background:#eef7fe}
+    html[data-app-startup="pending"] .app-shell{visibility:hidden!important;pointer-events:none!important}
+    #appStartup{position:fixed;inset:0;z-index:1000;display:grid;place-content:center;gap:12px;padding:28px;text-align:center;background:#eef7fe;color:#103e67;font-family:system-ui,sans-serif}
+    #appStartup[hidden]{display:none!important}
+    #appStartup strong{font-size:24px}#appStartup p{max-width:440px;margin:0;line-height:1.7;font-size:16px;color:#66839d}
+    #appStartup button{justify-self:center;margin-top:12px;padding:12px 24px;border:0;border-radius:12px;background:#0165b3;color:white;font:inherit}
+  </style>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="polish.css">
+  <link rel="stylesheet" href="class-space.css">
+  <link rel="stylesheet" href="pattern-lock.css">
+  <link rel="stylesheet" href="wechat-notices.css">
+  <link rel="stylesheet" href="lesson-cycle.css">
+  <link rel="stylesheet" href="student-leave.css">
+  <link rel="stylesheet" href="course-groups.css">
+</head>
+<body class="kiosk-mode">
+  <div id="appStartup" role="status" aria-live="polite"><strong>未来学校</strong><p>正在准备签到界面…</p></div>
+  <div class="app-shell">
+    <header class="app-masthead">
+      <div class="brand"><span class="brand-mark"><img src="future-school-logo.png" alt="未来学校"></span><div><b id="brandName">未来学校学生管理系统</b><small>学生管理 · 本机离线保存</small></div></div>
+      <form class="global-student-search" id="globalStudentSearchForm" role="search"><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#search"></use></svg><input id="globalStudentSearchInput" aria-label="搜索学生、学号或班级" placeholder="搜索学生、学号或班级" autocomplete="off"><button type="submit" aria-label="开始搜索">搜索</button></form>
+      <div class="masthead-actions"><button type="button" class="shell-settings" id="shellSettingsBtn" aria-label="打开设置"><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#settings"></use></svg></button><button type="button" class="admin-access-btn" id="adminAccessBtn" onclick="return requestAdminEntry(event)" ontouchend="return requestAdminEntry(event)"><span>⌾</span><b>进入后台</b></button></div>
+    </header>
+    <aside class="sidebar">
+      <nav id="navList" aria-label="教务功能导航">
+        <button class="nav-item active" data-view="dashboard"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#home"></use></svg></span><b>今日</b></button>
+        <button class="nav-item" data-view="students"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#students"></use></svg></span><b>学生</b></button>
+        <button class="nav-item" data-view="classes"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#classes"></use></svg></span><b>班级</b></button>
+        <button class="nav-item" data-view="checkin"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#check"></use></svg></span><b>签到</b></button>
+        <button class="nav-item" data-view="hours"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#hours"></use></svg></span><b>课时</b></button>
+        <button class="nav-item" data-view="report"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#report"></use></svg></span><b>周报</b></button>
+        <button class="nav-item" data-view="settings"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#settings"></use></svg></span><b>设置</b></button>
+        <button class="nav-item nav-more" data-more><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#more"></use></svg></span><b>更多</b></button>
+        <button type="button" class="dock-add" data-dock-add><span>＋</span><b>录入学生</b></button>
+      </nav>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div><p id="todayLabel"></p><h1 id="viewTitle">教务工作台</h1><span id="viewSubtitle">今天也要陪孩子们一起成长</span></div>
+        <div class="topbar-actions">
+          <button class="primary-btn" id="quickAddBtn"><span>＋</span>录入学生</button>
+        </div>
+      </header>
+      <section id="content" class="content"></section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <section class="modal" id="modal" role="dialog" aria-modal="true"></section>
+  </div>
+  <div class="toast hidden" id="toast"></div>
+  <script>
+    window.__futureSchoolAppStarted = false;
+    window.finishAppStartup = function () {
+      if (!window.__futureSchoolAppStarted) return;
+      document.getElementById('appStartup').hidden = true;
+      document.documentElement.removeAttribute('data-app-startup');
+    };
+    window.__pendingAdminEntry = false;
+    window.__adminEntryTouchAt = 0;
+    window.requestAdminEntry = function (event) {
+      var now = Date.now();
+      if (event && event.type === 'click' && now - window.__adminEntryTouchAt < 700) return false;
+      if (event && event.type === 'touchend') window.__adminEntryTouchAt = now;
+      if (event && event.preventDefault) event.preventDefault();
+      if (typeof window.openAdminLogin === 'function') {
+        try { window.openAdminLogin(); } catch (error) { window.alert('后台登录页面打开失败，请重新启动软件后再试。'); }
+      } else {
+        window.__pendingAdminEntry = true;
+        var label = document.querySelector('#adminAccessBtn b');
+        if (label) label.textContent = '正在打开后台…';
+      }
+      return false;
+    };
+    window.addEventListener('load', function () {
+      window.setTimeout(function () {
+        if (window.__futureSchoolAppStarted) return;
+        var startup = document.getElementById('appStartup');
+        if (!startup) return;
+        startup.querySelector('strong').textContent = '程序暂未启动';
+        startup.querySelector('p').textContent = '页面加载异常，请重新加载。若仍无法打开，请更新系统的 Android System WebView 后重试。';
+        var retry = document.createElement('button');
+        retry.type = 'button';retry.textContent = '重新加载';retry.onclick = function () { window.location.reload(); };
+        startup.appendChild(retry);
+      }, 1800);
+    });
+  </script>
+  <script src="xlsx.full.min.js"></script>
+  <script src="class-space.js"></script>
+  <script src="pattern-lock.js"></script>
+  <script src="lesson-review.js"></script>
+  <script src="wechat-notices.js"></script>
+  <script src="lesson-cycle.js"></script>
+  <script src="lesson-timing.js"></script>
+  <script src="student-leave.js"></script>
+  <script src="course-groups.js"></script>
+  <script src="device-sync.js"></script>
+  <script src="local-data-repair.js"></script>
+  <script src="web-mirror-data.js"></script>
+  <script src="web-mirror.js"></script>
+  <script src="snapshot-store.js"></script>
+  <script src="checkin-queue.js"></script>
+  <script src="approval-receiver.js"></script>
+  <script src="class-teacher-receiver.js"></script>
+  <script src="runtime-bootstrap.js"></script>
+  <script src="face-profiles.js"></script>
+  <script src="sync-runtime.js"></script>
+  <script src="activation-commit.js"></script>
+  <script src="canonical-app.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process'),{EventEmitter}=require('node:events');
+const client=require('../ops/change-teacher-logins.cjs'),root=path.resolve(__dirname,'..'),base=path.resolve(os.tmpdir()),temp=fs.mkdtempSync(path.join(base,'login-change-client-')),sha=b=>crypto.createHash('sha256').update(b).digest('hex');
+(async()=>{
+ const plan={format:'future-school-confirmed-login-change',confirmed_by_owner:true,owner_new_login:'fictionalowner',expected:{accounts:2,classes:2}};
+ const config={host:'example.invalid',user:'fixture-deploy',port:22,work_directory:'/opt/wxnotify/app/roster-review-v0.5.0-aabbccdd-20261027065406-aabbccdd',output_dir:temp,browser_directory:temp,plan_digest:'a'.repeat(64),owner_new_login:'fictionalowner',expected:{accounts:2,classes:2}};
+ for(const [key,text] of [['plan',JSON.stringify(plan)],['helper','# fictional new helper\n'],['shared','# fictional shared helper\n']]){const file=path.join(temp,key);fs.writeFileSync(file,text);config[key]={path:file,sha256:sha(fs.readFileSync(file))};}
+ fs.writeFileSync(path.join(temp,'login-change-config.private.json'),JSON.stringify(config));const loaded=client.load(temp),script=client.wrapper(config,loaded.files);
+ const syntax=spawnSync(path.join(root,'.venv/Scripts/python.exe'),['-c','import ast,sys;ast.parse(sys.stdin.read());print("ok")'],{input:script,encoding:'utf8'});assert.equal(syntax.status,0,syntax.stderr);assert(script.includes('O_EXCL'));assert(!script.includes('123456'));assert(!script.includes('sudo'));
+ const r={version:'0.5.0',plan_sha256:config.plan_digest,accounts_changed:2,new_accounts:0,classes_preserved:2,roles_and_user_ids_preserved:true,sessions_revoked:true,owner_login:'fictionalowner',business_data_unchanged:true,roster_review_only:true,wechat_sending_enabled:false,backup_integrity:'ok',backup_sha256:'b'.repeat(64)};
+ let calls=0;const fakeSpawn=(command,args,settings)=>{calls++;assert.equal(command,'ssh');assert(args.includes('StrictHostKeyChecking=yes'));assert.equal(args.at(-1),'python3 -');assert.equal(settings.stdio[2],'inherit');const child=new EventEmitter();child.stdout=new EventEmitter();child.stdin=new EventEmitter();child.stdin.end=s=>{assert(s.includes('change-teacher-logins.py'));queueMicrotask(()=>{child.stdout.emit('data',Buffer.from(JSON.stringify(r)));child.emit('close',0)})};return child};
+ const applied=await client.apply(temp,{spawnImpl:fakeSpawn});assert.equal(calls,1);assert(fs.existsSync(applied.receipt_path));assert.equal(JSON.parse(fs.readFileSync(path.join(temp,'review-access-login.private.json'))).login,'fictionalowner');assert.throws(()=>client.result(JSON.stringify({...r,roles_and_user_ids_preserved:false}),config));
+ if(process.platform==='win32'){
+  const cmd=fs.readFileSync(path.join(root,'ops/change-teacher-logins.cmd'));assert([...cmd].every(b=>b<128));assert(!cmd.toString('ascii').replaceAll('\r\n','').includes('\n'));
+  const entry=path.join(temp,'CHANGE-TEACHER-LOGINS.cmd');fs.writeFileSync(entry,cmd);fs.copyFileSync(path.join(root,'ops/change-teacher-logins.cjs'),path.join(temp,'change-teacher-logins.cjs'));
+  const checked=spawnSync(process.env.ComSpec||'cmd.exe',['/d','/c',entry,'--self-check'],{encoding:'utf8',windowsHide:true,timeout:30000});assert.equal(checked.status,0,checked.stderr);assert.equal(JSON.parse(checked.stdout.trim()).network_connected,false);
+ }
+ fs.appendFileSync(config.plan.path,'changed');assert.throws(()=>client.load(temp),/checksum/);
+ console.log('Login-change client passed: checked inputs, no plaintext upload, wrapper syntax, one mocked strict-host-key SSH, result constraints, login display updates only after success, actual Windows entry and tamper refusal. No real network.');
+})().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{if(!path.resolve(temp).startsWith(base+path.sep+'login-change-client-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});});

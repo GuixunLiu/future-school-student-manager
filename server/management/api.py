@@ -1,0 +1,544 @@
+"""Candidate management API. Not routed by the current public gateway.
+
+Start only against an explicitly migrated candidate database. Authentication
+uses existing account hashes; this factory neither resets nor creates users.
+"""
+from typing import Annotated, Literal
+
+from fastapi import Depends, Header, Query, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import Field
+
+from business.api import LocalGuard
+from business.models import Input, Login
+from business.store import Problem
+from .delivery import DeliveryStore
+from .policy import permits, require, workspace
+from .staging import runtime_admitted
+from .migration_guard import has_active_writer
+
+Role = Literal['principal', 'admin', 'teacher', 'assessor']
+
+
+class RequestInput(Input):
+    workspace_role: Role
+    lesson_id: str = Field(min_length=1, max_length=200)
+    student_id: str = Field(min_length=1, max_length=80)
+    kind: Literal['leave', 'makeup']
+    reason: str = Field(min_length=1, max_length=200)
+    request_ref: str = Field(min_length=1, max_length=80)
+    expected_revision: int = Field(ge=0)
+
+
+class DecisionInput(Input):
+    workspace_role: Role
+    approve: bool
+    reason: str = Field(min_length=1, max_length=200)
+    decision_ref: str = Field(min_length=1, max_length=80)
+
+
+class HistoricalReadyInput(Input):
+    generation: str=Field(min_length=1,max_length=80)
+
+
+class PeriodInput(Input):
+    workspace_role: Role
+    kind: Literal['weekly_plan', 'weekly_report', 'monthly_plan', 'monthly_report', 'enrolment_list', 'renewal_list']
+    starts_on: str = Field(min_length=10, max_length=10)
+    owner_ids: list[str] = Field(min_length=1, max_length=1000)
+    due_at: int | None = None
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class RuleInput(Input):
+    frequency: Literal['weekly', 'monthly']
+    day: int | Literal['last']
+    hour: int = Field(ge=0, le=23)
+    minute: int = Field(default=0, ge=0, le=59)
+
+
+class RuleChangeInput(Input):
+    workspace_role: Role
+    kind: Literal['weekly_plan', 'weekly_report', 'monthly_plan', 'monthly_report']
+    rule: RuleInput
+    expected_revision: int = Field(ge=0)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class MaterialChangeInput(Input):
+    workspace_role: Role
+    action: Literal['save', 'submit', 'return', 'unlock']
+    expected_revision: int = Field(ge=0)
+    command_ref: str = Field(min_length=1, max_length=80)
+    content: str | None = Field(default=None, max_length=2000)
+    reason: str | None = Field(default=None, max_length=500)
+    unlocked_until: int | None = None
+
+
+class ScoreInput(Input):
+    workspace_role: Role
+    expected_revision: int = Field(ge=0)
+    value: str = Field(max_length=24)
+    basis: str = Field(min_length=1, max_length=500)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class DeliveryReceipt(Input):
+    generation: str = Field(min_length=1, max_length=80)
+    event_id: str = Field(min_length=1, max_length=80)
+    receipt_token: str = Field(pattern=r'^[0-9a-f]{32}$')
+    sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    status: Literal['applied', 'conflict']
+    attendance_revision: int | None = Field(default=None, ge=0)
+    balance_revision: int | None = Field(default=None, ge=0)
+    balance_units: int | None = None
+    conflict_code: Literal['mapping_changed', 'local_changes', 'attendance_changed',
+                           'balance_changed', 'invalid_event', 'storage_failed'] | None = None
+
+
+class BalanceAdjustmentInput(Input):
+    workspace_role: Role
+    units: int = Field(ge=-1000000, le=10000000)
+    expected_revision: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
+class CheckinInput(Input):
+    generation: str = Field(min_length=1, max_length=80)
+    event_ref: str = Field(min_length=1, max_length=80)
+    student_id: str = Field(min_length=1, max_length=80)
+    lesson_id: str = Field(min_length=1, max_length=200)
+    attendance_revision: int = Field(ge=0)
+    balance_revision: int = Field(ge=0)
+    previous_balance_units: int
+    consumed_units: int = Field(gt=0)
+    remaining_units: int
+    occurred_at: int = Field(ge=0, le=253402185599)
+
+
+class EnrollmentReviewInput(Input):
+    workspace_role: Role
+    device_id: str = Field(min_length=1,max_length=80)
+    generation: str = Field(min_length=1,max_length=80)
+    baseline_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_captured_at: int = Field(ge=0)
+    source: dict
+
+
+class EnrollmentAuthorizeInput(Input):
+    workspace_role: Role
+    review_id: str = Field(min_length=1,max_length=80)
+    profile_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    nonce: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+
+class EnrollmentBatchInput(Input):
+    workspace_role: Role
+    device_id: str = Field(min_length=1,max_length=80)
+    generation: str = Field(min_length=1,max_length=80)
+    baseline_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_captured_at: int = Field(ge=0)
+    manifest: dict
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
+class EnrollmentPageInput(Input):
+    workspace_role: Role
+    section: Literal['classes','students','facts']
+    page_index: int = Field(ge=0,le=499)
+    rows: list[dict] = Field(min_length=1,max_length=100)
+    sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class EnrollmentBatchFinalizeInput(Input):
+    workspace_role: Role
+
+
+class MigrationPrepareInput(Input):
+    workspace_role: Role
+    review_id: str = Field(min_length=1,max_length=80)
+    profile_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+    accept_database_mirror_pause: bool
+
+
+class MigrationCancelInput(Input):
+    workspace_role: Role
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
+class ActivationOfferInput(Input):
+    workspace_role: Role
+    hold_id: str = Field(min_length=1,max_length=80)
+    bootstrap_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_map_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
+class ActivationCommitInput(Input):
+    generation: str = Field(min_length=1,max_length=80)
+    activation_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    profile_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    nonce: str = Field(pattern=r'^[a-f0-9]{32}$')
+    bootstrap_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source_map_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class ActivationChangeInput(Input):
+    workspace_role: Role
+    action: Literal['pause','resume']
+    expected_revision: int = Field(ge=0)
+    ledger_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    reason: str = Field(min_length=1,max_length=200)
+    command_ref: str = Field(min_length=1,max_length=80)
+
+
+def create_app(database, clock=None, *, allow_test_client=False):
+    store = DeliveryStore(database, clock)
+    with store.transaction() as db:
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        if 'management_initializations' in tables:
+            for marker in db.execute("SELECT org_id FROM management_initializations WHERE phase='rehearsal_only'"):
+                if not runtime_admitted(db,marker['org_id']):
+                    raise ValueError('Offline rehearsal database cannot serve management or device requests')
+        if not {'management_roles', 'management_approval_scopes', 'management_requests',
+                'management_attendance', 'management_balances', 'management_outbox', 'management_audit',
+                'assessment_rules', 'assessment_periods', 'assessment_materials', 'assessment_versions',
+                'assessment_scores', 'assessment_commands', 'management_device_access',
+                'management_device_students', 'management_deliveries', 'management_uploads', 'management_enrollment_proofs', 'management_enrollment_reviews', 'management_migration_holds',
+                'management_enrollment_batches','management_enrollment_pages','management_activations','management_activation_commands','management_runtime_admissions'} <= tables:
+            raise ValueError('Explicit candidate migration required; no automatic production migration')
+    # Reuse the frozen authentication implementation and request guard without
+    # loading legacy workflow/portal routes only to discard them afterwards.
+    import sqlite3
+    app=FastAPI(title='Future School management',docs_url=None,redoc_url=None,openapi_url=None,redirect_slashes=False)
+    app.state.store=store
+    app.add_middleware(LocalGuard,allow_test_client=allow_test_client)
+    @app.exception_handler(Problem)
+    async def problem(request,error):
+        return JSONResponse({'error':{'code':error.code,'message':error.message}},status_code=error.status,headers={'WWW-Authenticate':'Bearer'} if error.status==401 else {})
+    @app.exception_handler(RequestValidationError)
+    async def invalid(request,error):
+        return JSONResponse({'error':{'code':'invalid_request','message':'字段格式不正确或包含未支持的字段'}},status_code=422)
+    @app.exception_handler(sqlite3.IntegrityError)
+    async def conflict(request,error):
+        return JSONResponse({'error':{'code':'conflict','message':'记录冲突，未保存任何更改'}},status_code=409)
+    @app.exception_handler(sqlite3.OperationalError)
+    async def storage_busy(request,error):
+        return JSONResponse({'error':{'code':'storage_unavailable','message':'暂时无法保存，请稍后重试'}},status_code=503)
+    app.state.management_store = store
+
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    assets = Path(__file__).parent / 'web'
+
+    @app.get('/')
+    def page():
+        return FileResponse(assets / 'index.html', media_type='text/html')
+
+    @app.get('/workspace.js')
+    def script():
+        return FileResponse(assets / 'workspace.js', media_type='application/javascript')
+
+    @app.get('/workspace.css')
+    def styles():
+        return FileResponse(assets / 'workspace.css', media_type='text/css')
+
+    @app.get('/future-school-logo.png')
+    def logo():
+        return FileResponse(assets / 'future-school-logo.png',media_type='image/png')
+
+    def authorization(value: Annotated[str | None, Header(alias='Authorization')] = None):
+        if not value or not value.startswith('Bearer ') or len(value) > 128:
+            raise Problem(401, 'unauthorized', '请先登录')
+        return value[7:]
+    Token = Annotated[str, Depends(authorization)]
+
+    @app.post('/v1/auth/login')
+    def login(data: Login,request: Request):
+        return store.login(data.organization,data.login,data.password,request.client.host)
+
+    @app.post('/v1/auth/logout')
+    def logout(token: Token):
+        def run(db,actor):
+            store.require_user(actor);db.execute('DELETE FROM sessions WHERE digest=?',(actor['session_digest'],));return {'logged_out':True}
+        return store.command(token,run)
+
+    @app.get('/v1/management/device/plan')
+    def device_plan(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)]):
+        return store.enrollment_plan(token, generation)
+
+    @app.get('/v1/management/device/activation')
+    def activation_plan(token: Token, generation: str, profile_id: str):
+        return store.activation_plan(token,generation,profile_id=profile_id)
+
+    @app.post('/v1/management/device/activation-commit')
+    def activation_commit(data: ActivationCommitInput, token: Token):
+        return store.commit_activation(token,**data.model_dump())
+
+    @app.post('/v1/management/activations',status_code=201)
+    def activation_offer(data: ActivationOfferInput, token: Token):
+        return store.offer_activation(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.get('/v1/management/activations/{activation_id}')
+    def activation_status(activation_id: str, token: Token, workspace_role: Annotated[Role,Query()]):
+        return store.activation_status(token,workspace_role,activation_id)
+
+    @app.post('/v1/management/activations/{activation_id}/state')
+    def activation_change(activation_id: str, data: ActivationChangeInput, token: Token):
+        return store.change_activation(token,data.workspace_role,activation_id=activation_id,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-reviews')
+    def enrollment_review(data: EnrollmentReviewInput, token: Token):
+        return store.review_enrollment(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-authorizations')
+    def enrollment_authorize(data: EnrollmentAuthorizeInput, token: Token):
+        return store.authorize_enrollment(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-batches')
+    def enrollment_batch(data: EnrollmentBatchInput, token: Token):
+        return store.begin_enrollment_batch(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-batches/{batch_id}/pages')
+    def enrollment_page(batch_id: str, data: EnrollmentPageInput, token: Token):
+        return store.put_enrollment_page(token,data.workspace_role,batch_id=batch_id,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/enrollment-batches/{batch_id}/finalize')
+    def enrollment_batch_finalize(batch_id: str, data: EnrollmentBatchFinalizeInput, token: Token):
+        return store.finalize_enrollment_batch(token,data.workspace_role,batch_id=batch_id)
+
+    @app.get('/v1/management/device/next')
+    def device_next(token: Token, generation: Annotated[str, Query(min_length=1, max_length=80)],
+                    defer: Annotated[str, Query(max_length=3239)] = ''):
+        return store.poll(token, generation, defer)
+
+    @app.post('/v1/management/device/receipt')
+    def device_receipt(data: DeliveryReceipt, token: Token):
+        return store.acknowledge(token, **data.model_dump())
+
+    @app.post('/v1/management/device/checkin')
+    def device_checkin(data: CheckinInput, token: Token):
+        return store.upload_attendance(token, **data.model_dump())
+
+    @app.get('/health/ready')
+    def health():
+        with store.transaction() as db:
+            admission=db.execute('SELECT org_id FROM management_runtime_admissions LIMIT 1').fetchone();admitted=bool(admission)
+            active=admitted and has_active_writer(db,admission['org_id'],store.clock())
+        return {'status': 'ready', 'mode': ('management_active' if active else 'management_staged') if admitted else 'management_candidate',
+                'approval_mode': 'web_approval', 'tablet_delivery_enabled': active,
+                'runtime_admitted': admitted,'production_ready': False, 'wechat_sending_enabled': False,
+                'personnel_api_enabled':getattr(app.state,'personnel_store',None)is not None,
+                'class_teachers_enabled':getattr(app.state,'class_teacher_store',None)is not None,
+                'historical_requests_enabled':historical_enabled,
+                'legacy_approvals_enabled':legacy_approvals_enabled}
+
+    @app.post('/v1/management/device/history-ready')
+    def history_ready(data:HistoricalReadyInput,token:Token):
+        def run(db,actor):
+            from .historical import enabled
+            from .migration_guard import require_not_held
+            store.access(db,actor,data.generation)
+            if not enabled(db):raise Problem(404,'history_not_enabled','历史更正尚未启用')
+            require_not_held(db,actor['org_id'],store.clock())
+            db.execute('INSERT OR IGNORE INTO management_historical_clients VALUES(?,?,?,1)',(actor['org_id'],actor['id'],data.generation))
+            return dict(org_id=actor['org_id'],device_id=actor['id'],generation=data.generation,historical_protocol=1)
+        return store.command(token,run)
+
+    @app.get('/v1/me')
+    def me(token: Token):
+        def run(db, actor):
+            store.require_user(actor)
+            return store.me(db, actor)
+        return store.command(token, run)
+
+    @app.get('/v1/management/migration-holds')
+    def migration_holds(token: Token,workspace_role: Annotated[Role,Query()]):
+        def run(db,actor):
+            require(actor,workspace(actor,workspace_role),'settings.manage')
+            rows=db.execute('SELECT * FROM management_migration_holds WHERE org_id=? ORDER BY rowid DESC LIMIT 50',(actor['org_id'],))
+            return {'items':[store.hold_receipt(r,db=db)|{'reason':r['reason'],'prepared_by':r['prepared_by']} for r in rows]}
+        return store.command(token,run)
+
+    @app.post('/v1/management/migration-holds')
+    def prepare_migration(data: MigrationPrepareInput,token: Token):
+        return store.prepare_migration(token,data.workspace_role,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/migration-holds/{hold_id}/cancel')
+    def cancel_migration(hold_id: str,data: MigrationCancelInput,token: Token):
+        return store.cancel_migration(token,data.workspace_role,hold_id=hold_id,**data.model_dump(exclude={'workspace_role'}))
+
+    @app.get('/v1/management/workspace')
+    def current(token: Token, workspace_role: Annotated[Role, Query()]):
+        def run(db, actor):
+            role = workspace(actor, workspace_role)
+            scope = store.scope(db, actor)
+            return {'workspace_role': role,
+                    'teacher_class_ids': sorted(scope.teacher_classes) if role == 'teacher' else [],
+                    'approval_class_ids': sorted(scope.approval_classes) if role == 'assessor' else [],
+                    'can_score': permits(actor, role, 'scores.record'),
+                    'can_manage': permits(actor, role, 'accounts.manage'),
+                    'can_unlock': permits(actor, role, 'submissions.unlock'),
+                    'balance_adjustments_enabled':'management_balance_adjustments' in tables and role in ('admin','teacher'),
+                    'personnel_api_enabled':role=='admin' and getattr(app.state,'personnel_store',None)is not None,
+                    'class_teachers_enabled':role in ('admin','principal') and getattr(app.state,'class_teacher_store',None)is not None}
+        return store.command(token, run)
+
+    @app.get('/v1/management/requests')
+    def requests(token: Token, workspace_role: Annotated[Role, Query()],
+                 limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                 before: Annotated[str | None, Query(max_length=32)] = None):
+        def run(db, actor):
+            role = workspace(actor, workspace_role)
+            if role not in {'admin', 'teacher', 'assessor'}:
+                raise Problem(403, 'permission_denied', '此身份不处理审批申请')
+            where = ['r.org_id=?']
+            params = [actor['org_id']]
+            if role == 'teacher':
+                where.append('r.requested_by=? AND EXISTS(SELECT 1 FROM teacher_classes t WHERE t.org_id=r.org_id AND t.user_id=? AND t.class_id=r.class_id)')
+                params.extend([actor['id'], actor['id']])
+            if role == 'assessor':
+                where.append('EXISTS(SELECT 1 FROM management_approval_scopes s WHERE s.org_id=r.org_id AND s.user_id=? AND s.class_id=r.class_id)')
+                params.append(actor['id'])
+            if before:
+                where.append('r.rowid < COALESCE((SELECT rowid FROM management_requests WHERE org_id=? AND id=?),0)')
+                params.extend([actor['org_id'], before])
+            rows = db.execute('SELECT r.id,r.lesson_id,r.student_id,r.class_id,r.kind,r.reason,r.status,r.requested_by,r.created_at,r.decided_at,r.decided_by,r.decision_reason,s.name AS student_name,c.name AS class_name FROM management_requests r JOIN students s ON s.org_id=r.org_id AND s.id=r.student_id JOIN classes c ON c.org_id=r.org_id AND c.id=r.class_id WHERE '
+                              + ' AND '.join(where) + ' ORDER BY r.rowid DESC LIMIT ?', (*params, limit + 1)).fetchall()
+            items = [dict(r) for r in rows[:limit]]
+            for item in items:
+                fact = db.execute('SELECT starts_at FROM management_attendance WHERE org_id=? AND lesson_id=? AND student_id=?', (actor['org_id'], item['lesson_id'], item['student_id'])).fetchone()
+                item['starts_at'] = fact['starts_at'] if fact else None
+                item['historical'] = item['lesson_id'].startswith('legacy:')
+                if item['historical']:
+                    from .historical import enabled as history_enabled
+                    if history_enabled(db):
+                        context = db.execute('SELECT context_json FROM management_historical_facts WHERE org_id=? AND lesson_id=? AND student_id=?', (actor['org_id'],item['lesson_id'],item['student_id'])).fetchone()
+                        if context:
+                            import json
+                            item['class_name'] = json.loads(context['context_json'])['class_name']
+                item['tablet_delivery'] = store.delivery_status(db, actor['org_id'], item['id'], item['status'])
+            return {'workspace_role': role, 'items': items,
+                    'next_before': items[-1]['id'] if len(rows) > limit else None}
+        return store.command(token, run)
+
+    @app.get('/v1/management/attendance')
+    def attendance(token: Token, workspace_role: Annotated[Role, Query()],
+                   on: Annotated[str, Query(min_length=10, max_length=10)],
+                   limit: Annotated[int, Query(ge=1, le=100)] = 100,
+                   before: Annotated[int | None, Query(ge=1)] = None,
+                   lesson_id: Annotated[str | None, Query(min_length=1,max_length=200)] = None,
+                   status: Literal['all','arrived','missing','leave'] = 'all',
+                   q: Annotated[str, Query(max_length=80)] = ''):
+        return store.attendance_day(token,workspace_role,on=on,limit=limit,before=before,
+                                    lesson_id=lesson_id,status=status,q=q)
+
+    if 'management_balance_adjustments' in tables:
+        @app.post('/v1/management/students/{student_id}/balance')
+        def adjust_balance(student_id: str, data: BalanceAdjustmentInput, token: Token):
+            return store.adjust_balance(token, data.workspace_role, student_id=student_id,
+                                        **data.model_dump(exclude={'workspace_role'}))
+
+    @app.get('/v1/management/weekly-reports')
+    def weekly_report(token: Token, workspace_role: Annotated[Role,Query()],
+                      start: Annotated[str | None,Query(min_length=10,max_length=10)] = None):
+        return store.weekly_report(token,workspace_role,start=start)
+
+    @app.get('/v1/management/legacy-requests')
+    def legacy_requests(token: Token, workspace_role: Annotated[Role,Query()],
+                        limit: Annotated[int,Query(ge=1,le=100)] = 50,
+                        before: Annotated[int | None,Query(ge=1)] = None):
+        return store.legacy_requests(token,workspace_role,limit=limit,before=before)
+
+    @app.post('/v1/management/legacy-requests/{legacy_id}/decision')
+    def legacy_decision(legacy_id:str,data:DecisionInput,token:Token):
+        from .legacy_approvals import decide
+        return decide(store,token,data.workspace_role,legacy_id=legacy_id,
+                      **data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/requests', status_code=201)
+    def submit(data: RequestInput, token: Token):
+        return store.submit(token, data.workspace_role, **data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/requests/{request_id}/decision')
+    def decide(request_id: str, data: DecisionInput, token: Token):
+        return store.decide(token, data.workspace_role, request_id=request_id,
+                            **data.model_dump(exclude={'workspace_role'}))
+
+    @app.get('/v1/management/assessment-rules')
+    def rules(token: Token, workspace_role: Annotated[Role, Query()]):
+        from dataclasses import asdict
+        import json
+        from .deadlines import DEFAULTS
+        def run(db, actor):
+            require(actor, workspace_role, 'settings.manage')
+            stored = {r['kind']: r for r in db.execute('SELECT * FROM assessment_rules WHERE org_id=?', (actor['org_id'],))}
+            return {'items': [{'kind': kind, 'rule': json.loads(stored[kind]['rule']) if kind in stored else asdict(rule),
+                               'revision': stored[kind]['revision'] if kind in stored else 0} for kind, rule in DEFAULTS.items()]}
+        return store.command(token, run)
+
+    @app.get('/v1/management/assessment-teachers')
+    def assessment_teachers(token: Token, workspace_role: Annotated[Role, Query()]):
+        def run(db, actor):
+            require(actor, workspace_role, 'settings.manage')
+            return {'items': [dict(r) for r in db.execute("SELECT u.id,u.display_name FROM users u WHERE u.org_id=? AND u.active=1 AND EXISTS(SELECT 1 FROM roles r WHERE r.org_id=u.org_id AND r.user_id=u.id AND r.role='teacher') ORDER BY u.display_name,u.id LIMIT 1000", (actor['org_id'],))]}
+        return store.command(token, run)
+
+    @app.post('/v1/management/assessment-rules')
+    def configure_rule(data: RuleChangeInput, token: Token):
+        return store.configure_rule(token, data.workspace_role, **data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/assessment-periods', status_code=201)
+    def open_period(data: PeriodInput, token: Token):
+        return store.open_period(token, data.workspace_role, **data.model_dump(exclude={'workspace_role'}))
+
+    @app.get('/v1/management/materials')
+    def materials(token: Token, workspace_role: Annotated[Role, Query()],
+                  limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                  before: Annotated[str | None, Query(max_length=32)] = None):
+        def run(db, actor):
+            selected = workspace(actor, workspace_role)
+            require(actor, selected, 'submissions.read', owner_id=actor['id'])
+            where, params = ['m.org_id=?'], [actor['org_id']]
+            if selected == 'teacher':
+                where.append('m.owner_id=?')
+                params.append(actor['id'])
+            if before:
+                where.append('m.rowid < COALESCE((SELECT rowid FROM assessment_materials WHERE org_id=? AND id=?),0)')
+                params.extend([actor['org_id'], before])
+            rows = db.execute('SELECT m.id,m.org_id,m.owner_id,m.state,m.revision,m.submitted_at,m.unlocked_until,m.updated_at,p.kind,p.starts_on,p.due_at,u.display_name FROM assessment_materials m JOIN assessment_periods p ON p.org_id=m.org_id AND p.id=m.period_id JOIN users u ON u.org_id=m.org_id AND u.id=m.owner_id WHERE '
+                              + ' AND '.join(where) + ' ORDER BY m.rowid DESC LIMIT ?', (*params, limit + 1)).fetchall()
+            items = [store.view(r, store.clock()) for r in rows[:limit]]
+            return {'items': items, 'next_before': items[-1]['id'] if len(rows) > limit else None}
+        return store.command(token, run)
+
+    @app.get('/v1/management/materials/{material_id}')
+    def material(material_id: str, token: Token, workspace_role: Annotated[Role, Query()]):
+        return store.read_material(token, workspace_role, material_id)
+
+    @app.post('/v1/management/materials/{material_id}')
+    def change_material(material_id: str, data: MaterialChangeInput, token: Token):
+        return store.change_material(token, data.workspace_role, material_id=material_id, **data.model_dump(exclude={'workspace_role'}))
+
+    @app.post('/v1/management/materials/{material_id}/scores')
+    def record_score(material_id: str, data: ScoreInput, token: Token):
+        return store.record_score(token, data.workspace_role, material_id=material_id, **data.model_dump(exclude={'workspace_role'}))
+
+    # Only an explicit schema upgrade may enable personnel routes. No tables,
+    # identities or grants are created by startup or ordinary HTTP requests.
+    if {'management_staff_versions','management_staff_commands'}<=tables:
+        from .personnel_api import install_personnel_routes
+        install_personnel_routes(app,database,clock)
+    if {'management_class_versions','management_class_commands','management_lesson_teacher_snapshots','management_metadata_clients','management_class_teacher_events'}<=tables:
+        from .class_teachers_api import install_class_teacher_routes
+        install_class_teacher_routes(app,database,clock)
+    from .historical import TABLES as HISTORICAL_TABLES
+    historical_enabled=HISTORICAL_TABLES<=tables
+    legacy_approvals_enabled='management_legacy_decisions' in tables
+    return app

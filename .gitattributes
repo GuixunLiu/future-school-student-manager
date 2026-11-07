@@ -1,0 +1,20 @@
+# Windows entry point must retain CMD-compatible line endings.
+server/ops/windows-review-launcher.cmd text eol=crlf
+server/ops/roster-review-browser.cmd text eol=crlf
+server/ops/apply-teacher-access.cmd text eol=crlf
+server/ops/change-teacher-logins.cmd text eol=crlf
+server/ops/run-remote-sync-check.cmd text eol=crlf
+server/ops/check-single-class-server.cmd text eol=crlf
+server/ops/check-web-entry.cmd text eol=crlf
+server/ops/deploy-http-viewer.cmd text eol=crlf
+server/ops/patch-http-viewer.cmd text eol=crlf
+server/ops/recover-http-viewer.cmd text eol=crlf
+server/ops/stage-single-class-pilot.cmd text eol=crlf
+server/ops/deploy-pilot-standby.cmd text eol=crlf
+server/ops/deploy-scoped-pilot.cmd text eol=crlf
+server/ops/review-pilot-leaves.cmd text eol=crlf
+server/ops/deploy-teacher-web.cmd text eol=crlf
+server/ops/patch-teacher-web-report.cmd text eol=crlf
+server/ops/add-web-administrators.cmd text eol=crlf
+# This read-only SSH helper is fingerprinted byte-for-byte by its caller.
+server/ops/export-management-review.py -text

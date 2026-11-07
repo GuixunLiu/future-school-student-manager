@@ -1,0 +1,43 @@
+# Administrator-managed file: /opt/wxnotify/docker-compose.yml
+# Do not grant write access to the parent directory or Docker socket.
+services:
+  api:
+    image: wxnotify-api:0.1.0
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    ports:
+      - "127.0.0.1:18080:8000"
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    environment:
+      WXNOTIFY_MODE: infrastructure_only
+      WXNOTIFY_ENABLE_WECHAT: "0"
+      WXNOTIFY_ENABLE_STUDENT_SYNC: "0"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=2); d=json.load(r); assert r.status==200 and d.get('status')=='ready' and d.get('business_ready') is False"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,983 @@
+openapi: 3.1.0
+info:
+  title: 未来学校统一业务 API
+  version: 1.0.0-draft
+  description: 最终三端范围契约草案。服务器是唯一数据中心；所有写操作支持幂等和审计。
+servers:
+  - url: /api
+security:
+  - userBearer: []
+tags:
+  - name: tablet
+  - name: teacher
+  - name: admin
+  - name: wechat
+paths:
+  /health/ready:
+    get:
+      security: []
+      operationId: readiness
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/auth/login:
+    post:
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [organization, login, password]
+              properties:
+                organization: { type: string, maxLength: 80 }
+                login: { type: string, maxLength: 80 }
+                password: { type: string, format: password, maxLength: 200 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/me:
+    get:
+      operationId: currentIdentity
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/admin/devices:
+    get:
+      tags: [admin]
+      operationId: adminListDevices
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateDevice
+      description: 创建待激活平板并签发15分钟一次性开通码；开通码不写入命令回执或审计。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, class_ids, command_ref]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                class_ids: { type: array, minItems: 1, maxItems: 200, uniqueItems: true, items: { type: string } }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/devices/{device_id}/activation:
+    post:
+      tags: [admin]
+      operationId: adminReissueDeviceActivation
+      description: 作废旧设备凭据和未使用开通码，签发15分钟一次性开通码；重复回执不返回开通码。
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/devices/{device_id}/disable:
+    post:
+      tags: [admin]
+      operationId: adminDisableDevice
+      description: 停用平板并撤销设备凭据和未使用开通码，不删除课堂、签到或课时数据。
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/tablet/activate:
+    post:
+      tags: [tablet]
+      security: []
+      operationId: tabletActivate
+      description: 原生安全层使用一次性开通码换取设备凭据，令牌不进入页面脚本。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [activation_code]
+              properties:
+                activation_code: { type: string, pattern: '^wxa_[A-Za-z0-9_-]{43}$' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /v1/tablet/bootstrap:
+    get:
+      tags: [tablet]
+      security: [{ deviceBearer: [] }]
+      operationId: tabletBootstrap
+      description: 返回设备获授权班级的课堂、学生及余额版本，不返回管理后台资料。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/tablet/face-profiles:
+    get:
+      tags: [tablet]
+      security: [{ deviceBearer: [] }]
+      operationId: tabletFaceProfiles
+      description: 仅向已授权平板返回其课堂投影内在读学生的有效 SFace 特征；服务器解密 AES-GCM 档案后经固定 pin 的 HTTPS 原生通道发送，不包含照片、授权凭证或其他班级资料。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/tablet/checkins:
+    post:
+      tags: [tablet]
+      security: [{ deviceBearer: [] }]
+      operationId: tabletCheckin
+      description: 断网续传使用同一 event_ref；旧余额版本返回 409，绝不覆盖服务器余额。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TabletCheckin' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/tablet/checkins/resolve:
+    post:
+      tags: [tablet]
+      security: [{ deviceBearer: [] }]
+      operationId: tabletResolveCheckin
+      description: 网页已将同一课次处理为已到或请假后，返回当前服务器结果供平板归档；不新建签到、不扣课时，相同原报文安全重复。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TabletCheckin' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons:
+    get:
+      tags: [teacher]
+      operationId: teacherLessons
+      description: 已实现。按北京时间日期返回当前教师同时获授课和班级授权的课堂；缺省为服务器当天。
+      parameters:
+        - { name: date, in: query, required: false, schema: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}:
+    get:
+      tags: [teacher]
+      operationId: teacherLesson
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}/face-checkin:
+    post:
+      tags: [teacher]
+      operationId: teacherFaceCheckin
+      description: 已实现。仅识别该教师本节课应到学生；浏览器连续采集3帧128维SFace特征而非原始照片，服务器比对并统一写入签到、课时流水和审计。仅限课堂当天且开始之后，首次201、相同内容安全重复200。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [event_ref, model_version, descriptors]
+              properties:
+                event_ref: { $ref: '#/components/schemas/EventRef' }
+                model_version: { type: string, minLength: 1, maxLength: 40, description: 当前为 sface-int8bq-v1 }
+                descriptors:
+                  type: array
+                  minItems: 3
+                  maxItems: 3
+                  items:
+                    type: array
+                    minItems: 128
+                    maxItems: 128
+                    items: { type: number, description: 归一化且有限的人脸特征值 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}/makeup:
+    post:
+      tags: [teacher]
+      operationId: teacherMakeup
+      description: 已实现。仅本人授课班级；首次操作201，同一操作编号及内容的安全重复返回200。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}/leave:
+    post:
+      tags: [teacher]
+      operationId: teacherLeave
+      description: 已实现。请假不扣课时；首次操作201，同一操作编号及内容的安全重复返回200。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/teacher/students/{studentId}/balance:
+    put:
+      tags: [teacher]
+      operationId: teacherAdjustBalance
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BalanceAdjustment' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/teacher/reports/weekly:
+    get:
+      tags: [teacher]
+      operationId: teacherWeeklyReport
+      description: 已实现。按北京时间自然周汇总本人课堂；实到除以已结束且未取消课堂的应到人次，请假计入应到，未结束课次单列。
+      parameters:
+        - { name: week_start, in: query, required: false, schema: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }, description: 北京时间周一；缺省为服务器当前周 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/students:
+    get:
+      tags: [admin]
+      operationId: adminStudents
+      description: 已实现。返回本机构学生、当前班级、最新课时余额和余额版本，供管理员续费核对；不向教师或设备凭据开放。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateStudent
+      description: 已实现。管理员创建在读学生并指定当前班级；学生、期初余额、不可变期初流水、招新记录、审计在同一事务内创建。学号和业务来源编号在机构内唯一，操作编号安全重试不重复建档。不回填历史签到，不修改已生成课次的应到名单，不记录金额。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [class_id, name, external_ref, opening_units, occurred_at, source_ref, reason, command_ref]
+              properties:
+                class_id: { type: string, minLength: 1, maxLength: 80 }
+                name: { type: string, minLength: 1, maxLength: 80 }
+                external_ref: { type: string, minLength: 1, maxLength: 80 }
+                opening_units: { type: integer, minimum: 0, maximum: 10000000 }
+                occurred_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间业务发生时间对应的 Unix 秒；不得明显晚于服务器时间 }
+                source_ref: { type: string, minLength: 1, maxLength: 100 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复，不重复建档 }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/students/{studentId}:
+    put:
+      tags: [admin]
+      operationId: adminUpdateStudent
+      description: 已实现。管理员编辑姓名、学号、学籍状态和当前班级，使用独立资料版本防止并发覆盖。转班或停用只移除未开始且无签到处理的旧班名单；转班或恢复在读时按目标班每节课规则加入未来名单，规则不一致则留待核对。已处理课次和招新记录保留当时班级快照，历史签到、余额和流水不变。
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [class_id, name, external_ref, active, expected_version, reason, command_ref]
+              properties:
+                class_id: { type: string, minLength: 1, maxLength: 80 }
+                name: { type: string, minLength: 1, maxLength: 80 }
+                external_ref: { type: string, minLength: 1, maxLength: 80 }
+                active: { type: boolean }
+                expected_version: { type: integer, minimum: 0 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/students/{studentId}/face-profile:
+    put:
+      tags: [admin]
+      operationId: adminSaveFaceProfile
+      description: 已实现。管理员核验监护人授权后为在读学生录入或替换人脸；三帧特征使用AES-GCM加密保存，不保存原始照片，重复操作不重复建档。
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [model_version, descriptors, consent_ref, command_ref]
+              properties:
+                model_version: { type: string, minLength: 1, maxLength: 40, description: 当前为 sface-int8bq-v1 }
+                descriptors:
+                  type: array
+                  minItems: 3
+                  maxItems: 3
+                  items:
+                    type: array
+                    minItems: 128
+                    maxItems: 128
+                    items: { type: number }
+                consent_ref: { type: string, minLength: 1, maxLength: 100, description: 已核验的监护人授权凭证编号 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error', description: 未配置 FACE_PROFILE_KEY }
+  /v1/admin/accounts:
+    get:
+      tags: [admin]
+      operationId: adminAccounts
+      description: 已实现。仅管理员可查看本机构纯教师账号的姓名、登录名、启停状态、资料版本、密码是否已配置及当前任课班级。不返回密码哈希、会话或其他秘密；管理员及双重角色账号不在此列表管理。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateAccount
+      description: 已实现。管理员创建启用中的纯教师账号，登录名使用3至64位小写字母、数字、点、下划线或连字符，初始密码15至128位。用户、教师角色、独立密码哈希、资料版本0和审计在同一事务保存；首次201、安全重复200。接口、回执和审计不返回或记录明文密码，新账号不自动获得班级权限。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [login, display_name, password, reason, command_ref]
+              properties:
+                login: { type: string, minLength: 3, maxLength: 64, pattern: '^[a-z0-9][a-z0-9_.-]{2,63}$' }
+                display_name: { type: string, minLength: 1, maxLength: 80 }
+                password: { type: string, minLength: 15, maxLength: 128, writeOnly: true }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object', description: 安全重复返回原回执，不包含密码 }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/accounts/{userId}/status:
+    put:
+      tags: [admin]
+      operationId: adminSetAccountStatus
+      description: 已实现。仅管理员可停用或恢复纯教师账号，必须提交最新资料版本、原因和固定操作编号。停用有任课班级的教师会被拒绝，须先交接；状态变化撤销该账号全部现有网页会话。恢复不自动授予班级。只改变账号状态、版本和会话，不删除账号，不改变任课、历史签到或课时账本；重复请求在版本检查前返回原回执。
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [active, expected_version, reason, command_ref]
+              properties:
+                active: { type: boolean }
+                expected_version: { type: integer, minimum: 0 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/accounts/{userId}/password:
+    put:
+      tags: [admin]
+      operationId: adminResetAccountPassword
+      description: 已实现。仅管理员可重置纯教师账号密码，必须提交最新资料版本、原因和固定操作编号。保存新的独立加盐密码哈希并撤销全部现有网页会话；接口、回执和审计不返回或记录明文密码。不修改账号状态、任课关系、历史签到或课时账本；重复请求在版本检查前返回原回执。
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password, expected_version, reason, command_ref]
+              properties:
+                password: { type: string, minLength: 15, maxLength: 128, writeOnly: true }
+                expected_version: { type: integer, minimum: 0 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/teachers:
+    get:
+      tags: [admin]
+      operationId: adminTeachers
+      description: 已实现。仅管理员可查看本机构在职教师及其班级授权，用于开课排课；不返回密码、会话或其他凭据。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/lessons:
+    get:
+      tags: [admin]
+      operationId: adminLessons
+      description: 已实现。按北京时间自然日查看本机构全部课次、授课教师、扣课规则版本、课次资料版本、已处理人数及到课计数；返回服务器时间供页面判定可操作性，服务端仍独立校验。缺省为服务器当天。
+      parameters:
+        - { name: date, in: query, required: false, schema: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateLesson
+      description: 已实现。管理员为本机构班级创建尚未开始的课次，授课教师必须在职且已获该班级授权，同班同一时间的有效课次不可重复，时长最多12小时。课次、资料版本0、教师、版本1的默认扣课规则、该班全部当前在读学生的应到名单及未签到版本0记录在同一事务内创建；空班也可建立课次和规则。首次201、安全重复200，不扣课时、不改余额或历史。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [class_id, teacher_id, starts_at, ends_at, charge_units, command_ref]
+              properties:
+                class_id: { type: string, minLength: 1, maxLength: 80 }
+                teacher_id: { type: string, minLength: 1, maxLength: 80 }
+                starts_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间开始时间对应的 Unix 秒；必须晚于服务器当前时间 }
+                ends_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间结束时间对应的 Unix 秒；最长12小时 }
+                charge_units: { type: integer, minimum: 1, maximum: 10000000 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复，返回原回执 }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/lessons/{lessonId}/makeup:
+    post:
+      tags: [admin]
+      operationId: adminCancelledMakeup
+      description: 已实现。仅管理员可处理本机构已取消课次中仍为未签到的应到学生，用于核对取消前的实际到课或平板冲突。按原名单扣课单位只扣一次，保存签到事件、状态、不可变流水、审计和幂等回执；不恢复课次，仍排除出到课率。首次201、安全重复200。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/lessons/{lessonId}/leave:
+    post:
+      tags: [admin]
+      operationId: adminCancelledLeave
+      description: 已实现。仅管理员可将本机构已取消课次中仍为未签到的应到学生处理为请假，不扣课时；保存签到事件、状态、审计和幂等回执，不恢复课次且仍排除出到课率。首次201、安全重复200。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/lessons/{lessonId}:
+    get:
+      tags: [admin]
+      operationId: adminLesson
+      description: 已实现。仅管理员可查看本机构课次及完整学生名单、原扣课单位、签到状态与版本、最新余额，用于取消课次冲突核对；不修改数据。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [admin]
+      operationId: adminRescheduleLesson
+      description: 已实现。仅管理员可调整本机构尚未开始、未取消且无任何签到、请假或事件痕迹的课次。必须提交最新资料版本、原因和固定操作编号；新开始时间晚于服务器当前时间，时长最多12小时，同班新时段不能已有有效课次。仅修改起止时间和版本，保留名单、教师、扣课规则、签到、余额与流水；重复请求在版本检查前返回原回执并记录审计。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [starts_at, ends_at, expected_version, reason, command_ref]
+              properties:
+                starts_at: { type: integer, minimum: 0, maximum: 253402185599 }
+                ends_at: { type: integer, minimum: 0, maximum: 253402185599 }
+                expected_version: { type: integer, minimum: 0 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/lessons/{lessonId}/cancel:
+    post:
+      tags: [admin]
+      operationId: adminCancelLesson
+      description: 已实现。仅管理员可取消本机构尚未开始、未取消且无任何签到、请假或事件痕迹的课次。必须提交最新资料版本、原因和固定操作编号；只把状态改为 cancelled，不删除名单或签到记录、不修改余额和流水、不自动退课时。取消课次不进入周报，可在原时段重新创建有效课次；重复请求在版本检查前返回原回执。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_version, reason, command_ref]
+              properties:
+                expected_version: { type: integer, minimum: 0 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/lessons/{lessonId}/charge-rule:
+    post:
+      tags: [admin]
+      operationId: adminSetLessonChargeRule
+      description: 已实现。仅管理员可为本机构尚未开始且未取消课次的空名单建立扣课规则，或统一现有名单不一致的扣课单位；已有一致规则时拒绝无意义覆盖。使用规则版本防止并发覆盖，首次201、安全重复200并返回原回执。若任何学生已有签到处理痕迹则拒绝。不修改签到状态、历史事件、课时余额或课时流水。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [charge_units, expected_revision, command_ref]
+              properties:
+                charge_units: { type: integer, minimum: 1, maximum: 10000000 }
+                expected_revision: { type: integer, minimum: 0, description: 页面预览中的规则版本；无保存规则时为0 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复，返回原回执 }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/students/{studentId}/future-lessons:
+    get:
+      tags: [admin]
+      operationId: adminFutureLessons
+      description: 已实现。预览在读学生当前班级中尚未开始且未取消的课次；现有学生扣课单位全部一致的课次可同步，空课次使用已保存的默认规则、未保存规则则列入待核对，扣课单位不一致的课次列入待核对，已存在名单不重复插入。各项返回规则版本供并发核对。预览不写数据。
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminSyncFutureLessons
+      description: 已实现。按提交时的服务器时间与最新名单重新核对并事务同步，建立应到名单及未签到、版本0的签到记录。操作编号安全重试返回原回执；首次201、重复200。不修改历史签到、课时余额、课时流水或招新续费月报；即使同步0条也记录管理员核对审计。
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [command_ref]
+              properties:
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复，返回原回执 }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/classes:
+    get:
+      tags: [admin]
+      operationId: adminClasses
+      description: 已实现。返回班级资料版本、在读和总人数以及当前任课教师编号。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      operationId: adminCreateClass
+      description: 已实现。创建机构内唯一名称的班级，初始资料版本为0；安全重复返回200。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, course_name, reason, command_ref]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                course_name: { type: string, minLength: 1, maxLength: 80 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/classes/{classId}:
+    put:
+      tags: [admin]
+      operationId: adminUpdateClass
+      description: 已实现。编辑班级和课程名称；资料版本不匹配或名称重复时拒绝，不改写历史课次或签到。
+      parameters:
+        - { $ref: '#/components/parameters/ClassId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, course_name, expected_version, reason, command_ref]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                course_name: { type: string, minLength: 1, maxLength: 80 }
+                expected_version: { type: integer, minimum: 0 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/classes/{classId}/teacher:
+    put:
+      tags: [admin]
+      operationId: adminSetClassTeacher
+      description: 已实现。设置一名在职教师或清空班级任课。仅同步调整未开始且无任何签到处理课次的授课教师；已开始或已处理课次保留原教师快照。返回两类课次数量，余额和历史不变。
+      parameters:
+        - { $ref: '#/components/parameters/ClassId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [teacher_id, expected_version, reason, command_ref]
+              properties:
+                teacher_id: { type: [string, 'null'], maxLength: 80 }
+                expected_version: { type: integer, minimum: 0 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/devices:
+    get:
+      tags: [admin]
+      operationId: adminDevices
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+    post:
+      tags: [admin]
+      operationId: adminIssueDevice
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+  /v1/admin/renewals:
+    post:
+      tags: [admin]
+      operationId: adminRenewal
+      description: 已实现。管理员按最新服务器余额累加课时；续费记录、余额更新、不可变流水、审计和每名有效绑定家长的待发送通知任务在同一事务内创建。操作编号安全重试不重复入账，业务来源编号在本机构内唯一；不记录金额，不启用真实微信发送。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [student_id, units_added, occurred_at, source_ref, reason, command_ref]
+              properties:
+                student_id: { type: string, minLength: 1, maxLength: 80 }
+                units_added: { type: integer, minimum: 1, maximum: 11000000 }
+                occurred_at: { type: integer, minimum: 0, maximum: 253402185599, description: 北京时间业务发生时间对应的 Unix 秒；不得明显晚于服务器时间 }
+                source_ref: { type: string, minLength: 1, maxLength: 100 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+                command_ref: { $ref: '#/components/schemas/EventRef' }
+      responses:
+        '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复，不重复入账 }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/reports/weekly:
+    get:
+      tags: [admin]
+      operationId: adminWeeklyReport
+      description: 已实现。按北京时间自然周汇总本机构全部课堂；实到除以已结束且未取消课堂的应到人次，请假计入应到，未结束课次单列。任意历史周使用相同口径实时查询，不改写历史数据。
+      parameters:
+        - { name: week_start, in: query, required: false, schema: { type: string, format: date, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }, description: 北京时间周一；缺省为服务器当前周 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/reports/monthly:
+    get:
+      tags: [admin]
+      operationId: adminMonthlyReport
+      description: 已实现。按业务发生时间和北京时间自然月汇总独立招新、续费记录；续费人数按学生去重，笔数和课时按事件汇总。不从期初、签到或调账反推，不包含金额；明细每类最多返回前 1000 条，汇总不受明细上限影响。
+      parameters:
+        - { name: month, in: query, required: false, schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }, description: 北京时间自然月；缺省为服务器当前月 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/admin/reports/{kind}/{period}/generate:
+    post:
+      tags: [admin]
+      operationId: adminGenerateReport
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [weekly, monthly] } }
+        - { name: period, in: path, required: true, schema: { type: string } }
+      requestBody: { $ref: '#/components/requestBodies/AdminCommand' }
+      responses:
+        '202': { $ref: '#/components/responses/Object' }
+  /v1/wechat/callback:
+    get:
+      tags: [wechat]
+      security: []
+      operationId: wechatVerifyCallback
+      responses:
+        '200': { description: 微信签名验证通过后返回原 echostr }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [wechat]
+      security: []
+      operationId: wechatReceiveCallback
+      responses:
+        '200': { description: 验证签名后接收事件 }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/wechat/bindings:
+    post:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatBindStudent
+      requestBody: { $ref: '#/components/requestBodies/WechatCommand' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/wechat/bindings/{bindingId}:
+    delete:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatUnbindStudent
+      parameters:
+        - { name: bindingId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/wechat/students:
+    get:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatStudents
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /v1/wechat/students/{studentId}/balance:
+    get:
+      tags: [wechat]
+      security: [{ wechatOpenId: [] }]
+      operationId: wechatStudentBalance
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    userBearer: { type: http, scheme: bearer }
+    deviceBearer: { type: http, scheme: bearer }
+    wechatOpenId:
+      type: apiKey
+      in: cookie
+      name: fs_wechat_session
+      description: 服务器在验证微信身份后签发、绑定 HttpOnly 安全会话。
+  parameters:
+    LessonId: { name: lessonId, in: path, required: true, schema: { type: string } }
+    ClassId: { name: classId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 80 } }
+    StudentId: { name: studentId, in: path, required: true, schema: { type: string } }
+    WeekStart: { name: week_start, in: query, required: true, schema: { type: string, format: date }, description: 北京时间周一 }
+  schemas:
+    EventRef: { type: string, minLength: 1, maxLength: 80 }
+    TabletCheckin:
+      type: object
+      additionalProperties: false
+      required: [event_ref, lesson_id, student_id, occurred_at, attendance_revision, balance_revision, previous_balance_units, consumed_units]
+      properties:
+        event_ref: { $ref: '#/components/schemas/EventRef' }
+        lesson_id: { type: string }
+        student_id: { type: string }
+        occurred_at: { type: integer, minimum: 0 }
+        attendance_revision: { type: integer, minimum: 0 }
+        balance_revision: { type: integer, minimum: 0 }
+        previous_balance_units: { type: integer }
+        consumed_units: { type: integer, minimum: 1 }
+    AttendanceCorrection:
+      type: object
+      additionalProperties: false
+      required: [student_id, reason, event_ref, expected_revision]
+      properties:
+        student_id: { type: string }
+        reason: { type: string, minLength: 1, maxLength: 200 }
+        event_ref: { $ref: '#/components/schemas/EventRef' }
+        expected_revision: { type: integer, minimum: 0 }
+    BalanceAdjustment:
+      type: object
+      additionalProperties: false
+      required: [units, reason, expected_revision, command_ref]
+      properties:
+        units: { type: integer, minimum: -1000000, maximum: 10000000 }
+        reason: { type: string, minLength: 1, maxLength: 200 }
+        expected_revision: { type: integer, minimum: 0 }
+        command_ref: { $ref: '#/components/schemas/EventRef' }
+  requestBodies:
+    AdminCommand:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [command_ref]
+            properties:
+              command_ref: { $ref: '#/components/schemas/EventRef' }
+    WechatCommand:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [binding_proof]
+            properties:
+              binding_proof: { type: string, maxLength: 200 }
+  responses:
+    Object:
+      description: 成功响应
+      content:
+        application/json:
+          schema: { type: object }
+    Error:
+      description: 业务或权限错误；响应不包含学生隐私或凭据
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: { type: string }
+                  message: { type: string }

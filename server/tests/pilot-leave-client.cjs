@@ -1,0 +1,11 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),{spawnSync}=require('node:child_process');
+const tool=require('../ops/review-pilot-leaves.cjs'),exporter=path.join(__dirname,'../ops/export-pilot-leaves.py');
+const input={c:{exporter:{path:exporter,sha256:crypto.createHash('sha256').update(fs.readFileSync(exporter)).digest('hex')}},receipt:{stage_directory:'/opt/wxnotify/app/single-class-offline-20261028121655-da40e468',runtime_sha256:'f'.repeat(64),lesson_id:'b'.repeat(32)},plan:{server_class_id:'a'.repeat(32),members:[{server_student_id:'c'.repeat(32)}]}};
+const good={format:'future-school-pilot-server-leave-snapshot',schema_version:1,source_access:'read_only',server_written:false,device_enabled:false,wechat_enabled:false,class_id:input.plan.server_class_id,lesson_id:input.receipt.lesson_id,identity_mapping_verified:true,generated_at:new Date().toISOString(),student_ids:['c'.repeat(32)],leaves:[],arrived_student_ids:[],snapshot_sha256:'d'.repeat(64)};
+assert.equal(tool.validateServer(good,input),good);
+for(const patch of [{source_access:'write'},{server_written:true},{device_enabled:true},{wechat_enabled:true},{class_id:'0'.repeat(32)},{lesson_id:'0'.repeat(32)},{student_ids:[]},{identity_mapping_verified:false},{generated_at:'2020-01-01T00:00:00Z'},{snapshot_sha256:'wrong'}])assert.throws(()=>tool.validateServer({...good,...patch},input));
+const frame=tool.remoteScript(input);assert.equal(frame.trim().includes('\n'),false);assert(frame.length<65537);
+const source=Buffer.from(frame.trim(),'base64').toString('utf8');assert(source.includes("ns['export'](config)"));assert(!source.includes('sudo'));assert(!source.includes('systemctl'));
+const python=path.join(__dirname,'../.venv/Scripts/python.exe'),result=spawnSync(python,['-c','import ast,sys;ast.parse(sys.stdin.read());print("syntax ok")'],{input:source,encoding:'utf8',windowsHide:true});assert.equal(result.status,0,result.stderr);
+console.log('Pilot leave client passed: fixed one-lesson read, bounded stdin, fresh scoped snapshot, no write/activation flags, Python wrapper syntax. No network.');

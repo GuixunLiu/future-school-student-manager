@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>未来学校 · 统一工作台</title>
+  <link rel="icon" href="/future-school-logo.png">
+  <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/runtime.css">
+  <script src="/face-engine.js" defer></script>
+  <script src="/runtime.js" defer></script>
+  <script src="/teacher-runtime.js" defer></script>
+  <script src="/teacher-face.js" defer></script>
+  <script src="/teacher-report.js" defer></script>
+  <script src="/admin-report.js" defer></script>
+  <script src="/admin-monthly.js" defer></script>
+  <script src="/admin-renewal.js" defer></script>
+  <script src="/admin-enrollment.js" defer></script>
+  <script src="/admin-roster-sync.js" defer></script>
+  <script src="/admin-accounts.js" defer></script>
+  <script src="/admin-schedule.js" defer></script>
+  <script src="/admin-directory.js" defer></script>
+  <script src="/admin-face.js" defer></script>
+</head>
+<body>
+  <div class="preview">统一运行系统 · 本地验收环境</div>
+  <header>
+    <div class="brand"><span class="mark"><img src="/future-school-logo.png" alt="未来学校"></span><div><strong>未来学校</strong><small>教师与设备工作台</small></div></div>
+    <div id="identity"></div>
+  </header>
+  <main id="main" aria-live="polite"></main>
+  <div id="notice" role="status"></div>
+  <dialog id="device-dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div><button id="close-dialog" class="secondary" type="button">关闭</button></dialog>
+  <footer>课堂与设备数据均按当前账号权限访问 · 操作结果以服务器为准</footer>
+</body>
+</html>
