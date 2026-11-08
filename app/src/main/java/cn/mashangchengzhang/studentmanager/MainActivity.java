@@ -57,6 +57,7 @@ public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1202;
     private static final int NOTIFICATION_REQUEST = 1203;
     private WebView webView;
+    private AttendanceLock attendanceLock;
     private DeviceSyncTransport deviceSyncTransport;
     private WebMirrorTransport webMirrorTransport;
     private CanonicalSyncTransport canonicalSyncTransport;
@@ -88,6 +89,7 @@ public class MainActivity extends Activity {
 
         FrameLayout root = new FrameLayout(this);
         webView = new WebView(this);
+        attendanceLock = new AttendanceLock(this, this::updateAttendanceLockUi);
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setMax(100);
         progressBar.setProgressTintList(android.content.res.ColorStateList.valueOf(Color.rgb(245, 168, 55)));
@@ -147,6 +149,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 if (!trustedAppUri(Uri.parse(url))) return;
                 pageReady = true;
+                updateAttendanceLockUi(attendanceLock != null && attendanceLock.isLocked());
                 deliverPendingReminder();
                 webView.evaluateJavascript("window.scheduleWebMirror && window.scheduleWebMirror()", null);
             }
@@ -201,6 +204,10 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (attendanceLock != null && attendanceLock.isLocked()) {
+                    callback.onReceiveValue(null);
+                    return true;
+                }
                 if (pendingFileChooser != null) pendingFileChooser.onReceiveValue(null);
                 pendingFileChooser = callback;
                 try {
@@ -218,6 +225,12 @@ public class MainActivity extends Activity {
     }
 
     private class AppBridge {
+        @JavascriptInterface
+        public void openAttendanceLock() {
+            runOnUiThread(() -> {
+                if (!isFinishing() && attendanceLock != null) attendanceLock.showControls();
+            });
+        }
         @JavascriptInterface public String getCanonicalSyncProfile(){return canonicalSyncTransport.overview();}
         @JavascriptInterface public void prepareCanonicalSyncEnrollment(){canonicalSyncTransport.prepareEnrollment();}
         @JavascriptInterface public void captureCanonicalSyncEnrollment(String raw,String baselineSha256,long capturedAt){canonicalSyncTransport.captureEnrollment(raw,baselineSha256,capturedAt);}
@@ -332,6 +345,12 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void discardLocalRepairCheckpoint() {
             repairCheckpoint.discard();
+        }
+    }
+
+    private void updateAttendanceLockUi(boolean locked) {
+        if (webView != null && pageReady) {
+            webView.evaluateJavascript("window.onAttendanceLockChanged && window.onAttendanceLockChanged(" + locked + ")", null);
         }
     }
 
@@ -560,8 +579,15 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (attendanceLock != null && attendanceLock.handleBack()) return;
         if (webView.canGoBack()) webView.goBack();
         else super.onBackPressed();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && attendanceLock != null) attendanceLock.restoreWhenFocused();
     }
 
     @Override
@@ -573,6 +599,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (attendanceLock != null) {
+            attendanceLock.close();
+            attendanceLock = null;
+        }
         if (webMirrorTransport != null) webMirrorTransport.close();
         if (canonicalSyncTransport != null) canonicalSyncTransport.close();
         if (deviceSyncTransport != null) deviceSyncTransport.close();

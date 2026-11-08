@@ -644,6 +644,12 @@ function mountPageContent(view,renderer){
   if(cached){content.appendChild(cached);pageCache.delete(key)}else content.innerHTML=renderer();
   mountedPageKey=view==='settings'?'':key;mountedPageName=view;mountedPageRevision=dataRevision;
 }
+let attendanceScreenLocked=false;
+window.onAttendanceLockChanged=locked=>{
+  if(attendanceScreenLocked===locked)return;
+  attendanceScreenLocked=locked;
+  if(locked&&isAdminAuthenticated)exitAdmin();else render();
+};
 function render(){
   syncScreenOrientationClass();
   currentView=isAdminAuthenticated?'settings':'checkin';
@@ -655,8 +661,8 @@ function render(){
   if(!isAdminAuthenticated){
     $('#viewTitle').textContent='学生签到';
     $('#viewSubtitle').textContent='请选择签到方式，签到成功后会显示剩余课时';
-    adminAccess.innerHTML=`<span>${uiIcon('lock')}</span><b>设备</b>`;
-    bindReliableTap(adminAccess,openAdminLogin);
+    adminAccess.innerHTML=`<span>${uiIcon('lock')}</span><b>${attendanceScreenLocked?'解锁':'设备'}</b>`;
+    bindReliableTap(adminAccess,attendanceScreenLocked?()=>window.AndroidBridge.openAttendanceLock():openAdminLogin);
     mountPageContent('kiosk',renderKioskCheckin);
   }else{
     $('#viewTitle').textContent='设备与同步';
@@ -847,6 +853,7 @@ function renderSettings(){
     ${refresh}
     <div class="setting-row"><div><b>摄像头与签到窗口</b><small>${esc(cameraPositionSummary())}</small></div><button type="button" class="secondary-btn" id="configureCameraPosition">重新设置</button></div>
     <div class="setting-row"><div><b>设备解锁图案</b></div><button type="button" class="secondary-btn" id="configurePattern">修改图案</button></div>
+    ${typeof window.AndroidBridge?.openAttendanceLock==='function'?'<div class="setting-row"><div><b>签到专用模式</b><small>受管理平板可锁定应用，退出须验证密码</small></div><button type="button" class="secondary-btn" id="configureAttendanceLock">设置</button></div>':''}
     ${canonicalEnrollmentSettingsMarkup()}</section>${active?deviceSyncSettingsMarkup():''}</div>`;
 }
 
@@ -862,6 +869,8 @@ function bindViewEvents(){
   if(!isAdminAuthenticated)return;
   $('#configureCameraPosition').onclick=()=>openCameraPositionSetup(false);
   $('#configurePattern').onclick=openPatternChange;
+  const attendanceLock=$('#configureAttendanceLock');
+  if(attendanceLock)attendanceLock.onclick=()=>window.AndroidBridge.openAttendanceLock();
 }
 
 function mountCampusCodeSetting(){
