@@ -11,16 +11,25 @@ function showError(error){notify(error.message||'操作未完成，请刷新后�
 async function api(path,body,method){const response=await fetch(path,{method:method||(body===undefined?'GET':'POST'),headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});const data=await response.json();if(!response.ok){if(response.status===401&&token){token='';identity=null;login();}const error=Error(data.error?.message||'请求未完成');error.status=response.status;error.code=data.error?.code;throw error;}return data;}
 function login(){
  token='';identity=null;$('identity').replaceChildren();$('device-dialog').close();
- const panel=node('section',undefined,'panel login'),form=node('form');panel.append(node('h1','登录统一工作台'),node('p','教师进入本人课堂，管理员进入设备管理。登录状态只保留在当前页面，刷新后需要重新登录。'));
- const organization=field(form,'机构标识'),account=field(form,'账号'),password=field(form,'密码','password');account.autocomplete='username';password.autocomplete='current-password';
+ const panel=node('section',undefined,'panel login'),form=node('form');panel.append(node('h1','登录统一工作台'),node('p','使用账号和密码登录。教师进入本人课堂，管理员进入管理工作台。'));
+ const account=field(form,'账号'),password=field(form,'密码','password');account.autocomplete='username';password.autocomplete='current-password';
  const submit=node('button','登录');submit.type='submit';form.append(submit);panel.append(form);$('main').replaceChildren(panel);
- form.addEventListener('submit',async event=>{event.preventDefault();submit.disabled=true;try{const result=await api('/v1/auth/login',{organization:organization.value.trim(),login:account.value.trim(),password:password.value});password.value='';token=result.access_token;identity=await api('/v1/me');if(identity.roles.includes('teacher'))await teacherDashboard();else if(identity.roles.includes('admin'))await dashboard();else throw Error('当前账号没有教师或管理员权限');}catch(error){showError(error);}finally{submit.disabled=false;}});
+ form.addEventListener('submit',async event=>{event.preventDefault();submit.disabled=true;try{const result=await api('/v1/auth/login',{login:account.value.trim(),password:password.value});password.value='';token=result.access_token;identity=await api('/v1/me');if(hasStaffRole('performance_reviewer'))await feeReviewDashboard();else if(hasStaffRole('owner')||hasStaffRole('campus_admin'))await dashboard();else if(hasStaffRole('teacher'))await teacherDashboard();else if(hasStaffRole('admin'))await dashboard();else throw Error('当前账号尚未分配工作台权限');}catch(error){showError(error);}finally{submit.disabled=false;}});
 }
 async function dashboard(){
  const [classData,deviceData]=await Promise.all([api('/v1/admin/classes'),api('/v1/admin/devices')]);classes=classData.items;
- $('identity').replaceChildren(node('span',identity.display_name),button('退出',logout,'secondary'));
+ $('identity').replaceChildren(node('span',identity.display_name+(identity.campus_name?' · '+identity.campus_name:'')),button('退出',logout,'secondary'));
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','平板设备管理'),node('p','为一台新平板选择可签到班级并生成一次性开通码。开通码 15 分钟内有效，只在生成时显示一次。'));
- const actions=node('div',undefined,'toolbar');actions.append(button('刷新',dashboard,'secondary'),button('学生与班级',()=>adminDirectoryDashboard(),'secondary'),button('账号管理',()=>adminAccountDashboard(),'secondary'),button('课表管理',()=>adminScheduleDashboard(),'secondary'),button('人脸档案',()=>adminFaceDashboard(),'secondary'),button('全校周报',()=>adminWeeklyReport(),'secondary'),button('招新续费月报',()=>adminMonthlyReport(),'secondary'),button('招新登记',()=>adminEnrollmentDashboard(),'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'),button('开通新平板',openEnrollment));heading.append(copy,actions);const list=node('section',undefined,'device-list');
+ const actions=node('div',undefined,'toolbar');
+ actions.append(button('刷新',dashboard,'secondary'),button('学生与班级',()=>adminDirectoryDashboard(),'secondary'),
+  button('账号管理',()=>adminAccountDashboard(),'secondary'),button('课表管理',()=>adminScheduleDashboard(),'secondary'),
+  button('教师课时费',()=>teachingFeesDashboard(true),'secondary'),button('招新登记',()=>adminEnrollmentDashboard(),'secondary'));
+ if(hasStaffRole('admin'))actions.append(button('人脸档案',()=>adminFaceDashboard(),'secondary'),button('全校周报',()=>adminWeeklyReport(),'secondary'),
+  button('招新续费月报',()=>adminMonthlyReport(),'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'));
+ if(hasStaffRole('owner'))actions.append(button('管理权限',ownerStaffDashboard,'secondary'));
+ if(hasStaffRole('owner')||hasStaffRole('campus_admin'))actions.append(
+  button('课时费审核',feeReviewDashboard,'secondary'),button('费率申请',courseFeeProposalDashboard,'secondary'));
+ actions.append(button('开通新平板',openEnrollment));heading.append(copy,actions);const list=node('section',undefined,'device-list');
  if(!deviceData.items.length)list.append(node('div','尚未开通平板','empty'));
  for(const device of deviceData.items){const row=node('article',undefined,'item device-row'),title=node('div');title.append(node('h2',device.name),node('p','设备编号 '+device.id));
   const names=(device.class_ids||[]).map(id=>classes.find(item=>item.id===id)?.name||id),status=node('div',undefined,'device-status'),operations=node('div',undefined,'device-actions');

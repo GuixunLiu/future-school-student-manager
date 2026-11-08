@@ -360,9 +360,148 @@ INSERT INTO schema_migrations VALUES(
 """.strip() + "\n"
 
 
+STAFF_FEATURES_VERSION = 'runtime-staff-features-v1'
+STAFF_FEATURES_SCHEMA = """
+CREATE TABLE campuses (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations(id),
+    name TEXT NOT NULL,
+    UNIQUE(org_id, id),
+    UNIQUE(org_id, name)
+);
+CREATE TABLE teacher_campuses (
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    campus_id TEXT NOT NULL,
+    PRIMARY KEY(org_id, user_id),
+    FOREIGN KEY(org_id, user_id) REFERENCES users(org_id, id),
+    FOREIGN KEY(org_id, campus_id) REFERENCES campuses(org_id, id)
+);
+CREATE TABLE lesson_substitutions (
+    org_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY(org_id, lesson_id),
+    FOREIGN KEY(org_id, lesson_id) REFERENCES lessons(org_id, id),
+    FOREIGN KEY(org_id, user_id) REFERENCES users(org_id, id)
+);
+CREATE VIEW effective_lesson_teachers AS
+    SELECT lt.org_id, lt.lesson_id, lt.user_id, FALSE AS is_substitute
+    FROM lesson_teachers lt
+    WHERE NOT EXISTS (SELECT 1 FROM lesson_substitutions s
+                      WHERE s.org_id=lt.org_id AND s.lesson_id=lt.lesson_id)
+    UNION ALL
+    SELECT org_id, lesson_id, user_id, TRUE FROM lesson_substitutions;
+CREATE INDEX users_runtime_login_idx ON users(login);
+INSERT INTO schema_migrations VALUES(
+    'runtime-staff-features-v1', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+);
+"""
+
+
+COURSE_FEE_SCHEMA = """
+CREATE TABLE course_teaching_fee_rates (
+    org_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version > 0),
+    effective_at BIGINT NOT NULL,
+    rate_cents INTEGER CHECK(rate_cents BETWEEN 0 AND 100000000),
+    PRIMARY KEY(org_id, course_id, version),
+    FOREIGN KEY(org_id, course_id) REFERENCES courses(org_id, id)
+);
+CREATE TABLE lesson_fee_courses (
+    org_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    PRIMARY KEY(org_id, lesson_id),
+    FOREIGN KEY(org_id, lesson_id) REFERENCES lessons(org_id, id),
+    FOREIGN KEY(org_id, course_id) REFERENCES courses(org_id, id)
+);
+INSERT INTO schema_migrations VALUES(
+    'runtime-course-fees-v1', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+);
+"""
+
+
+CAMPUS_ACCESS_SCHEMA = """
+ALTER TABLE classes ADD COLUMN campus_id TEXT;
+ALTER TABLE classes ADD FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id);
+ALTER TABLE lessons ADD COLUMN campus_id TEXT;
+ALTER TABLE lessons ADD FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id);
+ALTER TABLE devices ADD COLUMN campus_id TEXT;
+ALTER TABLE devices ADD FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id);
+CREATE INDEX classes_by_campus ON classes(org_id,campus_id);
+CREATE INDEX lessons_by_campus ON lessons(org_id,campus_id,starts_at);
+CREATE INDEX devices_by_campus ON devices(org_id,campus_id);
+CREATE TABLE organization_staff_access (
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('owner','campus_admin','performance_reviewer')),
+    campus_id TEXT,
+    PRIMARY KEY(org_id,user_id),
+    FOREIGN KEY(org_id,user_id) REFERENCES users(org_id,id),
+    FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id),
+    CHECK((role='campus_admin') = (campus_id IS NOT NULL))
+);
+CREATE TABLE teaching_fee_reviews (
+    org_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    campus_id TEXT NOT NULL,
+    period TEXT NOT NULL CHECK(period IN ('week','month')),
+    period_start TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('submitted','returned','approved','settled')),
+    version INTEGER NOT NULL CHECK(version > 0),
+    snapshot JSONB NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY(org_id,id),
+    UNIQUE(org_id,campus_id,period,period_start),
+    FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id),
+    FOREIGN KEY(org_id,updated_by) REFERENCES users(org_id,id)
+);
+CREATE TABLE course_fee_proposals (
+    org_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    campus_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    rate_cents INTEGER CHECK(rate_cents BETWEEN 0 AND 100000000),
+    fee_version INTEGER NOT NULL CHECK(fee_version >= 0),
+    status TEXT NOT NULL CHECK(status IN ('submitted','approved','returned')),
+    reason TEXT NOT NULL,
+    submitted_by TEXT NOT NULL,
+    submitted_at BIGINT NOT NULL,
+    decision_reason TEXT,
+    PRIMARY KEY(org_id,id),
+    FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id),
+    FOREIGN KEY(org_id,course_id) REFERENCES courses(org_id,id),
+    FOREIGN KEY(org_id,submitted_by) REFERENCES users(org_id,id)
+);
+CREATE UNIQUE INDEX pending_fee_proposal_per_campus ON course_fee_proposals(org_id,campus_id,course_id)
+    WHERE status='submitted';
+INSERT INTO schema_migrations VALUES(
+    'runtime-campus-access-v1', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+);
+"""
+
+
+def upgrade_staff_schema(connection):
+    """Apply the additive migration in a transaction on an initialized runtime."""
+    with connection.transaction():
+        connection.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (STAFF_FEATURES_VERSION,))
+        if not connection.execute("SELECT 1 FROM schema_migrations WHERE version='fresh-start-runtime-v2'").fetchone():
+            raise ValueError('The runtime schema must already be initialized')
+        for version, schema in ((STAFF_FEATURES_VERSION, STAFF_FEATURES_SCHEMA),
+                                ('runtime-course-fees-v1', COURSE_FEE_SCHEMA),
+                                ('runtime-campus-access-v1', CAMPUS_ACCESS_SCHEMA)):
+            if not connection.execute('SELECT 1 FROM schema_migrations WHERE version=%s', (version,)).fetchone():
+                connection.execute(schema)
+
+
 def full_schema():
     """One transaction-ready DDL script; callers control the transaction."""
     lines = POSTGRES_SCHEMA.strip().splitlines()
     if lines[0] != "BEGIN;" or lines[-1] != "COMMIT;":
         raise ValueError("Unexpected base schema wrapper")
-    return "\n".join(lines[1:-1]) + "\n" + POSTGRES_RUNTIME_SCHEMA
+    return ("\n".join(lines[1:-1]) + "\n" + POSTGRES_RUNTIME_SCHEMA + STAFF_FEATURES_SCHEMA
+            + COURSE_FEE_SCHEMA + CAMPUS_ACCESS_SCHEMA)

@@ -152,6 +152,122 @@ class RuntimeBusinessTests(unittest.TestCase):
             function(*args)
         self.assertEqual((status, code), (caught.exception.status, caught.exception.code))
 
+    def test_teacher_campus_login_and_substitute_fees(self):
+        campus = self.store.admin_create_campus(ADMIN_TOKEN, '虚构北校区')
+        password = 'fictional-password-for-fee-test'
+        account = self.store.admin_create_account(ADMIN_TOKEN, {
+            'login': 'fictional.substitute', 'display_name': '虚构代课老师', 'password': password,
+            'campus_id': campus['id'], 'reason': '虚构测试', 'command_ref': 'campus-account'})
+        substitute = self.store.login('', account['login'], password, 'staff-feature-test')['access_token']
+        self.assertEqual(campus['name'], self.store.me(substitute)['campus_name'])
+        self.assert_problem(403, 'admin_required', self.store.admin_campuses, substitute)
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("UPDATE lessons SET starts_at=2000,ends_at=7400 WHERE id='lesson-a'")
+            connection.execute("UPDATE lessons SET starts_at=8000,ends_at=15200 WHERE id='lesson-b'")
+        payload = {'teacher_id': account['user_id'], 'expected_version': 0,
+                   'reason': '虚构代课', 'command_ref': 'substitute-once'}
+        result = self.store.admin_substitute_lesson(ADMIN_TOKEN, 'lesson-a', payload)
+        self.assertEqual(1, result['version'])
+        self.assertTrue(self.store.admin_substitute_lesson(ADMIN_TOKEN, 'lesson-a', payload)['duplicate'])
+        self.assertEqual([], self.store.teacher_lessons(USER_TOKEN)['items'])
+        self.assertTrue(self.store.teacher_lessons(substitute)['items'][0]['is_substitute'])
+        self.assert_problem(403, 'lesson_scope', self.store.teacher_lesson, USER_TOKEN, 'lesson-a')
+        self.assert_problem(403, 'lesson_scope', self.store.teacher_lesson, substitute, 'lesson-b')
+        self.assertEqual('student-a', self.store.teacher_lesson(substitute, 'lesson-a')['students'][0]['student_id'])
+        self.assertEqual(0, self.store.teaching_fees(substitute, 'week')['total_cents'])
+        self.store.clock = lambda: 16000
+        self.store.teacher_correction(substitute, 'lesson-a', 'makeup', correction('fee-makeup'))
+        self.store.teacher_correction(OTHER_USER_TOKEN, 'lesson-b', 'makeup',
+                                      dict(correction('fee-other-makeup'), student_id='student-b'))
+        own = self.store.teaching_fees(substitute, 'week')
+        self.assertEqual(300, own['total_cents'])
+        self.assertEqual([account['user_id']], [row['id'] for row in own['items']])
+        self.assertEqual(0, self.store.teaching_fees(USER_TOKEN, 'week')['total_cents'])
+        self.assertEqual(750, self.store.teaching_fees(ADMIN_TOKEN, 'month', administrator=True)['total_cents'])
+
+    def test_campus_permissions_and_monthly_review_are_isolated(self):
+        from management.runtime_permissions import provision_first_owner
+        north = self.store.admin_create_campus(ADMIN_TOKEN, '虚构北校区')['id']
+        south = self.store.admin_create_campus(ADMIN_TOKEN, '虚构南校区')['id']
+        password = 'fictional-staff-test-password'
+        with psycopg.connect(self.conninfo, row_factory=dict_row) as connection:
+            connection.execute("INSERT INTO user_credentials VALUES('org-fiction','admin-a',%s,1)",
+                               (password_hash(password),))
+            provision_first_owner(connection, 'fiction', 'fiction-admin-a')
+            connection.execute("UPDATE lessons SET ends_at=5500 WHERE id='lesson-a'")
+        self.assertIn('owner', self.store.me(ADMIN_TOKEN)['roles'])
+        for class_id, campus_id in (('class-a', north), ('class-b', south)):
+            self.store.assign_class_campus(ADMIN_TOKEN, class_id, {
+                'campus_id': campus_id, 'include_history': True, 'reason': '虚构校区归属'})
+        for login, role, campus_id in (('north-admin', 'campus_admin', north),
+                                       ('fee-reviewer', 'performance_reviewer', None)):
+            self.store.set_staff_access(ADMIN_TOKEN, {'login': login, 'role': role, 'campus_id': campus_id,
+                'display_name': login, 'password': password, 'reason': '虚构授权'})
+        admin = self.store.login('', 'north-admin', password, 'test-staff')['access_token']
+        reviewer = self.store.login('', 'fee-reviewer', password, 'test-staff')['access_token']
+        self.assertEqual(['class-a'], [row['id'] for row in self.store.admin_classes(admin)['items']])
+        self.assertEqual(['student-a'], [row['id'] for row in self.store.admin_students(admin)['items']])
+        self.assertEqual(['lesson-a'], [row['id'] for row in self.store.admin_lessons(admin)['items']])
+        self.assertEqual(['device-a'], [row['id'] for row in self.store.admin_devices(admin)['items']])
+        self.assert_problem(404, 'campus_scope', self.store.admin_lesson, admin, 'lesson-b')
+        self.assert_problem(403, 'admin_required', self.store.admin_students, reviewer)
+        self.assert_problem(403, 'admin_required', self.store.admin_monthly_report, admin)
+        self.assert_problem(404, 'campus_scope', self.store.preview_fee_review, admin, south, 'month', '1970-01-01')
+        rate = {'rate_cents': 600, 'expected_version': 0, 'reason': '虚构费率调整', 'command_ref': 'campus-rate'}
+        self.assert_problem(404, 'course_missing', self.store.submit_course_fee_proposal, admin, 'course-b', rate)
+        self.assert_problem(403, 'admin_required', self.store.admin_set_course_teaching_fee, admin, 'course-a', rate)
+        proposal = self.store.submit_course_fee_proposal(admin, 'course-a', rate)
+        approval = {'action': 'approved', 'reason': '虚构批准'}
+        self.assert_problem(403, 'owner_required', self.store.decide_course_fee_proposal, reviewer, proposal['id'], approval)
+        self.assertEqual('approved', self.store.decide_course_fee_proposal(ADMIN_TOKEN, proposal['id'], approval)['status'])
+        self.assertEqual(600, next(row for row in self.store.admin_courses(admin)['items']
+                                   if row['id'] == 'course-a')['teaching_fee_cents'])
+        self.store.teacher_correction(USER_TOKEN, 'lesson-a', 'makeup', correction('historical-review-attendance'))
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute('UPDATE auth_sessions SET expires_at=9000000')
+        self.store.clock = lambda: 3000000
+        submitted = self.store.submit_fee_review(admin, {'campus_id': north, 'period': 'month',
+            'date': '1970-01-01', 'reason': '虚构月度审核'})
+        entries = self.store.fee_reviews(reviewer)
+        self.assertEqual({north, south}, {row['id'] for row in entries['campuses']})
+        snapshot = entries['items'][0]['snapshot']
+        self.assertEqual(300, snapshot['total_cents'])
+        self.assertEqual(1, snapshot['items'][0]['lessons'][0]['arrived_count'])
+        self.assertNotIn('虚构学生甲', json.dumps(snapshot, ensure_ascii=False))
+        self.assertNotIn('student_id', json.dumps(snapshot))
+        approve = {'action': 'approved', 'expected_version': 1, 'reason': '虚构核对'}
+        self.assert_problem(403, 'review_role_required', self.store.decide_fee_review, admin, submitted['id'], approve)
+        self.assertEqual('approved', self.store.decide_fee_review(reviewer, submitted['id'], approve)['status'])
+        settle = {'action': 'settled', 'expected_version': 2, 'reason': '虚构结算'}
+        self.assert_problem(403, 'review_role_required', self.store.decide_fee_review, reviewer, submitted['id'], settle)
+        self.assertEqual('settled', self.store.decide_fee_review(ADMIN_TOKEN, submitted['id'], settle)['status'])
+        self.assertEqual(snapshot, self.store.fee_reviews(ADMIN_TOKEN)['items'][0]['snapshot'])
+
+    def test_course_teaching_fee_changes_only_apply_to_later_lessons(self):
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("UPDATE lessons SET ends_at=5500 WHERE id='lesson-a'")
+        fee = {'rate_cents': 650, 'expected_version': 0, 'reason': '虚构费率', 'command_ref': 'fee-rate'}
+        self.assert_problem(403, 'admin_required', self.store.admin_set_course_teaching_fee, USER_TOKEN, 'course-a', fee)
+        saved = self.store.admin_set_course_teaching_fee(ADMIN_TOKEN, 'course-a', fee)
+        self.assertEqual(1, saved['version'])
+        self.assertTrue(self.store.admin_set_course_teaching_fee(ADMIN_TOKEN, 'course-a', fee)['duplicate'])
+        self.assertEqual(650, next(item for item in self.store.admin_courses(ADMIN_TOKEN)['items']
+                                   if item['id'] == 'course-a')['teaching_fee_cents'])
+        scheduled = self.store.admin_create_lesson(ADMIN_TOKEN, {
+            'class_id': 'class-a', 'teacher_id': 'teacher-a', 'starts_at': 6000, 'ends_at': 11400,
+            'charge_units': 1, 'reason': '虚构课次', 'command_ref': 'fee-lesson'})
+        self.store.clock = lambda: 12000
+        self.store.teacher_correction(USER_TOKEN, 'lesson-a', 'makeup', correction('fee-old-attendance'))
+        self.store.teacher_correction(USER_TOKEN, scheduled['lesson_id'], 'makeup', correction('fee-new-attendance'))
+        self.store.admin_set_course_teaching_fee(ADMIN_TOKEN, 'course-a', dict(
+            fee, rate_cents=None, expected_version=1, command_ref='fee-restore'))
+        self.store.admin_update_class(ADMIN_TOKEN, 'class-a', {
+            'course_id': 'course-b', 'name': '虚构甲班', 'expected_version': 0,
+            'reason': '虚构转课', 'command_ref': 'fee-class-change'})
+        report = self.store.teaching_fees(USER_TOKEN, 'week')
+        self.assertEqual(950, report['total_cents'])
+        self.assertEqual([300, 650], [row['rate_cents'] for row in report['items'][0]['lessons']])
+
     def test_tablet_bootstrap_contains_only_authorized_classes_and_versions(self):
         result = self.store.tablet_bootstrap(DEVICE_TOKEN)
         self.assertEqual(['class-a'], [row['id'] for row in result['classes']])
@@ -290,12 +406,11 @@ class RuntimeBusinessTests(unittest.TestCase):
         pending = client.post(path, headers=device, json=checkin())
         self.assertEqual(409, pending.status_code, pending.text)
         self.assertEqual('resolution_pending', pending.json()['error']['code'])
-        corrected = client.post('/v1/teacher/lessons/lesson-a/makeup', headers=teacher,
-                                json=correction())
-        self.assertEqual(201, corrected.status_code, corrected.text)
+        # Existing deployments may have recorded a makeup before the web route was retired.
+        corrected = self.store.teacher_correction(USER_TOKEN, 'lesson-a', 'makeup', correction())
         resolved = client.post(path, headers=device, json=checkin())
         self.assertEqual(200, resolved.status_code, resolved.text)
-        self.assertEqual(('arrived', corrected.json()['event_id'], 9),
+        self.assertEqual(('arrived', corrected['event_id'], 9),
                          tuple(resolved.json()[key] for key in ('status', 'event_id', 'balance_units')))
         repeated = client.post(path, headers=device, json=checkin())
         self.assertEqual(200, repeated.status_code, repeated.text)
@@ -1360,7 +1475,7 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assertEqual(200, client.get('/admin-renewal.js').status_code)
         self.assertEqual(30, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
 
-    def test_http_teacher_list_and_makeup_are_scoped_idempotent_and_versioned(self):
+    def test_http_teacher_list_is_scoped_and_web_makeup_routes_are_removed(self):
         from fastapi.testclient import TestClient
         from management.runtime_api import create_app
         client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True))
@@ -1370,21 +1485,14 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assertEqual(200, listed.status_code, listed.text)
         self.assertEqual(['lesson-a'], [row['id'] for row in listed.json()['items']])
         self.assertEqual(422, client.get('/v1/teacher/lessons?date=not-a-date', headers=teacher).status_code)
-        path = '/v1/teacher/lessons/lesson-a/makeup'
-        stale = client.post(path, headers=teacher,
-                            json=dict(correction('http-makeup-stale'), expected_revision=2))
-        self.assertEqual(409, stale.status_code, stale.text)
-        self.assertEqual('attendance_changed', stale.json()['error']['code'])
-        created = client.post(path, headers=teacher, json=correction('http-makeup'))
-        self.assertEqual(201, created.status_code, created.text)
-        duplicate = client.post(path, headers=teacher, json=correction('http-makeup'))
-        self.assertEqual(200, duplicate.status_code, duplicate.text)
-        self.assertTrue(duplicate.json()['duplicate'])
-        self.assertEqual(created.json()['event_id'], duplicate.json()['event_id'])
+        for role, token in (('teacher', USER_TOKEN), ('admin', ADMIN_TOKEN)):
+            response = client.post(f'/v1/{role}/lessons/lesson-a/makeup',
+                                   headers={'Authorization': 'Bearer ' + token}, json=correction())
+            self.assertEqual(404, response.status_code, response.text)
         denied = client.post('/v1/teacher/lessons/lesson-a/leave', headers=other,
                              json=correction('http-other-scope'))
         self.assertEqual(403, denied.status_code, denied.text)
-        self.assertEqual(9, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
+        self.assertEqual(10, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
 
     def test_http_teacher_leave_is_idempotent_and_does_not_debit(self):
         from fastapi.testclient import TestClient

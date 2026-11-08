@@ -7,22 +7,56 @@ function accountReceipt(receipt){
  return panel;
 }
 function accountClassNames(item,classes){return (item.class_ids||[]).map(id=>classes.find(value=>value.id===id)?.name||id).join('、')||'未分配班级';}
-function accountOperations(item,desktop=false){const operations=node(desktop?'td':'div',undefined,'directory-actions'),reset=button('重置密码',()=>openAccountPassword(item),'secondary'),status=button(item.active?'停用账号':'恢复账号',()=>openAccountStatus(item),item.active?'secondary danger':'');if(desktop){reset.dataset.action='reset-password';reset.dataset.userId=item.id;status.dataset.action='change-account-status';status.dataset.userId=item.id;}if(item.active&&item.class_ids.length){status.disabled=true;status.title='仍有任课班级，请先完成任课交接';}operations.append(reset,status);return operations;}
+function accountOperations(item,desktop=false){const operations=node(desktop?'td':'div',undefined,'directory-actions'),reset=button('重置密码',()=>openAccountPassword(item),'secondary'),status=button(item.active?'停用账号':'恢复账号',()=>openAccountStatus(item),item.active?'secondary danger':'');if(desktop){reset.dataset.action='reset-password';reset.dataset.userId=item.id;status.dataset.action='change-account-status';status.dataset.userId=item.id;}if(item.active&&item.class_ids.length){status.disabled=true;status.title='仍有任课班级，请先完成任课交接';}if(hasStaffRole('campus_admin'))operations.append(node('span','账号变更由老板处理','hint'));else operations.append(button('设置校区',()=>openTeacherCampus(item),'secondary'),reset,status);return operations;}
 async function adminAccountDashboard(receipt=null){
  const [accountData,classData]=await Promise.all([api('/v1/admin/accounts'),api('/v1/admin/classes')]);adminIdentity();const accounts=accountData.items,classes=classData.items;
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','教师账号管理'),node('p','新建教师网页账号、停用或恢复访问，以及重置密码。停用前须完成任课交接；所有操作均保留原因与审计。'));
- const actions=node('div',undefined,'toolbar');actions.append(button('返回设备管理',dashboard,'secondary'),button('学生与班级',()=>adminDirectoryDashboard(),'secondary'),button('新建教师账号',openAccountCreate),button('刷新',()=>adminAccountDashboard(),'secondary'));heading.append(copy,actions);
+ const actions=node('div',undefined,'toolbar');actions.append(button('返回设备管理',dashboard,'secondary'),button('学生与班级',()=>adminDirectoryDashboard(),'secondary'),button('新建教师账号',openAccountCreate),button('刷新',()=>adminAccountDashboard(),'secondary'));if(!hasStaffRole('campus_admin'))actions.append(button('新建校区',openCampusCreate,'secondary'));heading.append(copy,actions);
  const filter=node('section',undefined,'panel directory-filter'),label=node('label','搜索账号'),search=node('input');search.type='search';search.placeholder='教师姓名或登录账号';search.setAttribute('aria-label','搜索教师账号');label.append(search);filter.append(label);
  const content=node('section',undefined,'panel directory-panel'),done=accountReceipt(receipt),sections=[heading];if(done)sections.push(done);sections.push(filter,content);
- function render(){const query=search.value.trim().toLowerCase(),visible=accounts.filter(item=>!query||item.display_name.toLowerCase().includes(query)||item.login.includes(query));content.replaceChildren();if(!visible.length){content.append(node('div','没有符合条件的教师账号','empty'));return;}const table=directoryTable(['教师 / 登录账号','任课班级','账号状态','资料版本','操作']),cards=node('div',undefined,'account-mobile-list');for(const item of visible){const row=node('tr'),identity=node('td'),classNames=accountClassNames(item,classes),state=item.active?'正常':'已停用';identity.append(node('strong',item.display_name),node('small',item.login));row.append(identity,node('td',classNames),node('td',state,item.active?'badge arrived':'badge late'),node('td','v'+item.version),accountOperations(item,true));table.body.append(row);const card=node('article',undefined,'item schedule-mobile-card');card.append(node('h3',item.display_name),node('p',item.login),node('p','任课班级：'+classNames),node('p',state+' · 资料版本 '+item.version),accountOperations(item));cards.append(card);}table.scroll.classList.add('schedule-desktop');content.append(table.scroll,cards);}
+ function render(){const query=search.value.trim().toLowerCase(),visible=accounts.filter(item=>!query||item.display_name.toLowerCase().includes(query)||item.login.includes(query)||(item.campus_name||'').toLowerCase().includes(query));content.replaceChildren();if(!visible.length){content.append(node('div','没有符合条件的教师账号','empty'));return;}const table=directoryTable(['教师 / 登录账号','任课班级','账号状态','资料版本','操作']),cards=node('div',undefined,'account-mobile-list');for(const item of visible){const row=node('tr'),identity=node('td'),classNames=accountClassNames(item,classes),state=item.active?'正常':'已停用';identity.append(node('strong',item.display_name),node('small',item.login+' · '+(item.campus_name||'未设置校区')));row.append(identity,node('td',classNames),node('td',state,item.active?'badge arrived':'badge late'),node('td','v'+item.version),accountOperations(item,true));table.body.append(row);const card=node('article',undefined,'item schedule-mobile-card');card.append(node('h3',item.display_name),node('p',item.login+' · '+(item.campus_name||'未设置校区')),node('p','任课班级：'+classNames),node('p',state+' · 资料版本 '+item.version),accountOperations(item));cards.append(card);}table.scroll.classList.add('schedule-desktop');content.append(table.scroll,cards);}
  search.addEventListener('input',render);render();$('main').replaceChildren(...sections);
 }
 function accountConflict(error){if(error.status===409){$('device-dialog').close();adminAccountDashboard().then(()=>notify(error.message)).catch(showError);return true;}return false;}
+function campusField(form,items,current='',labelText='常驻校区'){
+ const label=node('label',labelText),select=node('select');
+ select.required=true;select.append(new Option('请选择校区',''));
+ for(const item of items)select.append(new Option(item.name,item.id));
+ select.value=current;label.append(select);form.append(label);
+ return select;
+}
+function openCampusCreate(){
+ const content=directoryDialog('新建校区'),form=node('form',undefined,'directory-form'),name=field(form,'校区名称');
+ name.maxLength=80;
+ const submit=node('button','保存校区');submit.type='submit';form.append(submit);content.append(form);
+ if(!$('device-dialog').open)$('device-dialog').showModal();
+ form.addEventListener('submit',async event=>{
+  event.preventDefault();submit.disabled=true;
+  try{await api('/v1/admin/campuses',{name:name.value.trim()});$('device-dialog').close();notify('校区已创建');}
+  catch(error){showError(error);}finally{submit.disabled=false;}
+ });
+}
+async function openTeacherCampus(item){
+ const {items}=await api('/v1/admin/campuses');
+ if(!items.length){notify('请先新建校区');return;}
+ const content=directoryDialog('设置常驻校区 · '+item.display_name),form=node('form',undefined,'directory-form');
+ const campus=campusField(form,items,item.campus_id||'');
+ const submit=node('button','保存常驻校区');submit.type='submit';form.append(submit);content.append(form);
+ if(!$('device-dialog').open)$('device-dialog').showModal();
+ form.addEventListener('submit',async event=>{
+  event.preventDefault();submit.disabled=true;
+  try{await api('/v1/admin/accounts/'+encodeURIComponent(item.id)+'/campus',{campus_id:campus.value},'PUT');
+   $('device-dialog').close();await adminAccountDashboard();notify('常驻校区已更新');}
+  catch(error){showError(error);}finally{submit.disabled=false;}
+ });
+}
 function accountPasswordFields(form){const password=field(form,'新密码','password'),confirmation=field(form,'再次输入新密码','password');password.minLength=15;password.maxLength=128;confirmation.minLength=15;confirmation.maxLength=128;password.autocomplete='new-password';confirmation.autocomplete='new-password';return{password,confirmation};}
-function openAccountCreate(){
- const content=directoryDialog('新建教师账号'),form=node('form',undefined,'directory-form'),name=field(form,'教师姓名'),login=field(form,'登录账号');name.maxLength=80;login.minLength=3;login.maxLength=64;login.pattern='[a-z0-9][a-z0-9_.\\-]{2,63}';login.placeholder='例如：teacher.zhang';login.autocomplete='off';const passwords=accountPasswordFields(form),reason=scheduleReason(form,'创建原因','例如：新教师入职，已核对身份');
+async function openAccountCreate(){
+ const {items}=await api('/v1/admin/campuses');
+ if(!items.length){notify('请先新建校区');return;}
+ const content=directoryDialog('新建教师账号'),form=node('form',undefined,'directory-form'),name=field(form,'教师姓名'),login=field(form,'登录账号');name.maxLength=80;login.minLength=3;login.maxLength=64;login.pattern='[a-z0-9][a-z0-9_.\\-]{2,63}';login.placeholder='例如：teacher.zhang';login.autocomplete='off';const campus=campusField(form,items,identity.campus_id||'');const passwords=accountPasswordFields(form),reason=scheduleReason(form,'创建原因','例如：新教师入职，已核对身份');
  form.append(node('p','密码须为 15 至 128 位。新账号只有教师角色，不会自动获得任何班级权限；初始密码请线下安全交付。','hint'));const submit=node('button','确认创建教师账号');submit.type='submit';form.append(submit);content.append(form);if(!$('device-dialog').open)$('device-dialog').showModal();const command=directoryCommandState(form);
- form.addEventListener('submit',async event=>{event.preventDefault();if(passwords.password.value!==passwords.confirmation.value){passwords.confirmation.setCustomValidity('两次输入的密码不一致');passwords.confirmation.reportValidity();return;}passwords.confirmation.setCustomValidity('');const payload=command({login:login.value.trim(),display_name:name.value.trim(),password:passwords.password.value,reason:reason.value.trim(),command_ref:''});submit.disabled=true;try{const result=await api('/v1/admin/accounts',payload);$('device-dialog').close();await adminAccountDashboard({kind:'create',result});notify('教师账号已创建，请继续分配任课班级');}catch(error){if(!accountConflict(error))showError(error);}finally{if(submit.isConnected)submit.disabled=false;}});passwords.confirmation.addEventListener('input',()=>passwords.confirmation.setCustomValidity(''));
+ form.addEventListener('submit',async event=>{event.preventDefault();if(passwords.password.value!==passwords.confirmation.value){passwords.confirmation.setCustomValidity('两次输入的密码不一致');passwords.confirmation.reportValidity();return;}passwords.confirmation.setCustomValidity('');const payload=command({login:login.value.trim(),display_name:name.value.trim(),campus_id:campus.value,password:passwords.password.value,reason:reason.value.trim(),command_ref:''});submit.disabled=true;try{const result=await api('/v1/admin/accounts',payload);$('device-dialog').close();await adminAccountDashboard({kind:'create',result});notify('教师账号已创建，请继续分配任课班级');}catch(error){if(!accountConflict(error))showError(error);}finally{if(submit.isConnected)submit.disabled=false;}});passwords.confirmation.addEventListener('input',()=>passwords.confirmation.setCustomValidity(''));
 }
 function openAccountPassword(item){
  const content=directoryDialog('重置密码 · '+item.display_name),form=node('form',undefined,'directory-form');content.append(node('p','账号：'+item.login+'；当前资料版本 '+item.version,'hint'));const passwords=accountPasswordFields(form),reason=scheduleReason(form,'重置原因','例如：教师忘记密码，已核验身份');

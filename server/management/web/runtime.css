@@ -9,3 +9,152 @@
 .directory-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}.directory-tabs button{min-height:44px}.directory-filter{padding:16px 20px;margin:0 0 16px}.directory-filter input{margin-bottom:0}.directory-panel{padding:0;overflow:hidden}.directory-panel .table-scroll{margin:0}.directory-panel table{min-width:900px}.directory-panel td{vertical-align:middle}.directory-panel td strong{font-size:17px}.directory-panel td small{margin-top:2px}.directory-actions{display:flex;gap:8px;flex-wrap:wrap}.directory-actions button{min-height:44px;white-space:nowrap}.directory-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px}.directory-form label:has(textarea),.directory-form .hint,.directory-form .directory-confirm,.directory-form button[type=submit]{grid-column:1/-1}.directory-reason{min-height:100px}.directory-confirm{margin:4px 0 16px}.directory-receipt{border-left:5px solid var(--green);background:#f2fbf7}@media(max-width:650px){.directory-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%}.directory-tabs button{padding:8px 4px}.directory-form{grid-template-columns:1fr}.directory-form label:has(textarea),.directory-form .hint,.directory-form .directory-confirm,.directory-form button[type=submit]{grid-column:auto}}
 .face-student-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))}.face-student-card{display:flex;flex-direction:column;margin:0}.face-student-card>button{margin-top:auto}.face-student-card .item-head{align-items:center}.face-student-card h2{margin:0}.face-camera-stage{position:relative;overflow:hidden;border-radius:14px;background:#102d3d;aspect-ratio:4/3;margin:14px 0}.face-camera-stage video{display:block;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}.face-camera-guide{position:absolute;left:12px;right:12px;bottom:12px;padding:8px 12px;border-radius:8px;background:#102d3dcc;color:white;text-align:center;font-size:14px;pointer-events:none}.face-status{min-height:26px;margin:10px 0}.face-student-card .hint{font-size:14px}@media(max-width:650px){dialog{padding:18px}#device-dialog{width:96vw}.face-camera-stage{margin-top:10px}.face-camera-guide{font-size:12px}}
 .report-history{padding:20px 22px}.report-history-heading,.report-run-top{display:flex;justify-content:space-between;align-items:start;gap:16px}.report-history-heading h2,.report-run h3{margin:0}.report-history-heading p,.report-run p{margin:4px 0}.report-history-heading button{white-space:nowrap}.report-history-empty{padding:18px;background:var(--paper);border-radius:10px;color:var(--muted)}.report-history-empty button{margin-top:12px}.report-run-list{display:grid;gap:10px;margin:16px 0}.report-run{padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--paper)}.report-run.selected{border-color:var(--green);box-shadow:inset 4px 0 var(--green)}.report-run-badges,.report-run-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.report-run-actions{margin-top:10px}.report-run-actions button{min-height:42px;padding:8px 14px}.report-failed{border-left:5px solid #a23a31}@media(max-width:650px){.report-history{padding:16px}.report-history-heading,.report-run-top{flex-direction:column}.report-history-heading button,.report-run-actions button{width:100%}.report-run-badges{justify-content:flex-start}}
+/* Runtime shell and teacher workspace. Keep the legacy workspace stylesheet shared. */
+.runtime-workbench {
+  --teacher-ink: #173958;
+  --teacher-muted: #4d687d;
+  --teacher-surface: #f3f8fc;
+  color: var(--teacher-ink);
+  background: var(--teacher-surface);
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+}
+.runtime-workbench > .preview {
+  background: #fff6df;
+  color: #674d1e;
+  font-size: 12px;
+  letter-spacing: .03em;
+  padding-top: max(6px, env(safe-area-inset-top));
+  padding-bottom: 6px;
+}
+.runtime-workbench > header {
+  border-bottom: 1px solid var(--line);
+  padding: 13px max(5%, env(safe-area-inset-left));
+}
+.runtime-workbench .brand { gap: 10px; min-width: 0; }
+.runtime-workbench .brand strong { display: block; font-size: 18px; line-height: 1.3; }
+.runtime-workbench .brand small { font-size: 12px; color: var(--teacher-muted); }
+.runtime-workbench .mark img { width: 42px; height: 42px; }
+.runtime-workbench #identity { font-size: 14px; justify-content: flex-end; }
+.runtime-workbench #identity:empty { display: none; }
+.runtime-workbench #identity button { min-height: 44px; padding: 8px 12px; }
+.runtime-workbench > main {
+  max-width: 1120px;
+  margin: 24px auto;
+  padding-inline: max(20px, env(safe-area-inset-left)) max(20px, env(safe-area-inset-right));
+}
+.runtime-workbench .login {
+  margin: clamp(20px, 5vh, 48px) auto;
+  padding: clamp(20px, 5vw, 32px);
+  box-shadow: 0 12px 32px #153e6310;
+}
+.runtime-workbench .login h1 { margin: 0; line-height: 1.25; }
+.runtime-workbench .login p { margin: 10px 0 20px; color: var(--teacher-muted); }
+.runtime-workbench .login label { font-weight: 600; }
+.runtime-workbench .login button { width: 100%; min-height: 46px; }
+.runtime-workbench #notice { bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px)); }
+.runtime-workbench > footer { padding: 22px 16px max(22px, env(safe-area-inset-bottom)); }
+.runtime-workbench #device-dialog { max-height: min(90vh, calc(100dvh - 24px)); }
+.runtime-workbench #device-dialog button { min-height: 44px; }
+.runtime-workbench input, .runtime-workbench select, .runtime-workbench textarea { font-size: 16px; }
+
+.teacher-heading {
+  align-items: center;
+  gap: 16px 24px;
+  padding: 20px 24px;
+  margin: 0 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(120deg, #fff 55%, #eaf4fc);
+}
+.teacher-heading h1 { margin: 3px 0 6px; line-height: 1.25; }
+.teacher-heading p { margin: 0; color: var(--teacher-muted); }
+.teacher-eyebrow { color: var(--green); font-size: 13px; font-weight: 700; }
+.teacher-actions { gap: 8px; margin: 0; }
+.teacher-actions button { min-height: 44px; padding: 8px 13px; }
+.teacher-actions .gold { color: #583a00; background: #ffe4a4; }
+.teacher-date-filter { padding: 12px 16px; margin: 0 0 18px; }
+.teacher-date-filter .classroom-date { flex-wrap: nowrap; gap: 10px; }
+.teacher-date-filter .classroom-date label { min-width: 0; max-width: 240px; font-size: 14px; font-weight: 600; }
+.teacher-date-filter .classroom-date input { min-height: 44px; min-width: 0; margin-top: 4px; padding: 7px 10px; }
+.teacher-date-filter button { min-height: 44px; padding: 8px 14px; white-space: nowrap; }
+.teacher-section-heading { display: flex; align-items: center; justify-content: space-between; margin: 0 0 9px; }
+.teacher-section-heading h2 { margin: 0; font-size: 18px; }
+.teacher-section-heading span { color: var(--teacher-muted); font-size: 13px; }
+.teacher-course-grid { gap: 12px; }
+.teacher-course-grid .course-card { margin: 0; padding: 16px; border-radius: 14px; }
+.teacher-course-grid .course-card h2 { margin: 8px 0 2px; line-height: 1.35; overflow-wrap: anywhere; }
+.teacher-course-grid .course-card > p { margin: 0; color: var(--teacher-muted); }
+.teacher-course-grid .course-card > button { min-height: 44px; }
+.teacher-course-grid .course-counts { margin: 12px 0; }
+.teacher-course-grid .course-counts span, .teacher-roster .revision { color: var(--teacher-muted); }
+.teacher-roster .attendance-actions button { min-height: 44px; }
+.teacher-roster table, .teacher-weekly-table table { min-width: 0; }
+.teacher-weekly-table .weekly-rate-value { font-variant-numeric: tabular-nums; }
+.teacher-heading ~ .weekly-summary { margin: 12px 0; }
+.teacher-heading ~ .weekly-summary .course-counts { margin: 0; }
+.teacher-heading ~ .weekly-note { color: var(--teacher-muted); }
+.teaching-fee-list { display: grid; gap: 12px; }
+.teaching-fee-list .panel { margin: 0; }
+.teaching-fee-list summary { cursor: pointer; min-height: 44px; }
+.teaching-fee-list li { margin: 8px 0; overflow-wrap: anywhere; }
+.teaching-fee-filter select { width: 100%; min-height: 44px; margin-top: 4px; }
+
+@media(max-width: 760px) {
+  .runtime-workbench > header {
+    align-items: center;
+    flex-direction: row;
+    gap: 8px;
+    padding-inline: max(14px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-right));
+  }
+  .runtime-workbench #identity { gap: 6px; flex-wrap: nowrap; }
+  .runtime-workbench #identity span { font-size: 12px; overflow-wrap: anywhere; text-align: right; }
+  .runtime-workbench > main {
+    margin: 14px auto;
+    padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right));
+  }
+  .teacher-heading { align-items: stretch; padding: 14px; gap: 12px; }
+  .teacher-heading h1 { font-size: 25px; }
+  .teacher-heading p { font-size: 14px; }
+  .teacher-actions { display: grid; grid-template-columns: repeat(auto-fit,minmax(84px,1fr)); }
+  .teacher-actions button { width: 100%; padding: 8px 4px; font-size: 14px; line-height: 1.3; }
+  .teacher-date-filter .classroom-date { flex-direction: row; align-items: end; }
+  .teacher-date-filter .classroom-date label { flex: 1; max-width: none; }
+  .teacher-date-filter .classroom-date button { width: auto; }
+  .teaching-fee-filter .classroom-date { display: grid; grid-template-columns: minmax(75px,1fr) minmax(0,2fr); }
+  .teaching-fee-filter .classroom-date button { grid-column: 1/-1; }
+  .teacher-course-grid .course-counts, .teacher-heading + .course-counts { grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .teacher-course-grid .course-counts > div, .teacher-heading + .course-counts > div { padding: 7px 2px; }
+  .teacher-course-grid .course-counts strong, .teacher-heading + .course-counts strong { font-size: 20px; }
+  .teacher-course-grid .course-counts span, .teacher-heading + .course-counts span { font-size: 12px; }
+  .teacher-roster, .teacher-weekly-table { margin-inline: 0; border: 0; background: transparent; }
+  .teacher-roster .table-scroll, .teacher-weekly-table .table-scroll { overflow: visible; }
+  .teacher-roster table, .teacher-roster tbody, .teacher-weekly-table table, .teacher-weekly-table tbody { display: block; }
+  .teacher-roster thead, .teacher-weekly-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .teacher-roster tbody tr, .teacher-weekly-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2,minmax(0,1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+  }
+  .teacher-roster tbody td, .teacher-weekly-table tbody td { min-width: 0; padding: 0; border: 0; overflow-wrap: anywhere; }
+  .teacher-roster .student-name { font-size: 17px; }
+  .teacher-roster tbody td:nth-child(2) { text-align: right; }
+  .teacher-roster tbody td:nth-child(3) { grid-column: 1/-1; color: var(--teacher-muted); font-size: 14px; }
+  .teacher-roster tbody td:nth-child(3)::before { content: '剩余课时 · '; }
+  .teacher-roster tbody td:nth-child(4) { grid-column: 1/-1; }
+  .teacher-roster .attendance-actions { min-width: 0; }
+  .teacher-roster .attendance-actions button { width: 100%; }
+  .teacher-weekly-table .weekly-class, .teacher-weekly-table .empty { grid-column: 1/-1; }
+  .teacher-weekly-table td[data-label] { background: var(--teacher-surface); border-radius: 8px; padding: 6px 8px; }
+  .teacher-weekly-table td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; color: var(--teacher-muted); }
+}

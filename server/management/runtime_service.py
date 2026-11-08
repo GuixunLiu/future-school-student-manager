@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 from business.security import identifier, new_token, password_hash, token_digest, valid_token, verify_password
 from business.store import Problem, uid
 from .runtime_faces import FACE_MODEL, FaceCipher, match_face, validate_frames
+from .runtime_permissions import CampusPermissions
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -31,7 +32,7 @@ def canonical_digest(action, payload):
     return hashlib.sha256(raw).hexdigest()
 
 
-class RuntimeStore:
+class RuntimeStore(CampusPermissions):
     def __init__(self, conninfo, clock=None, *, face_key=None):
         self.conninfo = conninfo
         self.clock = clock or (lambda: int(time.time()))
@@ -52,13 +53,24 @@ class RuntimeStore:
         now = self.clock()
         digest = token_digest(token)
         if token.startswith('wxu_'):
-            row = db.execute('''SELECT u.id,u.org_id,u.login,u.display_name,s.id AS session_id
+            row = db.execute('''SELECT u.id,u.org_id,u.login,u.display_name,s.id AS session_id,
+                    a.role AS staff_role,a.campus_id,cp.name AS staff_campus_name,
+                    EXISTS(SELECT 1 FROM organization_staff_access own WHERE own.org_id=u.org_id
+                           AND own.role='owner') AS managed_access
                 FROM auth_sessions s JOIN users u ON u.org_id=s.org_id AND u.id=s.user_id
+                LEFT JOIN organization_staff_access a ON a.org_id=u.org_id AND a.user_id=u.id
+                LEFT JOIN campuses cp ON cp.org_id=a.org_id AND cp.id=a.campus_id
                 WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s AND u.active=TRUE''',
                 (digest, now)).fetchone()
             if row:
                 roles = {r['role'] for r in db.execute(
                     'SELECT role FROM roles WHERE org_id=%s AND user_id=%s', (row['org_id'], row['id']))}
+                if row['managed_access']:
+                    roles.discard('admin')
+                if row['staff_role']:
+                    roles.add(row['staff_role'])
+                if 'owner' in roles:
+                    roles.add('admin')
                 return dict(row, kind='user', roles=roles, session_digest=digest)
         else:
             row = db.execute('''SELECT d.id,d.org_id,d.name,c.generation
@@ -123,10 +135,11 @@ class RuntimeStore:
         self._require_kind(actor, 'user')
         if 'teacher' not in actor['roles']:
             raise Problem(403, 'teacher_required', '需要教师身份')
-        allowed = db.execute('''SELECT 1 FROM lesson_teachers lt
-            JOIN teacher_classes tc ON tc.org_id=lt.org_id AND tc.user_id=lt.user_id
-            WHERE lt.org_id=%s AND lt.user_id=%s AND lt.lesson_id=%s AND tc.class_id=%s''',
-            (actor['org_id'], actor['id'], lesson_id, class_id)).fetchone()
+        allowed = db.execute('''SELECT 1 FROM effective_lesson_teachers lt
+            LEFT JOIN teacher_classes tc ON tc.org_id=lt.org_id AND tc.user_id=lt.user_id AND tc.class_id=%s
+            WHERE lt.org_id=%s AND lt.user_id=%s AND lt.lesson_id=%s
+              AND (lt.is_substitute OR tc.class_id IS NOT NULL)''',
+            (class_id, actor['org_id'], actor['id'], lesson_id)).fetchone()
         if not allowed:
             raise Problem(403, 'lesson_scope', '只能操作本人授课班级的本节课')
 
@@ -166,7 +179,7 @@ class RuntimeStore:
 
     def login(self, organization, login, password, source):
         now = self.clock()
-        buckets = [('ip:' + token_digest(source), 30), ('account:' + token_digest(organization + ':' + login), 5)]
+        buckets = [('ip:' + token_digest(source), 30), ('account:' + token_digest(login), 5)]
         result, failure = None, None
         with self.connect() as connection:
             with connection.transaction():
@@ -176,11 +189,15 @@ class RuntimeStore:
                 if any(row and row['blocked_until'] > now for _, _, row in limits):
                     failure = Problem(429, 'login_limited', '尝试过于频繁，请稍后再试')
                 else:
-                    user = db.execute('''SELECT u.*,c.password_hash FROM organizations o
+                    candidates = db.execute('''SELECT u.*,c.password_hash FROM organizations o
                         JOIN users u ON u.org_id=o.id LEFT JOIN user_credentials c ON c.org_id=u.org_id AND c.user_id=u.id
-                        WHERE o.slug=%s AND u.login=%s''', (organization, login)).fetchone()
-                    valid = verify_password(password, user['password_hash'] if user else None)
-                    if not valid or not user or not user['active']:
+                        WHERE u.login=%s AND (%s='' OR o.slug=%s) AND u.active=TRUE
+                        ORDER BY u.org_id LIMIT 9''', (login, organization, organization)).fetchall()
+                    if not candidates or len(candidates) > 8:
+                        verify_password(password, None)
+                        candidates = []
+                    matches = [row for row in candidates if verify_password(password, row['password_hash'])]
+                    if len(matches) != 1:
                         for bucket, maximum, row in limits:
                             fresh = not row or now - row['window_start'] >= 300
                             count, start = (1, now) if fresh else (row['failures'] + 1, row['window_start'])
@@ -188,8 +205,9 @@ class RuntimeStore:
                             db.execute('''INSERT INTO runtime_login_limits VALUES(%s,%s,%s,%s)
                                 ON CONFLICT(bucket) DO UPDATE SET failures=excluded.failures,
                                 window_start=excluded.window_start,blocked_until=excluded.blocked_until''', (bucket, count, start, blocked))
-                        failure = Problem(401, 'invalid_login', '机构、账号或密码不正确')
+                        failure = Problem(401, 'invalid_login', '账号或密码不正确')
                     else:
+                        user = matches[0]
                         db.execute('DELETE FROM runtime_login_limits WHERE bucket=%s', (buckets[1][0],))
                         db.execute('DELETE FROM auth_sessions WHERE expires_at<=%s', (now,))
                         db.execute('''DELETE FROM auth_sessions WHERE token_hash IN
@@ -210,13 +228,15 @@ class RuntimeStore:
 
     def admin_students(self, token):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             rows = db.execute('''SELECT s.id,s.name,s.external_ref,s.active,
                     COALESCE(ec.class_ids,'{}') AS class_ids,
                     COALESCE(ec.class_names,'{}') AS class_names,
                     COALESCE(ec.course_names,'{}') AS course_names,
                     (ec.class_ids)[1] AS class_id,(ec.class_names)[1] AS class_name,
-                    sb.units AS balance_units,sb.revision AS balance_revision,
+                    CASE WHEN shared.other_campus THEN NULL ELSE sb.units END AS balance_units,
+                    CASE WHEN shared.other_campus THEN NULL ELSE sb.revision END AS balance_revision,
+                    NOT shared.other_campus AS editable,
                     COALESCE(sv.version,0) AS version,fp.model_version AS face_model_version,
                     (fp.id IS NOT NULL) AS face_registered
                 FROM students s
@@ -228,12 +248,20 @@ class RuntimeStore:
                     JOIN classes c ON c.org_id=e.org_id AND c.id=e.class_id
                     JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
                     WHERE e.org_id=s.org_id AND e.student_id=s.id AND e.left_at IS NULL
-                ) ec ON TRUE
+                      AND (%s::text IS NULL OR c.campus_id=%s)
+                 ) ec ON TRUE
+                CROSS JOIN LATERAL (SELECT %s::text IS NOT NULL AND EXISTS(
+                    SELECT 1 FROM student_class_enrollments e JOIN classes c ON c.org_id=e.org_id AND c.id=e.class_id
+                    WHERE e.org_id=s.org_id AND e.student_id=s.id AND e.left_at IS NULL
+                    AND c.campus_id IS DISTINCT FROM %s
+                ) AS other_campus) shared
                 JOIN student_balances sb ON sb.org_id=s.org_id AND sb.student_id=s.id
                 LEFT JOIN student_versions sv ON sv.org_id=s.org_id AND sv.student_id=s.id
                 LEFT JOIN face_profiles fp ON fp.org_id=s.org_id AND fp.student_id=s.id AND fp.active=TRUE
-                WHERE s.org_id=%s ORDER BY s.active DESC,s.name,s.id''',
-                (actor['org_id'],)).fetchall()
+                WHERE s.org_id=%s AND (%s::text IS NULL OR ec.class_ids IS NOT NULL)
+                ORDER BY s.active DESC,s.name,s.id''',
+                (actor.get('campus_id'), actor.get('campus_id'), actor.get('campus_id'),
+                 actor.get('campus_id'), actor['org_id'], actor.get('campus_id'))).fetchall()
             return {'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
 
@@ -443,8 +471,9 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_create_student', data)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
+            self._scope_record(db, actor, 'classes', data['class_id'])
             class_row = db.execute('SELECT id,name FROM classes WHERE org_id=%s AND id=%s',
                                    (actor['org_id'], data['class_id'])).fetchone()
             if not class_row:
@@ -511,7 +540,7 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_update_student', {'student_id': student_id, **data})
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             student = db.execute('''SELECT id,name,external_ref,active FROM students
                 WHERE org_id=%s AND id=%s FOR UPDATE''',
@@ -526,6 +555,9 @@ class RuntimeStore:
                 (actor['org_id'], class_ids)).fetchall()
             if len(target_classes) != len(class_ids):
                 raise Problem(404, 'class_missing', '未找到目标班级')
+            self._scope_student_write(db, actor, student_id)
+            for class_id in class_ids:
+                self._scope_record(db, actor, 'classes', class_id)
             prior = self._prior(db, actor, reference, digest)
             if prior:
                 return prior
@@ -738,13 +770,58 @@ class RuntimeStore:
 
     def admin_courses(self, token):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             rows = db.execute('''SELECT co.id,co.name,co.content,co.unit_price_cents,co.active,co.created_at,
-                    (SELECT count(*) FROM classes c WHERE c.org_id=co.org_id AND c.course_id=co.id) AS class_count
-                FROM courses co WHERE co.org_id=%s
-                ORDER BY co.active DESC,co.name,co.id''', (actor['org_id'],)).fetchall()
+                    fee.rate_cents AS teaching_fee_cents,COALESCE(fee.version,0) AS teaching_fee_version,
+                    (SELECT count(*) FROM classes c WHERE c.org_id=co.org_id AND c.course_id=co.id AND (%s::text IS NULL OR c.campus_id=%s)) AS class_count
+                FROM courses co LEFT JOIN LATERAL (
+                    SELECT rate_cents,version FROM course_teaching_fee_rates
+                    WHERE org_id=co.org_id AND course_id=co.id ORDER BY version DESC LIMIT 1
+                ) fee ON TRUE WHERE co.org_id=%s
+                ORDER BY co.active DESC,co.name,co.id''', (actor.get('campus_id'), actor.get('campus_id'), actor['org_id'])).fetchall()
             return {'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
+
+    def admin_set_course_teaching_fee(self, token, course_id, data):
+        reference = data['command_ref']
+        digest = canonical_digest('admin_set_course_teaching_fee', dict(data, course_id=course_id))
+        def run(db, actor):
+            self._require_admin(actor)
+            self._lock_command(db, actor, reference)
+            prior = self._prior(db, actor, reference, digest)
+            if prior:
+                return prior
+            now = self.clock()
+            result = self._write_course_teaching_fee(db, actor, course_id, data, now)
+            self._save_command(db, actor, reference, digest, result, now)
+            return result
+        return self.command(token, 'user', run)
+
+    @staticmethod
+    def _course_fee_proposal_digest(course_id, data):
+        return canonical_digest('course_fee_proposal', dict(data, course_id=course_id))
+
+    def _write_course_teaching_fee(self, db, actor, course_id, data, now):
+        org_id = actor['org_id']
+        if not db.execute('SELECT 1 FROM courses WHERE org_id=%s AND id=%s FOR UPDATE',
+                          (org_id, course_id)).fetchone():
+            raise Problem(404, 'course_missing', '未找到课程')
+        previous = db.execute('''SELECT rate_cents,version FROM course_teaching_fee_rates
+            WHERE org_id=%s AND course_id=%s ORDER BY version DESC LIMIT 1''',
+            (org_id, course_id)).fetchone()
+        version = previous['version'] if previous else 0
+        if version != data['expected_version']:
+            raise Problem(409, 'course_fee_changed', '课时费规则已更新，请刷新后重试')
+        rate = data['rate_cents']
+        effective_at = now + 1
+        db.execute('''INSERT INTO course_teaching_fee_rates(org_id,course_id,version,effective_at,rate_cents)
+            VALUES(%s,%s,%s,%s,%s)''', (org_id, course_id, version + 1, effective_at, rate))
+        result = {'course_id': course_id, 'rate_cents': rate, 'version': version + 1,
+                  'effective_at': effective_at, 'duplicate': False}
+        self._audit(db, actor, 'course_teaching_fee_changed', course_id,
+                    {**result, 'previous_rate_cents': previous['rate_cents'] if previous else None,
+                     'reason': data['reason']}, now)
+        return result
 
     def admin_create_course(self, token, data):
         reference = data['command_ref']
@@ -818,8 +895,8 @@ class RuntimeStore:
 
     def admin_classes(self, token):
         def run(db, actor):
-            self._require_admin(actor)
-            rows = db.execute('''SELECT c.id,c.name,c.course_id,co.name AS course_name,
+            self._require_campus_operations(actor)
+            rows = db.execute('''SELECT c.id,c.name,c.course_id,c.campus_id,co.name AS course_name,
                     co.content AS course_content,co.unit_price_cents,co.active AS course_active,
                     COALESCE(cv.version,0) AS version,
                     (SELECT count(*) FROM student_class_enrollments e
@@ -831,7 +908,8 @@ class RuntimeStore:
                         WHERE tc.org_id=c.org_id AND tc.class_id=c.id),'{}') AS teacher_ids
                 FROM classes c JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
                 LEFT JOIN class_versions cv ON cv.org_id=c.org_id AND cv.class_id=c.id
-                WHERE c.org_id=%s ORDER BY c.name,c.id''', (actor['org_id'],)).fetchall()
+                WHERE c.org_id=%s AND (%s::text IS NULL OR c.campus_id=%s) ORDER BY c.name,c.id''',
+                (actor['org_id'], actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             return {'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
 
@@ -839,7 +917,7 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_create_class', data)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             course = db.execute('SELECT id,name FROM courses WHERE org_id=%s AND id=%s AND active=TRUE',
                                 (actor['org_id'], data['course_id'])).fetchone()
@@ -855,8 +933,14 @@ class RuntimeStore:
                           (actor['org_id'], name)).fetchone():
                 raise Problem(409, 'class_name_conflict', '该班级名称已存在')
             now, class_id = self.clock(), uid()
-            db.execute('INSERT INTO classes VALUES(%s,%s,%s,%s,%s)',
-                       (class_id, actor['org_id'], name, course['id'], now))
+            campus_id = data.get('campus_id') or actor.get('campus_id')
+            self._require_campus_match(actor, campus_id)
+            if campus_id:
+                self._campus_exists(db, actor['org_id'], campus_id)
+            elif actor.get('managed_access'):
+                raise Problem(422, 'class_campus_required', '新班级须选择校区')
+            db.execute('INSERT INTO classes(id,org_id,name,course_id,created_at,campus_id) VALUES(%s,%s,%s,%s,%s,%s)',
+                       (class_id, actor['org_id'], name, course['id'], now, campus_id))
             response = {'accepted': True, 'duplicate': False, 'class_id': class_id,
                         'name': name, 'course_id': course['id'], 'course_name': course['name'], 'version': 0,
                         'student_count': 0, 'active_student_count': 0, 'teacher_ids': [],
@@ -873,8 +957,10 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_update_class', {'class_id': class_id, **data})
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'classes', class_id)
             self._lock_command(db, actor, reference)
+            self._lock_lesson_schedule(db, actor['org_id'])
             class_row = db.execute('''SELECT c.id,c.name,c.course_id,co.name AS course_name
                 FROM classes c JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
                 WHERE c.org_id=%s AND c.id=%s FOR UPDATE OF c''', (actor['org_id'], class_id)).fetchone()
@@ -900,6 +986,11 @@ class RuntimeStore:
                           (actor['org_id'], name, class_id)).fetchone():
                 raise Problem(409, 'class_name_conflict', '该班级名称已存在')
             now, version = self.clock(), current_version + 1
+            if course['id'] != class_row['course_id']:
+                db.execute('''INSERT INTO lesson_fee_courses(org_id,lesson_id,course_id)
+                    SELECT org_id,id,%s FROM lessons WHERE org_id=%s AND class_id=%s AND starts_at<=%s
+                    ON CONFLICT(org_id,lesson_id) DO NOTHING''',
+                    (class_row['course_id'], actor['org_id'], class_id, now))
             db.execute('UPDATE classes SET name=%s,course_id=%s WHERE org_id=%s AND id=%s',
                        (name, course['id'], actor['org_id'], class_id))
             db.execute('''INSERT INTO class_versions(org_id,class_id,version,updated_at)
@@ -924,26 +1015,70 @@ class RuntimeStore:
 
     def admin_accounts(self, token):
         def run(db, actor):
-            self._require_admin(actor)
-            rows = db.execute('''SELECT u.id,u.login,u.display_name,u.active,
+            self._require_campus_operations(actor)
+            rows = db.execute('''SELECT u.id,u.login,u.display_name,u.active,cp.id AS campus_id,cp.name AS campus_name,
                     COALESCE(uv.version,0) AS version,(c.user_id IS NOT NULL) AS password_configured,
                     COALESCE((SELECT array_agg(tc.class_id ORDER BY tc.class_id)
-                        FROM teacher_classes tc WHERE tc.org_id=u.org_id AND tc.user_id=u.id),'{}') AS class_ids
+                        FROM teacher_classes tc JOIN classes c ON c.org_id=tc.org_id AND c.id=tc.class_id
+                        WHERE tc.org_id=u.org_id AND tc.user_id=u.id AND (%s::text IS NULL OR c.campus_id=%s)),'{}') AS class_ids
                 FROM users u
+                LEFT JOIN teacher_campuses tc ON tc.org_id=u.org_id AND tc.user_id=u.id
+                LEFT JOIN campuses cp ON cp.org_id=tc.org_id AND cp.id=tc.campus_id
                 LEFT JOIN user_versions uv ON uv.org_id=u.org_id AND uv.user_id=u.id
                 LEFT JOIN user_credentials c ON c.org_id=u.org_id AND c.user_id=u.id
-                WHERE u.org_id=%s
+                WHERE u.org_id=%s AND (%s::text IS NULL OR cp.id=%s)
                   AND EXISTS(SELECT 1 FROM roles r WHERE r.org_id=u.org_id AND r.user_id=u.id AND r.role='teacher')
                   AND NOT EXISTS(SELECT 1 FROM roles r WHERE r.org_id=u.org_id AND r.user_id=u.id AND r.role='admin')
-                ORDER BY u.active DESC,u.display_name,u.id''', (actor['org_id'],)).fetchall()
+                ORDER BY u.active DESC,u.display_name,u.id''', (actor.get('campus_id'), actor.get('campus_id'), actor['org_id'],
+                 actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             return {'items': [dict(row) for row in rows]}
+        return self.command(token, 'user', run)
+
+    def admin_campuses(self, token):
+        def run(db, actor):
+            self._require_campus_operations(actor)
+            return {'items': db.execute('SELECT id,name FROM campuses WHERE org_id=%s AND (%s::text IS NULL OR id=%s) ORDER BY name,id',
+                                        (actor['org_id'], actor.get('campus_id'), actor.get('campus_id'))).fetchall()}
+        return self.command(token, 'user', run)
+
+    def admin_create_campus(self, token, name):
+        def run(db, actor):
+            self._require_admin(actor)
+            row = db.execute('''INSERT INTO campuses(id,org_id,name) VALUES(%s,%s,%s)
+                ON CONFLICT(org_id,name) DO NOTHING RETURNING id,name''',
+                (uid(), actor['org_id'], name.strip())).fetchone()
+            if not row:
+                raise Problem(409, 'campus_exists', '该校区名称已存在')
+            self._audit(db, actor, 'campus_created', row['id'], {'name': row['name']}, self.clock())
+            return row
+        return self.command(token, 'user', run)
+
+    @staticmethod
+    def _set_teacher_campus(db, org_id, user_id, campus_id):
+        campus = db.execute('SELECT id,name FROM campuses WHERE org_id=%s AND id=%s',
+                            (org_id, campus_id)).fetchone()
+        if not campus:
+            raise Problem(404, 'campus_missing', '未找到本机构的校区')
+        db.execute('''INSERT INTO teacher_campuses VALUES(%s,%s,%s)
+            ON CONFLICT(org_id,user_id) DO UPDATE SET campus_id=EXCLUDED.campus_id''',
+            (org_id, user_id, campus_id))
+        return campus
+
+    def admin_set_teacher_campus(self, token, user_id, campus_id):
+        def run(db, actor):
+            self._require_admin(actor)
+            self._lock_teacher_account(db, actor, user_id)
+            campus = self._set_teacher_campus(db, actor['org_id'], user_id, campus_id)
+            self._audit(db, actor, 'teacher_campus_set', user_id, {'campus_id': campus_id}, self.clock())
+            return {'campus_id': campus_id, 'campus_name': campus['name']}
         return self.command(token, 'user', run)
 
     def admin_create_account(self, token, data):
         reference = data['command_ref']
         digest = canonical_digest('admin_create_account', data)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._require_campus_match(actor, data.get('campus_id'))
             self._lock_command(db, actor, reference)
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -956,8 +1091,8 @@ class RuntimeStore:
             display_name, reason = data['display_name'].strip(), data['reason'].strip()
             if not display_name or not reason:
                 raise Problem(422, 'invalid_account', '请填写教师姓名和操作原因')
-            if db.execute('SELECT 1 FROM users WHERE org_id=%s AND login=%s',
-                          (actor['org_id'], login)).fetchone():
+            db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ('runtime-login:' + login,))
+            if db.execute('SELECT 1 FROM users WHERE login=%s', (login,)).fetchone():
                 raise Problem(409, 'login_exists', '这个登录账号已被使用')
             now, user_id = self.clock(), uid()
             db.execute('''INSERT INTO users(id,org_id,login,display_name,active,created_at,password_reset_required)
@@ -974,10 +1109,14 @@ class RuntimeStore:
                         'roles': ['teacher'], 'version': 0, 'class_ids': [],
                         'password_returned': False, 'balance_changed': False,
                         'history_changed': False, 'audited': True}
+            if data.get('campus_id'):
+                campus = self._set_teacher_campus(db, actor['org_id'], user_id, data['campus_id'])
+                response.update(campus_id=campus['id'], campus_name=campus['name'])
             self._audit(db, actor, 'admin_teacher_account_created', user_id,
                         {'login': login, 'display_name': display_name, 'roles': ['teacher'],
                          'active': True, 'version': 0, 'reason': reason,
-                         'password_recorded': False, 'history_changed': False}, now)
+                         'campus_id': data.get('campus_id'), 'password_recorded': False,
+                         'history_changed': False}, now)
             self._save_command(db, actor, reference, digest, response, now)
             return response
         return self.command(token, 'user', run)
@@ -1023,6 +1162,11 @@ class RuntimeStore:
                 WHERE org_id=%s AND user_id=%s LIMIT 1''', (actor['org_id'], user_id)).fetchone():
                 raise Problem(409, 'teaching_handoff_required', '该教师仍有任课班级，请先完成任课交接')
             now = self.clock()
+            if not data['active'] and db.execute('''SELECT 1 FROM lesson_substitutions s JOIN lessons l
+                ON l.org_id=s.org_id AND l.id=s.lesson_id
+                WHERE s.org_id=%s AND s.user_id=%s AND l.state='scheduled' AND l.ends_at>%s LIMIT 1''',
+                (actor['org_id'], user_id, now)).fetchone():
+                raise Problem(409, 'teaching_handoff_required', '该教师仍有待完成的代课，请先调整代课安排')
             db.execute('UPDATE users SET active=%s WHERE org_id=%s AND id=%s',
                        (data['active'], actor['org_id'], user_id))
             version = account['version'] + 1
@@ -1093,14 +1237,18 @@ class RuntimeStore:
 
     def admin_teachers(self, token):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             rows = db.execute('''SELECT u.id,u.display_name,u.login,
                     array_agg(tc.class_id ORDER BY tc.class_id)
-                        FILTER (WHERE tc.class_id IS NOT NULL) AS class_ids
+                        FILTER (WHERE tc.class_id IS NOT NULL AND (%s::text IS NULL OR cl.campus_id=%s)) AS class_ids
                 FROM users u JOIN roles r ON r.org_id=u.org_id AND r.user_id=u.id
                 LEFT JOIN teacher_classes tc ON tc.org_id=u.org_id AND tc.user_id=u.id
+                LEFT JOIN classes cl ON cl.org_id=tc.org_id AND cl.id=tc.class_id
+                LEFT JOIN teacher_campuses cp ON cp.org_id=u.org_id AND cp.user_id=u.id
                 WHERE u.org_id=%s AND u.active=TRUE AND r.role='teacher'
-                GROUP BY u.id ORDER BY u.display_name,u.id''', (actor['org_id'],)).fetchall()
+                  AND (%s::text IS NULL OR cp.campus_id=%s)
+                GROUP BY u.id ORDER BY u.display_name,u.id''', (actor.get('campus_id'), actor.get('campus_id'), actor['org_id'],
+                 actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             return {'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
 
@@ -1108,13 +1256,16 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_set_class_teacher', {'class_id': class_id, **data})
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'classes', class_id)
             self._lock_command(db, actor, reference)
+            self._lock_lesson_schedule(db, actor['org_id'])
             class_row = db.execute('SELECT id,name FROM classes WHERE org_id=%s AND id=%s FOR UPDATE',
                                    (actor['org_id'], class_id)).fetchone()
             if not class_row:
                 raise Problem(404, 'class_missing', '未找到班级')
             teacher_ids = sorted(set(data['teacher_ids']))
+            self._scope_teachers(db, actor, teacher_ids)
             if len(teacher_ids) != len(data['teacher_ids']):
                 raise Problem(422, 'invalid_teachers', '教师不能重复')
             teachers = []
@@ -1146,7 +1297,7 @@ class RuntimeStore:
                 WHERE org_id=%s AND class_id=%s ORDER BY user_id''',
                 (actor['org_id'], class_id)).fetchall()
             now = self.clock()
-            future = db.execute('''SELECT id,schedule_id FROM lessons WHERE org_id=%s AND class_id=%s
+            future = db.execute('''SELECT id,schedule_id,starts_at,ends_at FROM lessons WHERE org_id=%s AND class_id=%s
                 AND state='scheduled' AND starts_at>%s ORDER BY starts_at,id FOR UPDATE''',
                 (actor['org_id'], class_id, now)).fetchall()
             updated, retained = [], []
@@ -1168,6 +1319,11 @@ class RuntimeStore:
                         assigned = teacher_by_id.get(scheduled_teacher['teacher_id'])
                 elif teachers:
                     assigned = teachers[0]
+                if assigned and not db.execute('SELECT 1 FROM lesson_substitutions WHERE org_id=%s AND lesson_id=%s',
+                                              (actor['org_id'], lesson['id'])).fetchone():
+                    self._require_teacher_availability(db, actor['org_id'], [assigned['id']],
+                                                       lesson['starts_at'], lesson['ends_at'], lesson['id'],
+                                                       substitutes_only=True)
                 db.execute('DELETE FROM lesson_teachers WHERE org_id=%s AND lesson_id=%s',
                            (actor['org_id'], lesson['id']))
                 if assigned:
@@ -1245,17 +1401,19 @@ class RuntimeStore:
 
     @staticmethod
     def _schedule_class(db, actor, class_id, require_active_course=False):
-        class_row = db.execute('''SELECT c.id,c.name,co.name AS course_name,co.active AS course_active
+        class_row = db.execute('''SELECT c.id,c.name,c.campus_id,co.name AS course_name,co.active AS course_active
             FROM classes c JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
             WHERE c.org_id=%s AND c.id=%s FOR UPDATE OF c''', (actor['org_id'], class_id)).fetchone()
         if not class_row:
             raise Problem(404, 'class_missing', '未找到排课班级')
         if require_active_course and not class_row['course_active']:
             raise Problem(409, 'course_inactive', '课程已停用，不能新增排课模板')
+        RuntimeStore._require_campus_match(actor, class_row['campus_id'])
         return class_row
 
     @staticmethod
     def _schedule_teacher(db, actor, class_id, teacher_id):
+        RuntimeStore._scope_teachers(db, actor, [teacher_id])
         teacher = db.execute('''SELECT u.id,u.display_name FROM users u
             JOIN roles r ON r.org_id=u.org_id AND r.user_id=u.id
             JOIN teacher_classes tc ON tc.org_id=u.org_id AND tc.user_id=u.id
@@ -1280,7 +1438,7 @@ class RuntimeStore:
 
     def admin_schedule_templates(self, token):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             rows = db.execute('''SELECT st.id,st.class_id,st.weekday,st.interval_weeks,st.anchor_date,
                     st.start_time,st.end_time,st.duration_minutes,st.end_day_offset,st.effective_date,
                     st.teacher_id,c.name AS class_name,co.name AS course_name,co.active AS course_active,
@@ -1290,8 +1448,8 @@ class RuntimeStore:
                 JOIN classes c ON c.org_id=st.org_id AND c.id=st.class_id
                 JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
                 JOIN users u ON u.org_id=st.org_id AND u.id=st.teacher_id
-                WHERE st.org_id=%s
-                ORDER BY c.name,st.weekday,st.start_time,st.anchor_date,st.id''', (actor['org_id'],)).fetchall()
+                WHERE st.org_id=%s AND (%s::text IS NULL OR c.campus_id=%s)
+                ORDER BY c.name,st.weekday,st.start_time,st.anchor_date,st.id''', (actor['org_id'], actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             return {'items': [dict(row) for row in rows], 'timezone': 'Asia/Shanghai'}
         return self.command(token, 'user', run)
 
@@ -1299,7 +1457,7 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_create_schedule_template', data)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -1335,7 +1493,7 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_update_schedule_template', {'schedule_id': schedule_id, **data})
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -1381,7 +1539,7 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_delete_schedule_template', {'schedule_id': schedule_id, **data})
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -1419,7 +1577,7 @@ class RuntimeStore:
 
     def admin_lessons(self, token, day=None):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             try:
                 selected = (datetime.strptime(day, '%Y-%m-%d').date() if day is not None
                             else datetime.fromtimestamp(self.clock(), CHINA_TZ).date())
@@ -1432,8 +1590,10 @@ class RuntimeStore:
                     c.name AS class_name,co.name AS course_name,cr.charge_units,
                     cr.revision AS charge_rule_revision,COALESCE(lv.version,0) AS version,
                     (SELECT string_agg(u.display_name,'、' ORDER BY u.display_name,u.id)
-                     FROM lesson_teachers lt JOIN users u ON u.org_id=lt.org_id AND u.id=lt.user_id
+                     FROM effective_lesson_teachers lt JOIN users u ON u.org_id=lt.org_id AND u.id=lt.user_id
                      WHERE lt.org_id=l.org_id AND lt.lesson_id=l.id) AS teacher_names,
+                    (SELECT s.user_id FROM lesson_substitutions s
+                     WHERE s.org_id=l.org_id AND s.lesson_id=l.id) AS substitute_id,
                     count(ls.student_id) FILTER (WHERE ls.expected) AS expected_count,
                     count(ls.student_id) FILTER (WHERE ar.status='arrived') AS arrived_count,
                     count(ls.student_id) FILTER (WHERE ar.status='leave') AS leave_count,
@@ -1448,9 +1608,10 @@ class RuntimeStore:
                 LEFT JOIN attendance_records ar ON ar.org_id=ls.org_id
                     AND ar.lesson_id=ls.lesson_id AND ar.student_id=ls.student_id
                 WHERE l.org_id=%s AND l.starts_at>=%s AND l.starts_at<%s
+                  AND (%s::text IS NULL OR l.campus_id=%s)
                 GROUP BY l.id,c.id,co.id,cr.org_id,cr.lesson_id,lv.org_id,lv.lesson_id
                 ORDER BY l.starts_at,l.id''',
-                (actor['org_id'], start, start + 86400)).fetchall()
+                (actor['org_id'], start, start + 86400, actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             return {'date': selected.isoformat(), 'timezone': 'Asia/Shanghai',
                     'server_time': self.clock(), 'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
@@ -1458,7 +1619,8 @@ class RuntimeStore:
     def admin_lesson(self, token, lesson_id):
         """Return the complete roster for an administrator's cancelled-lesson review."""
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'lessons', lesson_id)
             lesson = db.execute('''SELECT l.id,l.org_id,l.class_id,l.starts_at,l.ends_at,l.state,
                     l.created_at,c.name AS class_name,co.name AS course_name,COALESCE(lv.version,0) AS version
                 FROM lessons l JOIN classes c ON c.org_id=l.org_id AND c.id=l.class_id
@@ -1476,6 +1638,8 @@ class RuntimeStore:
                 JOIN student_balances sb ON sb.org_id=ls.org_id AND sb.student_id=ls.student_id
                 WHERE ls.org_id=%s AND ls.lesson_id=%s ORDER BY s.name,s.id''',
                 (actor['org_id'], lesson_id)).fetchall()
+            if actor.get('campus_id'):
+                students = [dict(row, balance_units=None, balance_revision=None) for row in students]
             return {'lesson': dict(lesson), 'students': [dict(row) for row in students],
                     'server_time': self.clock()}
         return self.command(token, 'user', run)
@@ -1492,13 +1656,16 @@ class RuntimeStore:
         payload = dict(data, lesson_id=lesson_id, kind=kind)
         digest = canonical_digest('admin_cancelled_' + kind, payload)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'lessons', lesson_id)
             self._lock_command(db, actor, reference)
             fact = self._lesson_student(db, actor['org_id'], lesson_id, data['student_id'])
             if not fact:
                 raise Problem(404, 'lesson_student_missing', '未找到该课堂学生')
             prior = self._prior(db, actor, reference, digest)
             if prior:
+                if actor.get('campus_id'):
+                    return dict(prior, balance_units=None, balance_revision=None)
                 return prior
             if fact['state'] != 'cancelled':
                 raise Problem(409, 'lesson_not_cancelled', '仅取消课次的签到冲突可由管理员在此处理')
@@ -1520,6 +1687,8 @@ class RuntimeStore:
                             attendance_revision=data['expected_revision'] + 1,
                             balance_revision=balance_revision, balance_units=units,
                             cancelled_lesson=True, report_excluded=True)
+            if actor.get('campus_id'):
+                response.update(balance_units=None, balance_revision=None)
             self._audit(db, actor, 'admin_cancelled_' + kind, event_id,
                         {'lesson_id': lesson_id, 'student_id': data['student_id'],
                          'reason': data['reason'], 'cancelled_lesson': True,
@@ -1532,9 +1701,12 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_create_lesson', data)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
-            class_row = db.execute('''SELECT c.id,c.name,co.name AS course_name,co.active AS course_active FROM classes c
+            self._lock_lesson_schedule(db, actor['org_id'])
+            self._scope_record(db, actor, 'classes', data['class_id'])
+            self._scope_teachers(db, actor, [data['teacher_id']])
+            class_row = db.execute('''SELECT c.id,c.name,co.name AS course_name,co.active AS course_active,c.campus_id FROM classes c
                 JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
                 WHERE c.org_id=%s AND c.id=%s FOR UPDATE OF c''',
                 (actor['org_id'], data['class_id'])).fetchone()
@@ -1565,6 +1737,8 @@ class RuntimeStore:
                 raise Problem(409, 'lesson_clock', '只能创建尚未开始的未来课次')
             if not 0 < data['ends_at'] - data['starts_at'] <= 12 * 3600:
                 raise Problem(422, 'invalid_lesson_time', '结束时间必须晚于开始时间，且时长不能超过 12 小时')
+            self._require_teacher_availability(db, actor['org_id'], [teacher['id']],
+                                               data['starts_at'], data['ends_at'], substitutes_only=True)
             if not 0 < data['charge_units'] <= MAX_UNITS:
                 raise Problem(422, 'invalid_charge_rule', '扣课单位必须是正整数')
             if db.execute('''SELECT 1 FROM lessons WHERE org_id=%s AND class_id=%s
@@ -1576,10 +1750,10 @@ class RuntimeStore:
                 WHERE e.org_id=%s AND e.class_id=%s AND e.left_at IS NULL AND s.active=TRUE ORDER BY s.id''',
                 (actor['org_id'], data['class_id'])).fetchall()
             lesson_id = uid()
-            db.execute('''INSERT INTO lessons(id,org_id,class_id,schedule_id,starts_at,ends_at,state,created_at)
-                VALUES(%s,%s,%s,%s,%s,%s,'scheduled',%s)''',
+            db.execute('''INSERT INTO lessons(id,org_id,class_id,schedule_id,starts_at,ends_at,state,created_at,campus_id)
+                VALUES(%s,%s,%s,%s,%s,%s,'scheduled',%s,%s)''',
                 (lesson_id, actor['org_id'], data['class_id'], schedule_id, data['starts_at'],
-                 data['ends_at'], now))
+                 data['ends_at'], now, class_row['campus_id']))
             db.execute('''INSERT INTO lesson_versions(org_id,lesson_id,version,updated_at)
                 VALUES(%s,%s,0,%s)''', (actor['org_id'], lesson_id, now))
             db.execute('''INSERT INTO lesson_charge_rules
@@ -1629,13 +1803,91 @@ class RuntimeStore:
                           '课次已有签到、请假或撤销痕迹，请保留原课次并人工核对')
         return processed
 
+    @staticmethod
+    def _lock_lesson_schedule(db, org_id):
+        db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                   ('runtime-substitution:' + org_id,))
+
+    @staticmethod
+    def _require_teacher_availability(db, org_id, teacher_ids, starts_at, ends_at,
+                                      lesson_id='', *, substitutes_only=False):
+        if db.execute('''SELECT 1 FROM effective_lesson_teachers t JOIN lessons l
+            ON l.org_id=t.org_id AND l.id=t.lesson_id
+            WHERE t.org_id=%s AND t.user_id=ANY(%s) AND l.id<>%s AND l.state='scheduled'
+              AND l.starts_at<%s AND l.ends_at>%s AND (NOT %s OR t.is_substitute) LIMIT 1''',
+            (org_id, teacher_ids, lesson_id, ends_at, starts_at, substitutes_only)).fetchone():
+            raise Problem(409, 'teacher_time_conflict', '教师在此时段已有其他课堂')
+
+    def admin_substitute_lesson(self, token, lesson_id, data):
+        reference = data['command_ref']
+        digest = canonical_digest('admin_substitute_lesson', dict(data, lesson_id=lesson_id))
+        def run(db, actor):
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'lessons', lesson_id)
+            self._lock_command(db, actor, reference)
+            prior = self._prior(db, actor, reference, digest)
+            if prior:
+                return prior
+            org_id, now = actor['org_id'], self.clock()
+            self._lock_lesson_schedule(db, org_id)
+            lesson = db.execute('''SELECT l.starts_at,l.ends_at,l.state,COALESCE(lv.version,0) AS version
+                FROM lessons l LEFT JOIN lesson_versions lv ON lv.org_id=l.org_id AND lv.lesson_id=l.id
+                WHERE l.org_id=%s AND l.id=%s FOR UPDATE OF l''', (org_id, lesson_id)).fetchone()
+            if not lesson:
+                raise Problem(404, 'lesson_missing', '未找到该课次')
+            if lesson['state'] != 'scheduled' or lesson['starts_at'] <= now:
+                raise Problem(409, 'lesson_not_editable', '只能为尚未开始的有效课次安排代课')
+            if lesson['version'] != data['expected_version']:
+                raise Problem(409, 'lesson_changed', '课次已更新，请刷新后重试')
+            current = db.execute('SELECT user_id FROM lesson_substitutions WHERE org_id=%s AND lesson_id=%s',
+                                 (org_id, lesson_id)).fetchone()
+            teacher_id = data['teacher_id']
+            self._scope_teachers(db, actor, [teacher_id] if teacher_id else [])
+            previous_id = current['user_id'] if current else None
+            if teacher_id == previous_id:
+                raise Problem(409, 'substitute_unchanged', '代课安排没有变化')
+            if teacher_id is not None:
+                teacher = db.execute('''SELECT u.id FROM users u JOIN roles r
+                    ON r.org_id=u.org_id AND r.user_id=u.id
+                    WHERE u.org_id=%s AND u.id=%s AND u.active AND r.role='teacher' FOR UPDATE OF u''',
+                    (org_id, teacher_id)).fetchone()
+                if not teacher:
+                    raise Problem(409, 'teacher_scope', '请选择本机构的在用教师账号')
+                if db.execute('SELECT 1 FROM lesson_teachers WHERE org_id=%s AND lesson_id=%s AND user_id=%s',
+                              (org_id, lesson_id, teacher_id)).fetchone():
+                    raise Problem(409, 'original_teacher', '请选择其他教师，或恢复原任课安排')
+                self._require_teacher_availability(db, org_id, [teacher_id],
+                                                   lesson['starts_at'], lesson['ends_at'], lesson_id)
+                db.execute('''INSERT INTO lesson_substitutions VALUES(%s,%s,%s)
+                    ON CONFLICT(org_id,lesson_id) DO UPDATE SET user_id=EXCLUDED.user_id''',
+                    (org_id, lesson_id, teacher_id))
+            else:
+                original = db.execute('SELECT user_id FROM lesson_teachers WHERE org_id=%s AND lesson_id=%s',
+                                      (org_id, lesson_id)).fetchall()
+                self._require_teacher_availability(db, org_id, [row['user_id'] for row in original],
+                                                   lesson['starts_at'], lesson['ends_at'], lesson_id,
+                                                   substitutes_only=True)
+                db.execute('DELETE FROM lesson_substitutions WHERE org_id=%s AND lesson_id=%s', (org_id, lesson_id))
+            version = lesson['version'] + 1
+            db.execute('''INSERT INTO lesson_versions VALUES(%s,%s,%s,%s)
+                ON CONFLICT(org_id,lesson_id) DO UPDATE SET version=EXCLUDED.version,updated_at=EXCLUDED.updated_at''',
+                (org_id, lesson_id, version, now))
+            result = {'lesson_id': lesson_id, 'substitute_id': teacher_id, 'version': version, 'duplicate': False}
+            self._audit(db, actor, 'lesson_substitution_changed', lesson_id,
+                        {'previous_teacher_id': previous_id, 'teacher_id': teacher_id, 'reason': data['reason']}, now)
+            self._save_command(db, actor, reference, digest, result, now)
+            return result
+        return self.command(token, 'user', run)
+
     def admin_reschedule_lesson(self, token, lesson_id, data):
         payload = dict(data, lesson_id=lesson_id)
         reference = data['command_ref']
         digest = canonical_digest('admin_reschedule_lesson', payload)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'lessons', lesson_id)
             self._lock_command(db, actor, reference)
+            self._lock_lesson_schedule(db, actor['org_id'])
             lesson = db.execute('''SELECT l.id,l.class_id,l.starts_at,l.ends_at,l.state,
                     c.name AS class_name,co.name AS course_name,COALESCE(lv.version,0) AS version
                 FROM lessons l JOIN classes c ON c.org_id=l.org_id AND c.id=l.class_id
@@ -1658,6 +1910,11 @@ class RuntimeStore:
                 raise Problem(422, 'invalid_lesson_time', '结束时间必须晚于开始时间，且时长不能超过 12 小时')
             if data['starts_at'] == lesson['starts_at'] and data['ends_at'] == lesson['ends_at']:
                 raise Problem(409, 'lesson_time_unchanged', '课次时间没有变化')
+            teachers = db.execute('SELECT user_id,is_substitute FROM effective_lesson_teachers WHERE org_id=%s AND lesson_id=%s',
+                                  (actor['org_id'], lesson_id)).fetchall()
+            self._require_teacher_availability(db, actor['org_id'], [row['user_id'] for row in teachers],
+                                               data['starts_at'], data['ends_at'], lesson_id,
+                                               substitutes_only=not any(row['is_substitute'] for row in teachers))
             if db.execute('''SELECT 1 FROM lessons WHERE org_id=%s AND class_id=%s
                 AND starts_at=%s AND state='scheduled' AND id<>%s''',
                 (actor['org_id'], lesson['class_id'], data['starts_at'], lesson_id)).fetchone():
@@ -1691,7 +1948,8 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_cancel_lesson', payload)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'lessons', lesson_id)
             self._lock_command(db, actor, reference)
             lesson = db.execute('''SELECT l.id,l.class_id,l.starts_at,l.ends_at,l.state,
                     c.name AS class_name,COALESCE(lv.version,0) AS version
@@ -1737,7 +1995,7 @@ class RuntimeStore:
 
     def admin_devices(self, token):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             rows = db.execute('''SELECT d.id,d.name,d.active,d.created_at,
                     c.generation,c.expires_at AS credential_expires_at,
                     (SELECT json_agg(dc.class_id ORDER BY dc.class_id) FROM device_classes dc
@@ -1745,7 +2003,7 @@ class RuntimeStore:
                     EXISTS(SELECT 1 FROM device_enrollments e WHERE e.org_id=d.org_id
                         AND e.device_id=d.id AND e.consumed_at IS NULL AND e.expires_at>%s) AS activation_pending
                 FROM devices d LEFT JOIN device_credentials c ON c.org_id=d.org_id AND c.device_id=d.id
-                WHERE d.org_id=%s ORDER BY d.created_at,d.id''', (self.clock(), actor['org_id'])).fetchall()
+                WHERE d.org_id=%s AND (%s::text IS NULL OR d.campus_id=%s) ORDER BY d.created_at,d.id''', (self.clock(), actor['org_id'], actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             return {'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
 
@@ -1754,7 +2012,7 @@ class RuntimeStore:
         digest = canonical_digest('admin_create_device', data)
         code = 'wxa_' + secrets.token_urlsafe(32)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -1766,13 +2024,18 @@ class RuntimeStore:
             class_ids = data['class_ids']
             if not isinstance(class_ids, list) or not 1 <= len(class_ids) <= 200 or len(set(class_ids)) != len(class_ids):
                 raise Problem(422, 'invalid_device_scope', '请至少选择一个授权班级')
-            found = db.execute('SELECT id FROM classes WHERE org_id=%s AND id=ANY(%s)',
+            found = db.execute('SELECT id,campus_id FROM classes WHERE org_id=%s AND id=ANY(%s)',
                                (actor['org_id'], class_ids)).fetchall()
             if len(found) != len(class_ids):
                 raise Problem(403, 'device_scope', '只能授权本机构已有班级')
+            campuses = {item['campus_id'] for item in found}
+            campus_id = next(iter(campuses)) if len(campuses) == 1 else None
+            self._require_campus_match(actor, campus_id)
+            if actor.get('managed_access') and campus_id is None:
+                raise Problem(422, 'device_campus_required', '设备只能授权给同一校区的班级')
             device_id, generation = uid(), uid()
-            db.execute('INSERT INTO devices VALUES(%s,%s,%s,FALSE,%s,TRUE)',
-                       (device_id, actor['org_id'], data['name'], now))
+            db.execute('''INSERT INTO devices(id,org_id,name,active,created_at,token_reissue_required,campus_id)
+                VALUES(%s,%s,%s,FALSE,%s,TRUE,%s)''', (device_id, actor['org_id'], data['name'], now, campus_id))
             with db.cursor() as cursor:
                 cursor.executemany('INSERT INTO device_classes VALUES(%s,%s,%s)',
                                    [(actor['org_id'], device_id, item) for item in class_ids])
@@ -1795,7 +2058,8 @@ class RuntimeStore:
         digest = canonical_digest('admin_reissue_device', payload)
         code = 'wxa_' + secrets.token_urlsafe(32)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'devices', device_id)
             self._lock_command(db, actor, reference)
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -1829,7 +2093,8 @@ class RuntimeStore:
         reference = data['command_ref']
         digest = canonical_digest('admin_disable_device', dict(data, device_id=device_id))
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, 'devices', device_id)
             self._lock_command(db, actor, reference)
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -2167,22 +2432,23 @@ class RuntimeStore:
             except (TypeError, ValueError):
                 raise Problem(422, 'invalid_date', '日期格式应为 YYYY-MM-DD') from None
             start = int(datetime.combine(selected, datetime.min.time(), CHINA_TZ).timestamp())
-            rows = db.execute('''SELECT l.id,l.class_id,l.starts_at,l.ends_at,l.state,
+            rows = db.execute('''SELECT l.id,l.class_id,l.starts_at,l.ends_at,l.state,lt.is_substitute,
                     c.name AS class_name,co.name AS course_name,
                     count(ls.student_id) FILTER (WHERE ls.expected) AS expected_count,
                     count(ls.student_id) FILTER (WHERE ar.status='arrived') AS arrived_count,
                     count(ls.student_id) FILTER (WHERE ar.status='leave') AS leave_count,
                     count(ls.student_id) FILTER (WHERE ls.expected AND ar.status='missing') AS missing_count
-                FROM lesson_teachers lt
+                FROM effective_lesson_teachers lt
                 JOIN lessons l ON l.org_id=lt.org_id AND l.id=lt.lesson_id
-                JOIN teacher_classes tc ON tc.org_id=lt.org_id AND tc.user_id=lt.user_id AND tc.class_id=l.class_id
+                LEFT JOIN teacher_classes tc ON tc.org_id=lt.org_id AND tc.user_id=lt.user_id AND tc.class_id=l.class_id
                 JOIN classes c ON c.org_id=l.org_id AND c.id=l.class_id
                 JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
                 LEFT JOIN lesson_students ls ON ls.org_id=l.org_id AND ls.lesson_id=l.id
                 LEFT JOIN attendance_records ar ON ar.org_id=ls.org_id
                     AND ar.lesson_id=ls.lesson_id AND ar.student_id=ls.student_id
                 WHERE lt.org_id=%s AND lt.user_id=%s AND l.starts_at>=%s AND l.starts_at<%s
-                GROUP BY l.id,c.id,co.id ORDER BY l.starts_at,l.id''',
+                  AND (lt.is_substitute OR tc.class_id IS NOT NULL)
+                GROUP BY l.id,c.id,co.id,lt.is_substitute ORDER BY l.starts_at,l.id''',
                 (actor['org_id'], actor['id'], start, start + 86400)).fetchall()
             return {'date': selected.isoformat(), 'items': [dict(row) for row in rows]}
         return self.command(token, 'user', run)
@@ -2211,6 +2477,76 @@ class RuntimeStore:
         start = int(datetime.combine(selected, datetime.min.time(), CHINA_TZ).timestamp())
         end = int(datetime.combine(next_month, datetime.min.time(), CHINA_TZ).timestamp())
         return selected, start, end
+
+    def teaching_fees(self, token, period, day=None, *, administrator=False):
+        def run(db, actor):
+            self._require_kind(actor, 'user')
+            if administrator:
+                self._require_campus_operations(actor)
+            elif 'teacher' not in actor['roles']:
+                raise Problem(403, 'teacher_required', '需要教师身份')
+            return self._teaching_fee_data(db, actor['org_id'], self.clock(), period, day,
+                                           teacher_filter=None if administrator else actor['id'],
+                                           campus_id=actor.get('campus_id') if administrator else None)
+        return self.command(token, 'user', run)
+
+    def _teaching_fee_data(self, db, org_id, now, period, day, *, teacher_filter=None, campus_id=None):
+        try:
+            selected = (datetime.strptime(day, '%Y-%m-%d').date() if day is not None
+                        else datetime.fromtimestamp(now, CHINA_TZ).date())
+            if day is not None and selected.isoformat() != day:
+                raise ValueError()
+        except (TypeError, ValueError):
+            raise Problem(422, 'invalid_date', '日期格式应为 YYYY-MM-DD') from None
+        if period == 'week':
+            first, start = self._weekly_period((selected - timedelta(days=selected.weekday())).isoformat())
+            end = start + 7 * 86400
+        else:
+            first, start, end = self._monthly_period(selected.isoformat()[:7])
+        teachers = db.execute('''SELECT u.id,u.display_name,cp.name AS campus_name
+            FROM users u JOIN roles r ON r.org_id=u.org_id AND r.user_id=u.id AND r.role='teacher'
+            LEFT JOIN teacher_campuses tc ON tc.org_id=u.org_id AND tc.user_id=u.id
+            LEFT JOIN campuses cp ON cp.org_id=tc.org_id AND cp.id=tc.campus_id
+            WHERE u.org_id=%s AND (%s::text IS NULL OR u.id=%s)
+            ORDER BY u.display_name,u.id''', (org_id, teacher_filter, teacher_filter)).fetchall()
+        results = {row['id']: dict(row, total_cents=0, unrated_lessons=0, lessons=[]) for row in teachers}
+        rows = db.execute('''SELECT lt.user_id,l.id,l.starts_at,l.ends_at,c.name AS class_name,cp.name AS lesson_campus_name,
+                (SELECT rate_cents FROM course_teaching_fee_rates f WHERE f.org_id=l.org_id
+                 AND f.course_id=COALESCE(fc.course_id,c.course_id) AND f.effective_at<=l.starts_at
+                 ORDER BY f.effective_at DESC,f.version DESC LIMIT 1) AS custom_rate_cents,
+                lt.is_substitute,count(ar.student_id) FILTER (WHERE ar.status='arrived') AS arrived_count
+            FROM effective_lesson_teachers lt JOIN lessons l ON l.org_id=lt.org_id AND l.id=lt.lesson_id
+            JOIN classes c ON c.org_id=l.org_id AND c.id=l.class_id
+            LEFT JOIN campuses cp ON cp.org_id=l.org_id AND cp.id=l.campus_id
+            LEFT JOIN lesson_fee_courses fc ON fc.org_id=l.org_id AND fc.lesson_id=l.id
+            JOIN roles r ON r.org_id=lt.org_id AND r.user_id=lt.user_id AND r.role='teacher'
+            LEFT JOIN attendance_records ar ON ar.org_id=l.org_id AND ar.lesson_id=l.id
+            WHERE l.org_id=%s AND l.state='scheduled' AND l.starts_at>=%s AND l.starts_at<%s
+              AND l.ends_at<=%s AND (%s::text IS NULL OR lt.user_id=%s)
+              AND (%s::text IS NULL OR l.campus_id=%s)
+            GROUP BY lt.user_id,l.id,c.id,fc.course_id,cp.id,lt.is_substitute ORDER BY l.starts_at,l.id''',
+            (org_id, start, end, now, teacher_filter, teacher_filter, campus_id, campus_id)).fetchall()
+        for row in rows:
+            minutes, remainder = divmod(row['ends_at'] - row['starts_at'], 60)
+            rate = row['custom_rate_cents']
+            if rate is None and remainder == 0:
+                rate = {90: 300, 120: 450}.get(minutes)
+            teacher = results[row['user_id']]
+            total = None if rate is None else rate * row['arrived_count']
+            if total is None:
+                teacher['unrated_lessons'] += 1
+            else:
+                teacher['total_cents'] += total
+            teacher['lessons'].append(dict(row, duration_minutes=minutes, rate_cents=rate, total_cents=total))
+        if campus_id is not None:
+            results = {key: dict(item, campus_name=None) for key, item in results.items() if item['lessons']}
+        closed = now >= end and (campus_id is None or not db.execute('''SELECT 1 FROM lessons
+            WHERE org_id=%s AND campus_id=%s AND state='scheduled' AND starts_at>=%s AND starts_at<%s
+              AND ends_at>%s LIMIT 1''', (org_id, campus_id, start, end, now)).fetchone())
+        return {'period': period, 'start': first.isoformat(), 'closed': closed,
+                'end': datetime.fromtimestamp(end - 1, CHINA_TZ).date().isoformat(),
+                'total_cents': sum(item['total_cents'] for item in results.values()),
+                'items': list(results.values())}
 
     @staticmethod
     def _weekly_result(monday, now, rows):
@@ -2245,15 +2581,16 @@ class RuntimeStore:
                     count(ls.student_id) FILTER (WHERE ls.expected AND ar.status='missing' AND l.state='scheduled' AND l.ends_at<=%s) AS missing_count,
                     count(DISTINCT l.id) FILTER (WHERE l.state='scheduled' AND l.ends_at<=%s) AS completed_lessons,
                     count(DISTINCT l.id) FILTER (WHERE l.state='scheduled' AND l.ends_at>%s) AS pending_lessons
-                FROM lesson_teachers lt
+                FROM effective_lesson_teachers lt
                 JOIN lessons l ON l.org_id=lt.org_id AND l.id=lt.lesson_id
-                JOIN teacher_classes tc ON tc.org_id=lt.org_id AND tc.user_id=lt.user_id AND tc.class_id=l.class_id
+                LEFT JOIN teacher_classes tc ON tc.org_id=lt.org_id AND tc.user_id=lt.user_id AND tc.class_id=l.class_id
                 JOIN classes c ON c.org_id=l.org_id AND c.id=l.class_id
                 JOIN courses co ON co.org_id=c.org_id AND co.id=c.course_id
                 LEFT JOIN lesson_students ls ON ls.org_id=l.org_id AND ls.lesson_id=l.id
                 LEFT JOIN attendance_records ar ON ar.org_id=ls.org_id
                     AND ar.lesson_id=ls.lesson_id AND ar.student_id=ls.student_id
                 WHERE lt.org_id=%s AND lt.user_id=%s AND l.starts_at>=%s AND l.starts_at<%s
+                  AND (lt.is_substitute OR tc.class_id IS NOT NULL)
                 GROUP BY c.id,co.id ORDER BY c.name,c.id''',
                 (now, now, now, now, now, now, actor['org_id'], actor['id'], start, start + 7 * 86400)).fetchall()
             return self._weekly_result(monday, now, rows)
@@ -2664,6 +3001,13 @@ class RuntimeStore:
             result = {key: actor[key] for key in ('id', 'org_id', 'kind')}
             if actor['kind'] == 'user':
                 result.update(login=actor['login'], display_name=actor['display_name'], roles=sorted(actor['roles']))
+                if actor['staff_role']:
+                    result.update(campus_id=actor['campus_id'], campus_name=actor['staff_campus_name'])
+                if 'teacher' in actor['roles']:
+                    campus = db.execute('''SELECT c.name FROM teacher_campuses tc
+                        JOIN campuses c ON c.org_id=tc.org_id AND c.id=tc.campus_id
+                        WHERE tc.org_id=%s AND tc.user_id=%s''', (actor['org_id'], actor['id'])).fetchone()
+                    result['campus_name'] = campus['name'] if campus else None
             else:
                 result['name'] = actor['name']
             return result

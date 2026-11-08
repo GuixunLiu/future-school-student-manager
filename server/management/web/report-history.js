@@ -15,7 +15,7 @@ async function retryReportSnapshot(runId){
 }
 function reportHistoryPanel(kind,period,items,selectedId,view){
  const panel=node('section',undefined,'panel report-history'),heading=node('div',undefined,'report-history-heading'),copy=node('div');
- copy.append(node('h2','历史快照'),node('p','快照保存生成时的统计结果，后续补签、招新或续费不会改写旧版本。'));
+ copy.append(node('h2','历史快照'),node('p','快照保存生成时的统计结果，后续签到、请假、招新或续费不会改写旧版本。'));
  const generate=button('生成该周期新快照',async()=>{generate.disabled=true;try{const result=await generateReportSnapshot(kind,period);if(result.run.status==='failed'){notify('本次生成失败，失败版本已保留，可在列表中重试');await view(null);}else{notify('已生成版本 '+result.run.version);await view(result.run.id);}}finally{generate.disabled=false;}});
  generate.dataset.action='generate-report';heading.append(copy,generate);panel.append(heading,node('p','自动任务只处理已结束的上一周和上一月；手动生成当前周期时会标记为“进行中快照”。','weekly-note'));
  const live=button('查看当前实时统计',()=>view(null),'secondary');live.dataset.action='live-report';if(!selectedId)live.disabled=true;

@@ -241,24 +241,6 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
-  /v1/teacher/lessons/{lessonId}/makeup:
-    post:
-      tags: [teacher]
-      operationId: teacherMakeup
-      description: 已实现。仅本人授课班级；首次操作201，同一操作编号及内容的安全重复返回200。
-      parameters:
-        - { $ref: '#/components/parameters/LessonId' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
-      responses:
-        '200': { $ref: '#/components/responses/Object' }
-        '201': { $ref: '#/components/responses/Object' }
-        '403': { $ref: '#/components/responses/Error' }
-        '404': { $ref: '#/components/responses/Error' }
-        '409': { $ref: '#/components/responses/Error' }
   /v1/teacher/lessons/{lessonId}/leave:
     post:
       tags: [teacher]
@@ -528,25 +510,6 @@ paths:
                 command_ref: { $ref: '#/components/schemas/EventRef' }
       responses:
         '200': { $ref: '#/components/responses/Object', description: 相同操作编号及内容的安全重复，返回原回执 }
-        '201': { $ref: '#/components/responses/Object' }
-        '403': { $ref: '#/components/responses/Error' }
-        '404': { $ref: '#/components/responses/Error' }
-        '409': { $ref: '#/components/responses/Error' }
-        '422': { $ref: '#/components/responses/Error' }
-  /v1/admin/lessons/{lessonId}/makeup:
-    post:
-      tags: [admin]
-      operationId: adminCancelledMakeup
-      description: 已实现。仅管理员可处理本机构已取消课次中仍为未签到的应到学生，用于核对取消前的实际到课或平板冲突。按原名单扣课单位只扣一次，保存签到事件、状态、不可变流水、审计和幂等回执；不恢复课次，仍排除出到课率。首次201、安全重复200。
-      parameters:
-        - { $ref: '#/components/parameters/LessonId' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AttendanceCorrection' }
-      responses:
-        '200': { $ref: '#/components/responses/Object' }
         '201': { $ref: '#/components/responses/Object' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }

@@ -1,5 +1,5 @@
 """HTTP entry point for the implemented PostgreSQL runtime transactions."""
-from typing import Annotated
+from typing import Annotated, Literal
 
 import psycopg
 from fastapi import Depends, FastAPI, Header, Request, Response
@@ -71,11 +71,22 @@ class CourseUpdateInput(CourseCreateInput):
     active: bool
 
 
+class CourseTeachingFeeInput(Input):
+    rate_cents: int | None = Field(ge=0, le=100000000)
+    expected_version: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+
+
 class ClassCreateInput(Input):
     name: str = Field(min_length=1, max_length=80)
     course_id: str = Field(min_length=1, max_length=80)
     reason: str = Field(min_length=1, max_length=200)
     command_ref: str = Field(min_length=1, max_length=80)
+
+
+class CampusClassCreateInput(ClassCreateInput):
+    campus_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class ClassUpdateInput(ClassCreateInput):
@@ -120,6 +131,59 @@ class AccountCreateInput(Input):
     login: str = Field(min_length=3, max_length=64, pattern=r'^[a-z0-9][a-z0-9_.-]{2,63}$')
     display_name: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=15, max_length=128, repr=False, json_schema_extra={'writeOnly': True})
+    reason: str = Field(min_length=1, max_length=200)
+    command_ref: str = Field(min_length=1, max_length=80)
+    campus_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class RuntimeLogin(Login):
+    organization: str = Field(default='', min_length=3, max_length=64)
+
+
+class CampusInput(Input):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class TeacherCampusInput(Input):
+    campus_id: str = Field(min_length=1, max_length=80)
+
+
+class StaffAccessInput(Input):
+    login: str = Field(min_length=3, max_length=64, pattern=r'^[a-z0-9][a-z0-9_.-]{2,63}$')
+    role: Literal['campus_admin', 'performance_reviewer'] | None
+    campus_id: str | None = Field(default=None, min_length=1, max_length=80)
+    display_name: str | None = Field(default=None, min_length=1, max_length=80)
+    password: str | None = Field(default=None, min_length=15, max_length=128, repr=False)
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class ClassCampusInput(Input):
+    campus_id: str = Field(min_length=1, max_length=80)
+    include_history: bool = False
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class FeeReviewSubmitInput(Input):
+    campus_id: str = Field(min_length=1, max_length=80)
+    period: Literal['week', 'month']
+    date: str = Field(min_length=10, max_length=10)
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class FeeReviewDecisionInput(Input):
+    action: Literal['approved', 'returned', 'settled']
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class FeeProposalDecisionInput(Input):
+    action: Literal['approved', 'returned']
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class LessonSubstituteInput(Input):
+    teacher_id: str | None = Field(min_length=1, max_length=80)
+    expected_version: int = Field(ge=0)
     reason: str = Field(min_length=1, max_length=200)
     command_ref: str = Field(min_length=1, max_length=80)
 
@@ -273,6 +337,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     def runtime_styles():
         return FileResponse(assets / 'runtime.css', media_type='text/css')
 
+    @app.get('/campus-workspace.js')
+    def campus_workspace_script():
+        return FileResponse(assets / 'campus-workspace.js', media_type='application/javascript')
+
     @app.get('/teacher-runtime.js')
     def teacher_runtime_script():
         return FileResponse(assets / 'teacher-runtime.js', media_type='application/javascript')
@@ -373,7 +441,7 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
         return store.me(token)
 
     @app.post('/v1/auth/login')
-    def login(data: Login, request: Request):
+    def login(data: RuntimeLogin, request: Request):
         return store.login(data.organization, data.login, data.password, request.client.host if request.client else 'unknown')
 
     @app.post('/v1/auth/logout')
@@ -442,13 +510,29 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     def admin_update_course(course_id: str, data: CourseUpdateInput, token: Token):
         return store.admin_update_course(token, course_id, data.model_dump())
 
+    @app.put('/v1/admin/courses/{course_id}/teaching-fee')
+    def admin_course_teaching_fee(course_id: str, data: CourseTeachingFeeInput, token: Token):
+        return store.admin_set_course_teaching_fee(token, course_id, data.model_dump())
+
+    @app.get('/v1/course-fee-proposals')
+    def course_fee_proposals(token: Token):
+        return store.course_fee_proposals(token)
+
+    @app.post('/v1/admin/courses/{course_id}/teaching-fee-proposal', status_code=201)
+    def submit_course_fee_proposal(course_id: str, data: CourseTeachingFeeInput, token: Token):
+        return store.submit_course_fee_proposal(token, course_id, data.model_dump())
+
+    @app.put('/v1/course-fee-proposals/{proposal_id}')
+    def decide_course_fee_proposal(proposal_id: str, data: FeeProposalDecisionInput, token: Token):
+        return store.decide_course_fee_proposal(token, proposal_id, data.model_dump())
+
     @app.get('/v1/admin/classes')
     def admin_classes(token: Token):
         return store.admin_classes(token)
 
     @app.post('/v1/admin/classes', status_code=201)
-    def admin_create_class(data: ClassCreateInput, response: Response, token: Token):
-        result = store.admin_create_class(token, data.model_dump())
+    def admin_create_class(data: CampusClassCreateInput, response: Response, token: Token):
+        result = store.admin_create_class(token, data.model_dump(exclude_none=True))
         if result['duplicate']:
             response.status_code = 200
         return result
@@ -469,9 +553,21 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     def admin_accounts(token: Token):
         return store.admin_accounts(token)
 
+    @app.get('/v1/admin/campuses')
+    def admin_campuses(token: Token):
+        return store.admin_campuses(token)
+
+    @app.post('/v1/admin/campuses', status_code=201)
+    def admin_create_campus(data: CampusInput, token: Token):
+        return store.admin_create_campus(token, data.name)
+
+    @app.put('/v1/admin/accounts/{user_id}/campus')
+    def admin_set_teacher_campus(user_id: str, data: TeacherCampusInput, token: Token):
+        return store.admin_set_teacher_campus(token, user_id, data.campus_id)
+
     @app.post('/v1/admin/accounts', status_code=201)
     def admin_create_account(data: AccountCreateInput, response: Response, token: Token):
-        result = store.admin_create_account(token, data.model_dump())
+        result = store.admin_create_account(token, data.model_dump(exclude_none=True))
         if result['duplicate']:
             response.status_code = 200
         return result
@@ -518,12 +614,49 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     def admin_lesson(lesson_id: str, token: Token):
         return store.admin_lesson(token, lesson_id)
 
-    @app.post('/v1/admin/lessons/{lesson_id}/makeup', status_code=201)
-    def admin_cancelled_makeup(lesson_id: str, data: AttendanceCorrectionInput, response: Response, token: Token):
-        result = store.admin_cancelled_correction(token, lesson_id, 'makeup', data.model_dump())
-        if result['duplicate']:
-            response.status_code = 200
-        return result
+    @app.put('/v1/admin/lessons/{lesson_id}/substitute')
+    def admin_substitute_lesson(lesson_id: str, data: LessonSubstituteInput, token: Token):
+        return store.admin_substitute_lesson(token, lesson_id, data.model_dump())
+
+    @app.get('/v1/admin/teaching-fees')
+    def admin_teaching_fees(token: Token, period: Literal['week', 'month'], date: str | None = None):
+        return store.teaching_fees(token, period, date, administrator=True)
+
+    @app.get('/v1/owner/staff-access')
+    def owner_staff_access(token: Token):
+        return store.staff_access(token)
+
+    @app.get('/v1/owner/access-audit')
+    def owner_access_audit(token: Token):
+        return store.owner_access_audit(token)
+
+    @app.put('/v1/owner/staff-access')
+    def owner_set_staff_access(data: StaffAccessInput, token: Token):
+        return store.set_staff_access(token, data.model_dump())
+
+    @app.put('/v1/owner/classes/{class_id}/campus')
+    def owner_assign_class_campus(class_id: str, data: ClassCampusInput, token: Token):
+        return store.assign_class_campus(token, class_id, data.model_dump())
+
+    @app.get('/v1/fee-reviews')
+    def fee_reviews(token: Token):
+        return store.fee_reviews(token)
+
+    @app.get('/v1/fee-reviews/preview')
+    def preview_fee_review(token: Token, campus_id: str, period: Literal['week', 'month'], date: str):
+        return store.preview_fee_review(token, campus_id, period, date)
+
+    @app.post('/v1/fee-reviews', status_code=201)
+    def submit_fee_review(data: FeeReviewSubmitInput, token: Token):
+        return store.submit_fee_review(token, data.model_dump())
+
+    @app.put('/v1/fee-reviews/{review_id}')
+    def decide_fee_review(review_id: str, data: FeeReviewDecisionInput, token: Token):
+        return store.decide_fee_review(token, review_id, data.model_dump())
+
+    @app.get('/v1/teacher/teaching-fees')
+    def teacher_teaching_fees(token: Token, period: Literal['week', 'month'], date: str | None = None):
+        return store.teaching_fees(token, period, date)
 
     @app.post('/v1/admin/lessons/{lesson_id}/leave', status_code=201)
     def admin_cancelled_leave(lesson_id: str, data: AttendanceCorrectionInput, response: Response, token: Token):
@@ -624,13 +757,6 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     @app.post('/v1/teacher/lessons/{lesson_id}/face-checkin', status_code=201)
     def teacher_face_checkin(lesson_id: str, data: FaceCheckinInput, response: Response, token: Token):
         result = store.teacher_face_checkin(token, lesson_id, data.model_dump())
-        if result['duplicate']:
-            response.status_code = 200
-        return result
-
-    @app.post('/v1/teacher/lessons/{lesson_id}/makeup', status_code=201)
-    def teacher_makeup(lesson_id: str, data: AttendanceCorrectionInput, response: Response, token: Token):
-        result = store.teacher_correction(token, lesson_id, 'makeup', data.model_dump())
         if result['duplicate']:
             response.status_code = 200
         return result

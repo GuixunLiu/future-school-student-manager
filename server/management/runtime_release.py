@@ -12,11 +12,13 @@ from pathlib import Path
 import subprocess
 
 import psycopg
+from psycopg.rows import dict_row
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
 from . import fresh_start, fresh_start_postgres
-from .runtime_schema import POSTGRES_RUNTIME_SCHEMA, full_schema
+from .runtime_schema import POSTGRES_RUNTIME_SCHEMA, full_schema, upgrade_staff_schema
+from .runtime_permissions import provision_first_owner
 
 
 SCHEMA_VERSION = 'fresh-start-runtime-v2'
@@ -84,6 +86,7 @@ def migrate_local(bundle_path, dsn, enabled, now):
         # The base writer checks an empty public schema and never commits itself.
         base = fresh_start_postgres.populate(connection, bundle, raw, now)
         connection.execute(POSTGRES_RUNTIME_SCHEMA)
+        upgrade_staff_schema(connection)
         connection.execute('''INSERT INTO student_balances(org_id,student_id,units,revision,updated_at)
             SELECT org_id,student_id,units,1,%s FROM opening_balances''', (now,))
         rows = connection.execute('''SELECT org_id,student_id,units FROM opening_balances''').fetchall()
@@ -236,6 +239,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Loopback-only runtime release rehearsal')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('init-empty')
+    owner = commands.add_parser('provision-owner')
+    owner.add_argument('--organization', required=True)
+    owner.add_argument('--login', required=True)
     migrate = commands.add_parser('migrate')
     migrate.add_argument('--bundle', required=True)
     migrate.add_argument('--now', type=int, required=True)
@@ -252,6 +258,11 @@ def main(argv=None):
         result = initialize_local(dsn, args.local_rehearsal)
     elif args.command == 'migrate':
         result = migrate_local(args.bundle, dsn, args.local_rehearsal, args.now)
+    elif args.command == 'provision-owner':
+        local_dsn(dsn, args.local_rehearsal)
+        with psycopg.connect(dsn, row_factory=dict_row) as connection:
+            provision_first_owner(connection, args.organization, args.login)
+        result = {'owner_provisioned': True}
     elif args.command == 'backup':
         result = backup_local(dsn, args.output, args.local_rehearsal)
         _write_receipt(args.receipt, result)
