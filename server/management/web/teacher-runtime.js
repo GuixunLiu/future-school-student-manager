@@ -9,7 +9,12 @@ function teacherIdentity(){$('identity').replaceChildren(node('span',identity.di
 async function teacherDashboard(day=teacherDay||chinaToday()){
  const data=await api('/v1/teacher/lessons?date='+encodeURIComponent(day));teacherDay=data.date;teacherLessons=data.items;currentLesson=null;teacherIdentity();
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','我的课堂'),node('p','这里仅显示你本人获授课及班级授权的课堂。补签按课堂规则扣课时，请假不扣课时。'));
- const actions=node('div',undefined,'toolbar');actions.append(button('刷新',()=>teacherDashboard(teacherDay),'secondary'),button('到课率',()=>teacherWeeklyReport(),'secondary'));if(identity.roles.includes('admin'))actions.append(button('设备管理',dashboard,'secondary'));heading.append(copy,actions);
+ const actions=node('div',undefined,'toolbar');
+ actions.append(button('刷新',()=>teacherDashboard(teacherDay),'secondary'),
+  button('到课率',()=>teacherWeeklyReport(),'secondary'),
+  button('课后反馈',()=>notify('课后反馈暂未开放'),'secondary'));
+ if(identity.roles.includes('admin'))actions.append(button('设备管理',dashboard,'secondary'));
+ heading.append(copy,actions);
  const filter=node('section',undefined,'panel teacher-filter'),form=node('form',undefined,'classroom-date'),label=node('label','课堂日期'),date=node('input');date.type='date';date.required=true;date.value=teacherDay;date.setAttribute('aria-label','课堂日期');label.append(date);const submit=node('button','查看课堂');submit.type='submit';form.append(label,submit);filter.append(form);
  form.addEventListener('submit',async event=>{event.preventDefault();submit.disabled=true;try{await teacherDashboard(date.value);}catch(error){showError(error);}finally{submit.disabled=false;}});
  const list=node('section',undefined,'grid course-grid');if(!teacherLessons.length)list.append(node('div','这一天没有你的课堂','empty'));
