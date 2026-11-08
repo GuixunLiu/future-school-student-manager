@@ -219,6 +219,8 @@ class DeviceCommandInput(Input):
 
 class TabletActivationInput(Input):
     activation_code: str = Field(min_length=47, max_length=47, pattern=r'^wxa_[A-Za-z0-9_-]{43}$')
+    expected_org_id: str | None = Field(default=None, min_length=1, max_length=80)
+    expected_device_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
@@ -589,7 +591,8 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
 
     @app.post('/v1/tablet/activate')
     def tablet_activate(data: TabletActivationInput):
-        return store.activate_tablet(data.activation_code)
+        return store.activate_tablet(data.activation_code, expected_org_id=data.expected_org_id,
+                                     expected_device_id=data.expected_device_id)
 
     @app.get('/v1/tablet/bootstrap')
     def tablet_bootstrap(token: Token):

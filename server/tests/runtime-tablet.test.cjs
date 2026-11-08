@@ -67,10 +67,32 @@ test('bootstrap atomically refreshes versions and balances while retaining local
 });
 
 test('wrong device snapshot and ambiguous student mapping cannot change local state',()=>{
- for(const mutate of [p=>p.device.id='other',p=>p.lessons[0].students[0].external_ref='UNKNOWN']){
-  const f=fixture(),raw=f.disk.raw,p=structuredClone(f.data);mutate(p);
+ for(const wrongDevice of [true,false]){
+  const f=fixture(),p=structuredClone(f.data);
+  if(wrongDevice)p.device.id='other';
+  else {
+   const state=f.store.snapshot();
+   state.students.push({...state.students[0],id:3,runtimeStudentId:'student'});
+   f.disk.raw=JSON.stringify(state);f.store.refresh();
+  }
+  const raw=f.disk.raw;
   assert.equal(bootstrap.apply(f.store,p,f.profile).ok,false);assert.equal(f.disk.raw,raw);
  }
+});
+
+test('roster refresh matches renamed records by server ID and adds a student across classes once',()=>{
+ const f=fixture();assert.equal(bootstrap.apply(f.store,f.data,f.profile).ok,true);
+ const data=structuredClone(f.data),student=data.lessons[0].students[0];
+ student.name='改名学生';data.classes[0].name='改名班级';
+ data.classes.push({id:'second-class',name:'第二班',course_name:'演示课程'});
+ data.lessons.push({...data.lessons[0],id:'second-lesson',class_id:'second-class',
+  students:[{...student,status:'missing',attendance_revision:0},{...student,student_id:'new',external_ref:'NEW'}]});
+ for(let i=0;i<2;i++)assert.equal(bootstrap.apply(f.store,data,f.profile).ok,true);
+ const state=f.store.snapshot();
+ assert.equal(state.students.length,2);assert.equal(state.students[0].id,1);assert.equal(state.students[0].name,'改名学生');
+ assert.equal(state.students[0].face,'KEEP');assert.equal(state.classes[0].id,2);assert.equal(state.classes[0].name,'改名班级');
+ assert.equal(queue.record(f.store,{...f.input,lessonId:'second-lesson'},f.starts).ok,true);
+ assert.equal(f.store.snapshot().attendance[0].className,'第二班');
 });
 
 test('local check-in racing bootstrap CAS is preserved for the next upload',()=>{
@@ -90,18 +112,23 @@ test('rebind updates only the native profile mapping and preserves local history
 
 test('an interrupted rebind is retryable with the already saved native profile',()=>{
  const f=fixture(),profile={...f.profile,generation:'generation-2',profileId:'profile-2'},data=structuredClone(f.data);data.device.generation=profile.generation;
- data.lessons[0].students[0].external_ref='UNKNOWN';assert.equal(bootstrap.rebind(f.store,data,profile).code,'mapping_changed');
+ assert.equal(bootstrap.rebind(f.store,null,profile).awaitingSync,true);
+ const invalid=structuredClone(data);invalid.device.id='other';
+ assert.equal(bootstrap.apply(f.store,invalid,profile).code,'invalid_bootstrap');
  let state=f.store.snapshot();assert.equal(state.managementSync.generation,'generation-2');assert.equal(state.managementSync.rebindPending,true);assert.equal(state.students[0].face,'KEEP');
- data.lessons[0].students[0].external_ref='TEST';assert.equal(bootstrap.rebind(f.store,data,profile).ok,true);
+ assert.equal(bootstrap.apply(f.store,data,profile).ok,true);
  state=f.store.snapshot();assert.equal('rebindPending' in state.managementSync,false);assert.equal(state.transactions[0].reason,'保留本机历史');
 });
 
-test('rebind refuses pending or blocked queues without changing the old profile',()=>{
+test('rebind keeps pending and blocked queues and defers the roster refresh',()=>{
  for(const status of ['pending','blocked']){
   const f=fixture();queue.record(f.store,f.input,f.starts);if(status==='blocked')queue.block(f.store,'local-one','attendance_changed');
-  const raw=f.disk.raw,profile={...f.profile,generation:'generation-2',profileId:'profile-2'},data=structuredClone(f.data);data.device.generation=profile.generation;
-  assert.equal(bootstrap.rebind(f.store,data,profile).code,'offline_queue');assert.equal(f.disk.raw,raw);
-  assert.equal(f.store.snapshot().managementSync.generation,'generation');assert.equal(f.store.snapshot().students[0].hours,9);
+  const before=f.store.snapshot(),profile={...f.profile,generation:'generation-2',profileId:'profile-2'},data=structuredClone(f.data);data.device.generation=profile.generation;
+  assert.equal(bootstrap.rebind(f.store,data,profile).awaitingSync,true);
+  const after=f.store.snapshot();
+  assert.equal(after.managementSync.generation,'generation-2');assert.equal(after.managementSync.rebindPending,true);
+  assert.deepEqual(after.managementSync.queue,before.managementSync.queue);
+  assert.deepEqual(after.transactions,before.transactions);assert.equal(after.students[0].hours,9);
  }
 });
 
@@ -229,11 +256,13 @@ test('resolution never accepts pending entries, unknown references or legacy pro
  const legacyRaw=f.disk.raw;assert.equal(queue.resolveConflict(f.store,'local-one',resolution(f)).code,'invalid_conflict');assert.equal(f.disk.raw,legacyRaw);
 });
 
-test('safe rebind accepts an archived conflict but still rejects blocked evidence',()=>{
+test('safe rebind preserves a blocked conflict until it is resolved with the new credential',()=>{
  const f=fixture();queue.record(f.store,f.input,f.starts);queue.block(f.store,'local-one','attendance_changed');
  const profile={...f.profile,generation:'generation-2',profileId:'profile-2'},data=structuredClone(f.data);data.device.generation=profile.generation;
- assert.equal(bootstrap.rebind(f.store,data,profile).code,'offline_queue');assert.equal(queue.resolveConflict(f.store,'local-one',resolution(f)).ok,true);
- const result=bootstrap.rebind(f.store,data,profile);assert.equal(result.ok,true);const state=f.store.snapshot();
+ assert.equal(bootstrap.rebind(f.store,data,profile).awaitingSync,true);
+ assert.equal(queue.resolveConflict(f.store,'local-one',resolution(f)).code,'receipt_mismatch');
+ assert.equal(queue.resolveConflict(f.store,'local-one',{...resolution(f),generation:profile.generation}).ok,true);
+ const result=bootstrap.apply(f.store,data,profile);assert.equal(result.ok,true);const state=f.store.snapshot();
  assert.equal(state.managementSync.generation,'generation-2');assert.equal(state.managementSync.queue[0].status,'resolved');
  assert.equal(state.attendance[0].serverEventId,'web-event-1');assert.equal(state.transactions.length,2);
 });

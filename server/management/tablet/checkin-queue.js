@@ -58,10 +58,10 @@
       const binding=sync.students[studentId],lesson=sync.lessons[lessonId],fact=sync.facts[lessonId][studentId];
       if(!Array.isArray(state.students)||!Array.isArray(state.classes)||!Array.isArray(state.attendance)||!Array.isArray(state.transactions)||!Array.isArray(state.settings?.studentLeaves))fail('invalid_state');
       if(state.attendance.some(a=>a.deviceEventRef===eventRef)||state.transactions.some(t=>t.deviceEventRef===eventRef))fail('idempotency_conflict');
-      const students=state.students.filter(s=>s.id===binding.localId),classes=state.classes.filter(c=>c.id===binding.localClassId);
+      const students=state.students.filter(s=>s.id===binding.localId),classes=state.classes.filter(c=>c.id===(sync.protocol===2&&sync.classes?sync.classes[lesson.classId]?.localId:binding.localClassId));
       if(students.length!==1||classes.length!==1)fail('mapping_changed');
       const student=students[0],course=classes[0];
-      if(student.studentNo!==binding.studentNo||student.name!==binding.name||student.className!==binding.className||course.name!==binding.className||course.teacher!==binding.teacher||student.longTermAbsent===true||student.status==='archived'||lesson.classId!==binding.classId||!lesson.studentIds?.includes(studentId)||(sync.protocol===2&&lesson.state!=='scheduled'))fail('mapping_changed');
+      if(student.studentNo!==binding.studentNo||student.name!==binding.name||(sync.protocol===1&&(student.className!==binding.className||course.name!==binding.className||course.teacher!==binding.teacher))||student.longTermAbsent===true||student.status==='archived'||((sync.protocol===1||!sync.classes)&&lesson.classId!==binding.classId)||!lesson.studentIds?.includes(studentId)||(sync.protocol===2&&lesson.state!=='scheduled'))fail('mapping_changed');
       if(!integer(lesson.startsAt)||lesson.date!==day(lesson.startsAt)||day(occurredAt)!==lesson.date)fail('lesson_day');
       if(fact.expected!==true||fact.status!=='missing'||!integer(fact.revision)||!integer(fact.revision+1)||fact.revision<0||!integer(fact.chargeUnits)||fact.chargeUnits<=0)fail('attendance_changed');
       if(!integer(binding.balanceRevision)||!integer(binding.balanceRevision+1)||binding.balanceRevision<0||!integer(binding.balanceUnits)||units(student.hours)!==binding.balanceUnits)fail('balance_changed');
@@ -75,7 +75,7 @@
       let last=0;for(const rows of [state.students,state.classes,state.attendance,state.transactions,state.settings.studentLeaves])for(const row of rows){if(!integer(row.id)||row.id<=0)fail('invalid_state');last=Math.max(last,row.id);}
       const id=()=>{last++;if(!integer(last))fail('invalid_state');return last;};
       const attendanceId=id(),time=new Date((occurredAt+28800)*1000).toISOString().slice(11,16);
-      const snapshot={classId:course.id,className:binding.className,teacher:binding.teacher,classroom:course.classroom||'',source:'canonical_device',deviceEventRef:eventRef,deviceLessonId:lessonId};
+      const snapshot={classId:course.id,className:course.name,teacher:course.teacher||'',classroom:course.classroom||'',source:'canonical_device',deviceEventRef:eventRef,deviceLessonId:lessonId};
       state.attendance.push({id:attendanceId,studentId:student.id,date:lesson.date,time,method:'平板签到',...snapshot});
       state.transactions.push({id:id(),attendanceId,studentId:student.id,amount:-fact.chargeUnits/100,reason:'平板签到扣减',date:lesson.date,time,...snapshot});
       student.hours=payload.remaining_units/100;binding.balanceUnits=payload.remaining_units;binding.balanceRevision++;fact.status='arrived';fact.revision++;

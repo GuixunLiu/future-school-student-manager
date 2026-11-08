@@ -1851,9 +1851,11 @@ class RuntimeStore:
             return response
         return self.command(token, 'user', run)
 
-    def activate_tablet(self, code):
+    def activate_tablet(self, code, *, expected_org_id=None, expected_device_id=None):
         if not isinstance(code, str) or len(code) > 128:
             raise Problem(401, 'invalid_activation', '开通码无效或已使用')
+        if (expected_org_id is None) != (expected_device_id is None):
+            raise Problem(422, 'invalid_activation_identity', '换绑须同时提供原机构和设备编号')
         with self.connect() as connection:
             with connection.transaction():
                 db = connection
@@ -1861,7 +1863,9 @@ class RuntimeStore:
                 row = db.execute('''SELECT e.*,d.name FROM device_enrollments e
                     JOIN devices d ON d.org_id=e.org_id AND d.id=e.device_id
                     WHERE e.code_hash=%s AND e.consumed_at IS NULL AND d.active=FALSE
-                    FOR UPDATE OF e,d''', (token_digest(code),)).fetchone()
+                      AND (%s::text IS NULL OR (e.org_id=%s AND e.device_id=%s))
+                    FOR UPDATE OF e,d''',
+                    (token_digest(code), expected_org_id, expected_org_id, expected_device_id)).fetchone()
                 if not row:
                     raise Problem(401, 'invalid_activation', '开通码无效或已使用')
                 if row['expires_at'] <= now:
@@ -1982,7 +1986,7 @@ class RuntimeStore:
             # Permission is rechecked even for a duplicate response.
             prior = self._prior(db, actor, reference, digest)
             if prior:
-                return prior
+                return dict(prior, generation=actor['generation'])
             now = self.clock()
             if fact['state'] != 'scheduled':
                 raise Problem(409, 'lesson_unavailable', '该课堂已取消')
@@ -2036,7 +2040,7 @@ class RuntimeStore:
                 raise Problem(403, 'checkin_scope', '此平板没有该班级的签到权限')
             prior = self._prior(db, actor, reference, digest)
             if prior:
-                return prior
+                return dict(prior, generation=actor['generation'])
             current = db.execute('''SELECT last_event_id FROM attendance_records
                 WHERE org_id=%s AND lesson_id=%s AND student_id=%s''',
                 (actor['org_id'], data['lesson_id'], data['student_id'])).fetchone()

@@ -114,7 +114,7 @@ paths:
       tags: [tablet]
       security: []
       operationId: tabletActivate
-      description: 原生安全层使用一次性开通码换取设备凭据，令牌不进入页面脚本。
+      description: 原生安全层使用一次性开通码换取设备凭据，令牌不进入页面脚本。换绑时同时传原机构和设备编号，身份不匹配时开通码保持未使用。
       requestBody:
         required: true
         content:
@@ -125,10 +125,13 @@ paths:
               required: [activation_code]
               properties:
                 activation_code: { type: string, pattern: '^wxa_[A-Za-z0-9_-]{43}$' }
+                expected_org_id: { type: string, minLength: 1, maxLength: 80 }
+                expected_device_id: { type: string, minLength: 1, maxLength: 80 }
       responses:
         '200': { $ref: '#/components/responses/Object' }
         '401': { $ref: '#/components/responses/Error' }
         '410': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /v1/tablet/bootstrap:
     get:
       tags: [tablet]

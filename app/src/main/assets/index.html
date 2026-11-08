@@ -26,30 +26,13 @@
   <div id="appStartup" role="status" aria-live="polite"><strong>未来学校</strong><p>正在准备签到界面…</p></div>
   <div class="app-shell">
     <header class="app-masthead">
-      <div class="brand"><span class="brand-mark"><img src="future-school-logo.png" alt="未来学校"></span><div><b id="brandName">未来学校学生管理系统</b><small>学生管理 · 本机离线保存</small></div></div>
-      <form class="global-student-search" id="globalStudentSearchForm" role="search"><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#search"></use></svg><input id="globalStudentSearchInput" aria-label="搜索学生、学号或班级" placeholder="搜索学生、学号或班级" autocomplete="off"><button type="submit" aria-label="开始搜索">搜索</button></form>
-      <div class="masthead-actions"><button type="button" class="shell-settings" id="shellSettingsBtn" aria-label="打开设置"><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#settings"></use></svg></button><button type="button" class="admin-access-btn" id="adminAccessBtn" onclick="return requestAdminEntry(event)" ontouchend="return requestAdminEntry(event)"><span>⌾</span><b>进入后台</b></button></div>
+      <div class="brand"><span class="brand-mark"><img src="future-school-logo.png" alt="未来学校"></span><div><b id="brandName">未来学校学生管理系统</b><small>平板签到 · 支持离线</small></div></div>
+      <div class="masthead-actions"><button type="button" class="shell-settings" id="shellSettingsBtn" aria-label="打开设置"><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#settings"></use></svg></button><button type="button" class="admin-access-btn" id="adminAccessBtn" onclick="return requestAdminEntry(event)" ontouchend="return requestAdminEntry(event)"><span>⌾</span><b>设备设置</b></button></div>
     </header>
-    <aside class="sidebar">
-      <nav id="navList" aria-label="教务功能导航">
-        <button class="nav-item active" data-view="dashboard"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#home"></use></svg></span><b>今日</b></button>
-        <button class="nav-item" data-view="students"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#students"></use></svg></span><b>学生</b></button>
-        <button class="nav-item" data-view="classes"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#classes"></use></svg></span><b>班级</b></button>
-        <button class="nav-item" data-view="checkin"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#check"></use></svg></span><b>签到</b></button>
-        <button class="nav-item" data-view="hours"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#hours"></use></svg></span><b>课时</b></button>
-        <button class="nav-item" data-view="report"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#report"></use></svg></span><b>周报</b></button>
-        <button class="nav-item" data-view="settings"><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#settings"></use></svg></span><b>设置</b></button>
-        <button class="nav-item nav-more" data-more><span><svg class="ui-icon" aria-hidden="true"><use href="ui-icons.svg#more"></use></svg></span><b>更多</b></button>
-        <button type="button" class="dock-add" data-dock-add><span>＋</span><b>录入学生</b></button>
-      </nav>
-    </aside>
 
     <main class="workspace">
       <header class="topbar">
-        <div><p id="todayLabel"></p><h1 id="viewTitle">教务工作台</h1><span id="viewSubtitle">今天也要陪孩子们一起成长</span></div>
-        <div class="topbar-actions">
-          <button class="primary-btn" id="quickAddBtn"><span>＋</span>录入学生</button>
-        </div>
+        <div><p id="todayLabel"></p><h1 id="viewTitle">学生签到</h1><span id="viewSubtitle">今天也要陪孩子们一起成长</span></div>
       </header>
       <section id="content" class="content"></section>
     </main>
@@ -74,11 +57,11 @@
       if (event && event.type === 'touchend') window.__adminEntryTouchAt = now;
       if (event && event.preventDefault) event.preventDefault();
       if (typeof window.openAdminLogin === 'function') {
-        try { window.openAdminLogin(); } catch (error) { window.alert('后台登录页面打开失败，请重新启动软件后再试。'); }
+        try { window.openAdminLogin(); } catch (error) { window.alert('设备设置打开失败，请重新启动软件后再试。'); }
       } else {
         window.__pendingAdminEntry = true;
         var label = document.querySelector('#adminAccessBtn b');
-        if (label) label.textContent = '正在打开后台…';
+        if (label) label.textContent = '正在打开设备设置…';
       }
       return false;
     };

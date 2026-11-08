@@ -139,19 +139,24 @@ test('actual App safe rebind pauses check-in and never passes a token through th
   classes:[{id:'class',name:'演示班',course_name:'演示课程'}],lessons:[{id:'lesson',class_id:'class',starts_at:starts,ends_at:starts+7200,state:'scheduled',students:[{student_id:'student',name:'演示学生',external_ref:'TEST',expected:true,charge_units:100,status:'missing',attendance_revision:0,balance_units:1000,balance_revision:0}]}]};
  f.bridge.requestCanonicalSync=(id,profile,kind,payload)=>{requests.push({id,profile,kind,payload});f.run('window.onCanonicalSyncNativeResult('+JSON.stringify(id)+','+JSON.stringify(JSON.stringify({ok:true,status:200,data}))+')');};
  await f.run('finishRuntimeReissue()');const state=f.snapshot();assert.equal(state.managementSync.generation,'generation-2');assert.equal(state.managementSync.profileId,'profile-2');
- assert.equal(f.run('canonicalRebindPending'),false);assert.equal(requests.length,1);assert.equal(requests[0].profile,'profile-2');assert(!requests[0].payload.includes('token'));
+ assert.equal(f.run('canonicalRebindPending'),false);assert.equal(state.managementSync.rebindPending,true);
+ assert.equal(requests.length,0);
+ await f.run('ManagementSyncRuntime.create({store:canonicalGuardedStore(),profile:canonicalProfile,request:canonicalNativeRequest}).tick()');
+ assert.equal(f.snapshot().managementSync.rebindPending,undefined);
+ assert.equal(requests[0].kind,'bootstrap');assert.equal(requests[0].profile,'profile-2');assert(!requests[0].payload.includes('token'));
 });
 
-test('actual App refuses native rebind while an offline check-in awaits upload',async()=>{
+test('actual App can rebind while retaining an offline check-in',async()=>{
  const f=fixture();f.run('state.managementSync.protocol=2;committedStateSnapshot=JSON.stringify(state);');f.disk.raw=f.run('committedStateSnapshot');
  f.run('let isAdminAuthenticated=true;');assert.equal(f.run("recordStudentAttendance(1,'手动')").ok,true);const raw=f.disk.raw;let calls=0;f.bridge.reissueRuntime=()=>calls++;
- await f.run('startRuntimeReissue()');assert.equal(calls,0);assert.equal(f.disk.raw,raw);assert.equal(f.run('canonicalRebindPending'),false);
- assert(f.notes.some(n=>n.includes('未上传')));assert.equal(f.snapshot().managementSync.queue[0].status,'pending');
+ await f.run('startRuntimeReissue()');assert.equal(calls,1);assert.equal(f.disk.raw,raw);assert.equal(f.run('canonicalRebindPending'),true);
+ f.run('window.onCanonicalSyncNativeResult("runtime-reissue",{ok:false,data:{cancelled:true}})');
+ assert.equal(f.run('canonicalRebindPending'),false);assert.equal(f.snapshot().managementSync.queue[0].status,'pending');
 });
 
 test('actual settings UI exposes only tablet operations in server-authoritative mode',()=>{
  const f=fixture();f.run('function esc(value){return String(value??"");}function cameraPositionSummary(){return "横屏：顶部";}function deviceSyncSettingsMarkup(){return "<section data-test-device-sync>待上传与冲突核对</section>";}');
- vm.runInContext(fn('function renderSettings(){','function renderLocalSettings(){'),f.c);
+ vm.runInContext(fn('function renderSettings(){','function handleContentAction(event){'),f.c);
  const html=f.run('renderSettings()');assert.ok(html.includes('data-tablet-refresh'));assert.ok(html.includes('data-canonical-enrollment="reissue"'));assert.ok(html.includes('data-test-device-sync'));
  for(const forbidden of ['data-action="add-student"','id="exportExcel"','id="batchImport"','id="exportBackup"','id="openWebMirror"','id="openWechatNotices"'])assert.equal(html.includes(forbidden),false,forbidden);
 });

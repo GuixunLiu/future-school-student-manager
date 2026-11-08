@@ -639,32 +639,25 @@ function mountPageContent(view,renderer){
 }
 function render(){
   syncScreenOrientationClass();
-  const tabletOnly=typeof canonicalModeActive==='function'&&canonicalModeActive();
-  if(tabletOnly&&isAdminAuthenticated)currentView='settings';
+  currentView=isAdminAuthenticated?'settings':'checkin';
   document.body.classList.toggle('admin-mode',isAdminAuthenticated);
   document.body.classList.toggle('kiosk-mode',!isAdminAuthenticated);
-  document.body.classList.toggle('tablet-only',tabletOnly);
-  document.body.classList.toggle('dashboard-view',isAdminAuthenticated&&currentView==='dashboard');
+  document.body.classList.add('tablet-only');
   const adminAccess=$('#adminAccessBtn');
+  $('#brandName').textContent=state.settings.orgName||'未来学校签到平板';
   if(!isAdminAuthenticated){
-    currentView='checkin';
-    $('#viewTitle').textContent='学生签到';$('#viewSubtitle').textContent='请选择签到方式，签到成功后会显示剩余课时';
-    $('#brandName').textContent=state.settings.orgName||'未来学校学生管理系统';
-    $('#quickAddBtn').style.display='none';
-    adminAccess.innerHTML=`<span>${uiIcon('lock')}</span><b>${tabletOnly?'设备':'后台'}</b>`;
+    $('#viewTitle').textContent='学生签到';
+    $('#viewSubtitle').textContent='请选择签到方式，签到成功后会显示剩余课时';
+    adminAccess.innerHTML=`<span>${uiIcon('lock')}</span><b>设备</b>`;
     bindReliableTap(adminAccess,openAdminLogin);
     mountPageContent('kiosk',renderKioskCheckin);
-    bindViewEvents();
-    return;
+  }else{
+    $('#viewTitle').textContent='设备与同步';
+    $('#viewSubtitle').textContent='课堂名单、离线签到与安全连接';
+    adminAccess.innerHTML='<span>↩</span><b>返回签到</b>';
+    bindReliableTap(adminAccess,exitAdmin);
+    mountPageContent('settings',renderSettings);
   }
-  const [title,subtitle] = tabletOnly?['设备与同步','课堂名单、离线签到与安全连接']:views[currentView];
-  $('#viewTitle').textContent = title; $('#viewSubtitle').textContent = subtitle;
-  $('#brandName').textContent = state.settings.orgName || '未来学校学生管理系统';
-  $$('.nav-item').forEach(b => b.classList.toggle('active',b.dataset.view===currentView||(b.hasAttribute('data-more')&&['hours','report','settings'].includes(currentView))));
-  const quickAdd=$('#quickAddBtn');quickAdd.style.display=tabletOnly||['settings','students','classes'].includes(currentView)?'none':'';quickAdd.innerHTML=currentView==='classes'?'<span>＋</span>新增班级':'<span>＋</span>录入学生';quickAdd.onclick=currentView==='classes'?()=>openClassModal():()=>openStudentModal();
-  adminAccess.innerHTML=`<span>↩</span><b>${tabletOnly?'返回签到':'退出后台'}</b>`;bindReliableTap(adminAccess,exitAdmin);
-  const renderers={dashboard:renderDashboard,students:renderStudents,classes:renderClasses,checkin:renderCheckin,hours:renderHours,report:renderReport,settings:renderSettings};
-  mountPageContent(currentView,renderers[currentView]);
   bindViewEvents();
 }
 
@@ -840,75 +833,28 @@ function openWeeklyRateCalendar(){
 }
 
 function renderSettings(){
-  if(typeof canonicalModeActive==='function'&&canonicalModeActive())return `<div class="settings-grid"><section class="panel"><div class="panel-head"><div><h2>签到平板</h2><p>这里只维护设备和本机签到能力</p></div><span class="tag">服务器数据中心</span></div><div class="warning-box">学生、班级、课时、排课和报表请在教师网页端处理。本页不会修改或覆盖服务器业务数据。</div><div class="setting-row"><div><b>课堂名单</b><small>先上传本机待办，再从服务器核对最新课堂与余额版本</small></div><button type="button" class="primary-btn" data-tablet-refresh>刷新名单</button></div><div class="setting-row"><div><b>摄像头与签到窗口</b><small>${esc(cameraPositionSummary())}</small></div><button type="button" class="secondary-btn" id="configureCameraPosition">重新设置</button></div><div class="setting-row"><div><b>设备安全换绑</b><small>仅在管理员撤销旧令牌后使用；有未上传或待核对签到时暂停换绑</small></div><button type="button" class="secondary-btn" data-canonical-enrollment="reissue">安全换绑</button></div></section>${typeof deviceSyncSettingsMarkup==='function'?deviceSyncSettingsMarkup():''}</div>`;
-  return renderLocalSettings()+webMirrorSettingsMarkup()+wechatNoticeSettingsMarkup()+(typeof deviceSyncSettingsMarkup==='function'?deviceSyncSettingsMarkup():'');
-}
-function renderLocalSettings(){
-  return `<div class="settings-grid"><section class="panel"><div class="panel-head"><div><h2>基础与后台解锁</h2><p>设置会立即保存在本机</p></div></div><div class="setting-row"><div><b>机构名称</b><small>显示在签到页与应用左上角</small></div><input id="orgNameInput" value="${esc(state.settings.orgName)}"></div><div class="setting-row"><div><b>未排课班级默认每周应到次数</b><small>已排课班级按实际排课日计算；此项仅供未排课班级折算</small></div><input id="weeklyTargetInput" type="number" min="1" max="14" value="${esc(state.settings.weeklyTarget)}"></div><div class="setting-row"><div><b>后台解锁图案</b><small>九宫格图案，仅在本机验证；修改前需验证原图案</small></div><button type="button" class="secondary-btn" id="configurePattern">${state.settings.adminPattern?'修改解锁图案':'设置解锁图案'}</button></div><div class="setting-row"><div><b>保存设置</b><small>基础设置只保存在本机</small></div><button class="primary-btn" id="saveSettings">保存</button></div></section><section class="panel"><div class="panel-head"><div><h2>Excel 与本机数据</h2><p>批量管理学生并备份完整资料</p></div></div><div class="warning-box">Excel 适合查看、打印和批量录入；JSON 完整备份还包含人脸特征与全部本机记录，建议两种都定期保存。</div><div class="setting-row"><div><b>导出 Excel</b><small>学生、班级、签到和课时记录</small></div><button class="primary-btn" id="exportExcel">导出 .xlsx</button></div><div class="setting-row"><div><b>下载学生导入模板</b><small>先按模板填写，可减少导入错误</small></div><button class="secondary-btn" id="exportTemplate">下载模板</button></div><div class="setting-row"><div><b>批量导入学生</b><small>支持 .xlsx、.xls 和 .csv 文件</small></div><button class="secondary-btn" id="batchImport">选择文件</button></div><div class="setting-row"><div><b>完整 JSON 备份</b><small>包含人脸特征，可用于整机恢复</small></div><button class="secondary-btn" id="exportBackup">导出文本</button></div><div class="setting-row"><div><b>恢复 JSON 备份</b><small>从此前的完整备份恢复资料</small></div><button class="secondary-btn" id="importBackup">导入文本</button></div>${!state.students.length?`<div class="setting-row"><div><b>添加演示数据</b><small>体验签到、课时与周报</small></div><button class="secondary-btn" id="seedDemo">添加</button></div>`:''}<div class="setting-row"><div><b>清空本机数据</b><small>此操作无法撤销</small></div><button class="danger-btn" id="resetData">全部清空</button></div></section></div>`;
+  const active=typeof canonicalModeActive==='function'&&canonicalModeActive();
+  const refresh=active?'<div class="setting-row"><div><b>课堂名单</b><small>先上传本机待办，再核对最新课堂与余额</small></div><button type="button" class="primary-btn" data-tablet-refresh>刷新名单</button></div>':'';
+  return `<div class="settings-grid"><section class="panel"><div class="panel-head"><h2>签到平板</h2></div>
+    <p>学生、班级、课时、排课和报表请在网页端管理。</p>
+    ${refresh}
+    <div class="setting-row"><div><b>摄像头与签到窗口</b><small>${esc(cameraPositionSummary())}</small></div><button type="button" class="secondary-btn" id="configureCameraPosition">重新设置</button></div>
+    <div class="setting-row"><div><b>设备解锁图案</b></div><button type="button" class="secondary-btn" id="configurePattern">修改图案</button></div>
+    ${canonicalEnrollmentSettingsMarkup()}</section>${active?deviceSyncSettingsMarkup():''}</div>`;
 }
 
 function handleContentAction(event){
-  if(handleCourseGroupAction(event))return;if(handleStudentLeaveAction(event,$('#content')))return;const wechatButton=event.target.closest('[data-wechat-student]');
-  if(wechatButton&&$('#content').contains(wechatButton))return openWechatStudentSettings(Number(wechatButton.dataset.wechatStudent));
-  if(handleClassSpaceAction(event))return;
-  const root=$('#content'),target=event.target.closest('[data-list-prev],[data-list-next],[data-dashboard-stat],[data-hours-alert],[data-action],[data-add-class],[data-batch-promote],[data-class-promote],[data-class-edit],[data-class-extra-lessons],[data-class-delete],[data-class-absent],[data-class-students],[data-go],[data-edit],[data-hours],[data-hours-detail],[data-long-term],[data-delete],[data-undo],[data-check],[data-makeup-checkin],[data-report-student-detail],[data-report-lesson],[data-review-lesson],[data-student-class-filter]');
-  if(!target||!root.contains(target)||target.disabled)return;
-  const data=target.dataset;
-  if(data.listPrev!==undefined)return changeListPage(data.listPrev,-1);
-  if(data.listNext!==undefined)return changeListPage(data.listNext,1);
-  if(data.dashboardStat!==undefined)return openDashboardStatDetail(data.dashboardStat);
-  if(data.hoursAlert!==undefined)return openHoursAlertDetail(Number(data.hoursAlert));
-  if(data.action==='add-student')return openStudentModal();
-  if(data.addClass!==undefined)return openClassModal();
-  if(data.batchPromote!==undefined)return openClassPromotionModal();
-  if(data.classPromote!==undefined)return openClassPromotionModal(classById(data.classPromote));
-  if(data.classEdit!==undefined)return openClassModal(classById(data.classEdit));
-  if(data.classExtraLessons!==undefined)return openClassExtraLessons(classById(data.classExtraLessons));
-  if(data.classDelete!==undefined)return deleteClass(Number(data.classDelete));
-  if(data.classAbsent!==undefined)return openClassAbsentReminder(classById(data.classAbsent),localDate());
-  if(data.classStudents!==undefined){const course=classById(data.classStudents);if(!course)return;studentClassFilter=`class:${normalizedGroupLabel(course.name)}`;studentStatusFilter='all';studentSearchQuery='';listPages.students=1;return go('students')}
-  if(data.go!==undefined)return go(data.go);
-  if(data.edit!==undefined)return openStudentModal(studentById(data.edit));
-  if(data.hours!==undefined)return openHoursModal(studentById(data.hours));
-  if(data.hoursDetail!==undefined)return openHoursDetail(studentById(data.hoursDetail));
-  if(data.longTerm!==undefined)return toggleLongTermAbsent(Number(data.longTerm));
-  if(data.delete!==undefined)return deleteStudent(Number(data.delete));
-  if(data.undo!==undefined)return undoCheckin(Number(data.undo));
-  if(data.check!==undefined)return openCheckin(data.check);
-  if(data.makeupCheckin!==undefined)return openMakeupCheckin();
-  if(data.reportStudentDetail!==undefined)return openReportStudentDetail(data.reportStudentDetail);
-  if(data.reportLesson!==undefined)return openReportLessonDetail(data.reportLesson);
-  if(data.reviewLesson!==undefined)return openReportLessonReview(data.reviewLesson);
-  if(data.studentClassFilter!==undefined){
-    studentClassFilter=data.studentClassFilter;listPages.students=1;
-    if(studentClassFilter==='long-term')studentStatusFilter='long-term';else if(studentStatusFilter==='long-term')studentStatusFilter='all';
-    render();
-  }
+  if(isAdminAuthenticated)return;
+  const target=event.target.closest('[data-check],[data-go="settings"]');
+  if(!target||!$('#content').contains(target)||target.disabled)return;
+  if(target.dataset.go==='settings')return openAdminLogin();
+  openCheckin(target.dataset.check);
 }
 function bindViewEvents(){
-  bindClassSpaceViewEvents();bindCourseGroupView();
-  const content=$('#content');content.onclick=handleContentAction;
-  content.onkeydown=event=>{
-    if(event.key!=='Enter'&&event.key!==' ')return;
-    const row=event.target.closest('[data-hours-detail]');
-    if(row&&event.target===row){event.preventDefault();openHoursDetail(studentById(row.dataset.hoursDetail))}
-  };
-  if(currentView==='settings'&&isAdminAuthenticated&&!(typeof canonicalModeActive==='function'&&canonicalModeActive())){mountCampusCodeSetting();mountCameraPositionSetting();mountAutoBackupSetting();mountLocalDataRepairSetting()}
-  const search=$('#studentSearch');if(search){search.oninput=scheduleStudentSearch;search.oncompositionend=scheduleStudentSearch}
-  if($('#studentClassFilter'))$('#studentClassFilter').onchange=event=>{studentClassFilter=event.target.value;listPages.students=1;if(studentClassFilter==='long-term')studentStatusFilter='long-term';else if(studentStatusFilter==='long-term')studentStatusFilter='all';render()};
-  if($('#studentStatusFilter'))$('#studentStatusFilter').onchange=event=>{studentStatusFilter=event.target.value;listPages.students=1;if(studentStatusFilter==='long-term')studentClassFilter='long-term';else if(studentClassFilter==='long-term')studentClassFilter='all';render()};
-  mountWechatStudentButtons();
-  const actions={saveSettings,configurePattern:openPatternChange,configureCameraPosition:()=>openCameraPositionSetup(false),openWechatNotices,openWebMirror,...(typeof openDeviceSync==='function'?{openDeviceSync}:{}),exportExcel,exportTemplate:exportStudentTemplate,batchImport:openBatchImport,exportBackup:openExport,importBackup:openImport,seedDemo,resetData,openWeekCalendar:openWeeklyRateCalendar};
-  Object.keys(actions).forEach(id=>{const button=$('#'+id);if(button)button.onclick=actions[id]});
-  if($('#reportWeekSelect'))$('#reportWeekSelect').onchange=event=>{selectedReportWeekOffset=Number(event.target.value);render()};
-  if($('#reportScopeType'))$('#reportScopeType').onchange=event=>{selectedReportScopeType=event.target.value;selectedReportScopeValue=reportScopeOptions(selectedReportScopeType)[0]||'';render()};
-  if($('#reportScopeValue'))$('#reportScopeValue').onchange=event=>{selectedReportScopeValue=event.target.value;render()};
-  if($('#hoursClassFilter'))$('#hoursClassFilter').onchange=event=>{hoursClassFilter=event.target.value;listPages.hours=1;render()};
-  if($('#hoursSortOrder'))$('#hoursSortOrder').onchange=event=>{hoursSortOrder=event.target.value;listPages.hours=1;render()};
-}
-
-function mountAutoBackupSetting(){
-  const exportButton=$('#exportBackup');if(!exportButton||$('#createAutoBackup'))return;const info=nativeBackupInfo(),row=document.createElement('div');row.className='setting-row auto-backup-setting-row';row.innerHTML=`<div><b>每日自动完整备份</b><small id="autoBackupStatus">${info.timeLabel?`最近备份：${esc(info.timeLabel)} · ${esc(info.fileName||'')}`:'尚未生成自动备份'}</small></div><button type="button" class="primary-btn" id="createAutoBackup">立即备份</button>`;exportButton.closest('.setting-row').before(row);$('#createAutoBackup').onclick=()=>{const button=$('#createAutoBackup');button.disabled=true;button.textContent='正在备份';if(!createNativeBackup('手动备份',true)){button.disabled=false;button.textContent='立即备份';toast('当前设备无法创建自动备份，请使用完整 JSON 备份',true);return}setTimeout(()=>{button.disabled=false;button.textContent='立即备份'},1600)};
+  $('#content').onclick=handleContentAction;
+  if(!isAdminAuthenticated)return;
+  $('#configureCameraPosition').onclick=()=>openCameraPositionSetup(false);
+  $('#configurePattern').onclick=openPatternChange;
 }
 
 function mountCampusCodeSetting(){
@@ -972,20 +918,15 @@ function openCameraPositionSetup(required=!state.settings.cameraPositionConfigur
 }
 
 function go(view){
-  if(!Object.prototype.hasOwnProperty.call(views,view))return;
-  if(typeof canonicalModeActive==='function'&&canonicalModeActive()&&!['checkin','settings'].includes(view))return toast('学生、班级、课时和报表请在教师网页端处理',true);
-  if(!isAdminAuthenticated&&view!=='checkin')return openAdminLogin();
-  if(currentView===view&&mountedPageKey===pageCacheKey(view))return;
-  currentView=view;
-  // Navigation must finish in the input event, without waiting for a frame or timer.
-  render();window.scrollTo(0,0);
+  if(view==='settings'){if(!isAdminAuthenticated)openAdminLogin();return;}
+  if(view==='checkin'){if(isAdminAuthenticated)exitAdmin();return;}
+  toast('业务管理请在网页端处理',true);
 }
 function openAdminLogin(){
   openPatternEntry();
 }
 function adminCredentialsMatch(username,password){return !state.settings.adminPattern&&state.settings.adminAuthMode!=='pattern'&&String(username||'').trim()===String(state.settings.adminUser||'admin')&&String(password||'')===String(state.settings.adminPassword||'123456')}
-function exitAdmin(){invalidatePageCache();isAdminAuthenticated=false;currentView='checkin';closeModal();render();window.scrollTo({top:0});toast('已退出后台，返回学生签到')}
-function openMoreMenu(){openModal(`<div class="modal-head"><span>•••</span><div><h2>更多教务功能</h2><p>课时、报表与本机设置</p></div></div><div class="more-grid"><button data-more-view="hours"><span>${uiIcon('hours')}</span><b>课时管理</b><small>余额与变化记录</small></button><button data-more-view="report"><span>${uiIcon('report')}</span><b>每周报告</b><small>到课率与统计</small></button><button data-more-view="settings"><span>⚙</span><b>设置与数据</b><small>Excel、备份与机构设置</small></button></div>`);bindImmediateNavigation($('.more-grid'),'[data-more-view]',button=>{closeModal();go(button.dataset.moreView)})}
+function exitAdmin(){invalidatePageCache();isAdminAuthenticated=false;currentView='checkin';closeModal();render();window.scrollTo({top:0});toast('已返回学生签到')}
 function openModal(html){faceScanToken++;clearTimeout(checkinSuccessTimer);checkinSuccessTimer=null;document.body.classList.remove('face-dialog-open');if(activeStream){activeStream.getTracks().forEach(track=>track.stop());activeStream=null}const modal=$('#modal');clearFacePopupPosition();modal.className='modal';modal.innerHTML=`<button class="modal-close" aria-label="关闭">×</button>${html}`;$('#modalBackdrop').classList.remove('hidden');$('.modal-close').onclick=closeModal;$('#modalBackdrop').onclick=e=>{if(e.target.id==='modalBackdrop'){if(skipOpeningBackdropClick){skipOpeningBackdropClick=false;return}closeModal()}};}
 function closeModal(){ faceScanToken++;cameraSetupCallback=null;clearTimeout(checkinSuccessTimer);checkinSuccessTimer=null;document.body.classList.remove('face-dialog-open');clearFacePopupPosition();if(activeStream){activeStream.getTracks().forEach(t=>t.stop());activeStream=null} $('#modalBackdrop').classList.add('hidden'); }
 
@@ -996,7 +937,7 @@ function openClassAbsentReminder(course,date=localDate()){
   openModal(`<div class="modal-head"><span>🔔</span><div><h2>${esc(course.name)} · 未签到提醒</h2><p>${esc(dateLabel)} ${esc(classScheduleLabel(course))} · ${esc(course.teacher||'未安排老师')}</p></div></div><div class="reminder-class-summary"><div><span>上课教室</span><b>${esc(course.classroom||'暂未设置教室')}</b></div><div><span>正常在读</span><b>${activeMembers.length} 人</b></div><div><span>尚未签到</span><b class="${absent.length?'warn':'ok'}">${absent.length} 人</b></div></div>${absent.length?`<div class="reminder-absent-list">${absent.map(student=>`<article>${avatarMarkup(student)}<div><b>${esc(student.name)}</b><small>${esc(student.studentNo||'系统学号')} ${student.contact?`· ${esc(student.contact)}`:''}</small></div><em>未签到</em>${leaveActionMarkup(student,course.id,date)}</article>`).join('')}</div><p class="reminder-detail-note">已自动排除长期不来学生。学生完成签到后，再次打开此页面会显示最新名单。</p>`:empty('✓',leaveGroup.leaves.length?'本班暂无待签到学生':'本班学生均已签到','已请假与长期不来学生已排除催签到名单')}${leaveRecordsMarkup(course.id,date)}<div class="form-actions reminder-detail-actions"><button type="button" class="secondary-btn" id="closeReminderDetail">关闭</button><button type="button" class="primary-btn" id="goReminderCheckin">前往签到界面</button></div>`);
   $('#modal').classList.add('attendance-reminder-modal');bindStudentLeaveButtons($('#modal'));$('#closeReminderDetail').onclick=closeModal;$('#goReminderCheckin').onclick=()=>{closeModal();currentView='checkin';render();window.scrollTo({top:0,behavior:'smooth'})};
 }
-window.openAttendanceReminder=(classId,date)=>setTimeout(()=>openClassAbsentReminder(classById(classId),date||localDate()),180);
+window.openAttendanceReminder=()=>toast('到课提醒请在网页端查看');
 function toast(message,error=false){ const el=$('#toast');el.textContent=message;el.className=`toast${error?' error':''}`;clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.classList.add('hidden'),2600); }
 function openDangerConfirmation({icon='!',title,description,subject,subjectMeta='',impactTitle,impactText,confirmLabel='确认删除',verifyText='',onConfirm}){
   openModal(`<div class="modal-head"><span>${esc(icon)}</span><div><h2>${esc(title)}</h2><p>${esc(description)}</p></div></div><div class="danger-confirm-subject"><div><span>即将处理</span><b>${esc(subject)}</b><small>${esc(subjectMeta)}</small></div></div><div class="undo-confirm-impact"><span>${uiIcon('alert')}</span><div><b>${esc(impactTitle)}</b><small>${esc(impactText)}</small></div></div>${verifyText?`<label class="danger-confirm-verify"><span>为防止误操作，请输入“${esc(verifyText)}”</span><input id="dangerVerifyInput" autocomplete="off" placeholder="${esc(verifyText)}"></label>`:''}<div class="form-actions undo-confirm-actions"><button type="button" class="secondary-btn" id="cancelDangerAction">取消</button><button type="button" class="danger-btn" id="confirmDangerAction" ${verifyText?'disabled':''}>${esc(confirmLabel)}</button></div>`);
@@ -1248,8 +1189,8 @@ function undoAttendanceRecord(attendanceId){
 }
 function openCanonicalLessonChoices(student,method,successSuffix=''){
   const sync=state.managementSync,entry=Object.entries(sync.students).find(([,item])=>item.localId===student.id),remoteId=entry?.[0],binding=entry?.[1];
-  const lessons=binding?Object.entries(sync.lessons).filter(([id,l])=>l.date===localDate()&&l.classId===binding.classId&&l.studentIds?.includes(remoteId)&&l.state==='scheduled'&&sync.facts?.[id]?.[remoteId]?.status==='missing'):[];
-  openModal(`<div class="modal-head"><span>${uiIcon('classes')}</span><div><h2>选择本节课</h2><p>${esc(student.name)} 今天有多个课次，请核对实际到课安排</p></div></div><div class="simple-form">${lessons.map(([id,lesson])=>{const time=new Date((lesson.startsAt+28800)*1000).toISOString().slice(11,16),fact=sync.facts[id][remoteId];return `<button type="button" class="secondary-btn checkin-choice" data-canonical-lesson="${esc(id)}"><b>${esc(binding.className)} · ${time}</b><span>按本节课规则扣除 ${money(fact.chargeUnits/100)} 课时</span></button>`}).join('')}</div><div class="form-actions"><button type="button" class="secondary-btn" id="cancelCanonicalLesson">取消</button></div>`);
+  const lessons=binding?Object.entries(sync.lessons).filter(([id,l])=>l.date===localDate()&&(sync.protocol===2||l.classId===binding.classId)&&l.studentIds?.includes(remoteId)&&l.state==='scheduled'&&sync.facts?.[id]?.[remoteId]?.status==='missing'):[];
+  openModal(`<div class="modal-head"><span>${uiIcon('classes')}</span><div><h2>选择本节课</h2><p>${esc(student.name)} 今天有多个课次，请核对实际到课安排</p></div></div><div class="simple-form">${lessons.map(([id,lesson])=>{const time=new Date((lesson.startsAt+28800)*1000).toISOString().slice(11,16),fact=sync.facts[id][remoteId],course=classById(sync.classes?.[lesson.classId]?.localId);return `<button type="button" class="secondary-btn checkin-choice" data-canonical-lesson="${esc(id)}"><b>${esc(course?.name||binding.className)} · ${time}</b><span>按本节课规则扣除 ${money(fact.chargeUnits/100)} 课时</span></button>`}).join('')}</div><div class="form-actions"><button type="button" class="secondary-btn" id="cancelCanonicalLesson">取消</button></div>`);
   $('#cancelCanonicalLesson').onclick=closeModal;$$('[data-canonical-lesson]',$('#modal')).forEach(button=>button.onclick=()=>performCheckin(student,method,successSuffix,button.dataset.canonicalLesson));
 }
 function performCheckin(student,method,successSuffix='',lessonId=''){
@@ -1394,32 +1335,7 @@ function seedDemo(){
 }
 
 $('#todayLabel').textContent = new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
-function bindImmediateNavigation(nav=$('#navList'),selector='[data-view],[data-more],[data-dock-add]',activate=activateClassSpaceNavigation){
-  let lastTouchButton=null,lastTouchTime=-Infinity;
-  const buttonFor=event=>{const button=event.target.closest(selector);return button&&nav.contains(button)?button:null};
-  const press=event=>{
-    if(event.isPrimary===false||(event.pointerType&&event.pointerType!=='touch'&&event.pointerType!=='pen'))return;
-    if(event.touches&&event.touches.length!==1)return;
-    const button=buttonFor(event);if(!button)return;
-    // The fixed menu is not a scrolling surface. Respond on contact, not on release.
-    lastTouchButton=button;lastTouchTime=performance.now();
-    if(event.cancelable)event.preventDefault();
-    activate(button);
-    // A touch release must not activate anything newly exposed beneath this finger.
-    skipOpeningBackdropClick=true;
-  };
-  if(window.PointerEvent)nav.addEventListener('pointerdown',press,{passive:false});
-  else nav.addEventListener('touchstart',press,{passive:false});
-  nav.onclick=event=>{
-    const button=buttonFor(event);if(!button)return;
-    // Keep keyboard/mouse access, but don't repeat a touch action on its synthetic click.
-    if(event.detail!==0&&button===lastTouchButton&&performance.now()-lastTouchTime<1000){event.preventDefault();return}
-    activate(button);
-  };
-}
-bindImmediateNavigation();
 bindClassSpaceShell();
-$('#quickAddBtn').onclick=()=>openStudentModal();
 render();
 window.__futureSchoolAppStarted=true;
 setTimeout(()=>createNativeBackup('每日自动备份',false),1800);
