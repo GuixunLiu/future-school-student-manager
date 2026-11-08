@@ -8,7 +8,7 @@ function button(text,action,kind=''){const element=node('button',text,kind);elem
 function field(form,title,type='text'){const label=node('label',title),input=node('input');input.type=type;input.required=true;label.append(input);form.append(label);return input;}
 function notify(text){clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').style.display='block';noticeTimer=setTimeout(()=>$('notice').style.display='none',6000);}
 function showError(error){notify(error.message||'操作未完成，请刷新后核对');}
-async function api(path,body){const response=await fetch(path,{method:body===undefined?'GET':'POST',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});const data=await response.json();if(!response.ok){if(response.status===401&&token){token='';identity=null;login();}const error=Error(data.error?.message||'请求未完成');error.status=response.status;error.code=data.error?.code;throw error;}return data;}
+async function api(path,body,method){const response=await fetch(path,{method:method||(body===undefined?'GET':'POST'),headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});const data=await response.json();if(!response.ok){if(response.status===401&&token){token='';identity=null;login();}const error=Error(data.error?.message||'请求未完成');error.status=response.status;error.code=data.error?.code;throw error;}return data;}
 function login(){
  token='';identity=null;$('identity').replaceChildren();$('device-dialog').close();
  const panel=node('section',undefined,'panel login'),form=node('form');panel.append(node('h1','登录统一工作台'),node('p','教师进入本人课堂，管理员进入设备管理。登录状态只保留在当前页面，刷新后需要重新登录。'));
@@ -20,7 +20,7 @@ async function dashboard(){
  const [classData,deviceData]=await Promise.all([api('/v1/admin/classes'),api('/v1/admin/devices')]);classes=classData.items;
  $('identity').replaceChildren(node('span',identity.display_name),button('退出',logout,'secondary'));
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','平板设备管理'),node('p','为一台新平板选择可签到班级并生成一次性开通码。开通码 15 分钟内有效，只在生成时显示一次。'));
- const actions=node('div',undefined,'toolbar');actions.append(button('刷新',dashboard,'secondary'),button('全校周报',()=>adminWeeklyReport(),'secondary'),button('招新续费月报',()=>adminMonthlyReport(),'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'),button('开通新平板',openEnrollment));heading.append(copy,actions);const list=node('section',undefined,'device-list');
+ const actions=node('div',undefined,'toolbar');actions.append(button('刷新',dashboard,'secondary'),button('学生与班级',()=>adminDirectoryDashboard(),'secondary'),button('账号管理',()=>adminAccountDashboard(),'secondary'),button('课表管理',()=>adminScheduleDashboard(),'secondary'),button('人脸档案',()=>adminFaceDashboard(),'secondary'),button('全校周报',()=>adminWeeklyReport(),'secondary'),button('招新续费月报',()=>adminMonthlyReport(),'secondary'),button('招新登记',()=>adminEnrollmentDashboard(),'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'),button('开通新平板',openEnrollment));heading.append(copy,actions);const list=node('section',undefined,'device-list');
  if(!deviceData.items.length)list.append(node('div','尚未开通平板','empty'));
  for(const device of deviceData.items){const row=node('article',undefined,'item device-row'),title=node('div');title.append(node('h2',device.name),node('p','设备编号 '+device.id));
   const names=(device.class_ids||[]).map(id=>classes.find(item=>item.id===id)?.name||id),status=node('div',undefined,'device-status'),operations=node('div',undefined,'device-actions');
@@ -55,4 +55,5 @@ function showActivation(result){
 }
 async function logout(){try{await api('/v1/auth/logout',{});}finally{login();}}
 $('close-dialog').addEventListener('click',()=>$('device-dialog').close());
+$('device-dialog').addEventListener('close',()=>FaceEngine.stop());
 login();

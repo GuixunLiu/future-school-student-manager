@@ -29,6 +29,7 @@ captures/
 
 # Server development only; never commit credentials, virtualenvs or runtime data.
 **/.venv/
+**/.test-venv/
 **/__pycache__/
 *.pyc
 **/.env
@@ -51,4 +52,3 @@ server-roster-review-*.json.sha256
 *.private.json
 *.private.json.sha256
 **/outputs/
-

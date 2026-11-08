@@ -88,4 +88,3 @@ class ReportTests(unittest.TestCase):
         with self.store.transaction() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM web_makeup_requests WHERE status='pending'").fetchone()[0],3)
             self.assertEqual(db.execute('SELECT units FROM management_balances WHERE student_id=?',('student',)).fetchone()[0],1000)
-

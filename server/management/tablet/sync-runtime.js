@@ -8,6 +8,7 @@
   const receiver=typeof module!=='undefined'&&module.exports?require('./approval-receiver.js'):root.ManagementApprovalReceiver;
   const classTeachers=typeof module!=='undefined'&&module.exports?require('./class-teacher-receiver.js'):root.ManagementClassTeacherReceiver;
   const runtimeBootstrap=typeof module!=='undefined'&&module.exports?require('./runtime-bootstrap.js'):root.ManagementRuntimeBootstrap;
+  const faceProfiles=typeof module!=='undefined'&&module.exports?require('./face-profiles.js'):root.ManagementFaceProfiles;
   function create({store,profile,request,metadata=false,historical=false}){
     let busy=false;
     function identity(){
@@ -29,7 +30,12 @@
           const response=await send('bootstrap',{});
           if(!response?.ok){const paused=response?.status===409&&response?.data?.error?.code==='migration_in_progress';return{ok:false,phase:'bootstrap',code:paused?'migration_in_progress':'connection_failed',retry:true,...(paused?{paused:true}:{})};}
           const applied=runtimeBootstrap.apply(guarded,response.data,initial);
-          return{...applied,uploaded:uploaded.uploaded,...(applied.ok?{}:{phase:'bootstrap',retry:['local_changes','offline_queue'].includes(applied.code)})};
+          if(!applied.ok)return{...applied,uploaded:uploaded.uploaded,phase:'bootstrap',retry:['local_changes','offline_queue'].includes(applied.code)};
+          const faces=await send('faces',{});
+          if(faces?.status===404)return{...applied,uploaded:uploaded.uploaded,faceSync:'unavailable'};
+          if(!faces?.ok)return{ok:false,phase:'faces',code:faces?.data?.error?.code||'connection_failed',retry:true,uploaded:uploaded.uploaded};
+          const projected=faceProfiles.apply(guarded,faces.data,initial);
+          return{...applied,...projected,uploaded:uploaded.uploaded,...(projected.ok?{}:{phase:'faces',retry:['local_changes','face_mapping_changed'].includes(projected.code)})};
         }
         const deferredStudents=new Set(),deferredClasses=new Set();
         let conflictCode;

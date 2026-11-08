@@ -16,16 +16,18 @@ from .fresh_start import (FORMAT, MAX_UNITS, MIN_UNITS, POSTGRES_SCHEMA,
 
 ROW_COLUMNS = {
     "organizations": ("id", "slug", "created_at"),
-    "classes": ("id", "org_id", "name", "course_name", "created_at"),
-    "class_schedule_templates": ("org_id", "class_id", "weekday", "interval_weeks",
-        "anchor_date", "start_time", "end_time", "duration_minutes", "end_day_offset",
-        "effective_date", "teacher_label"),
-    "students": ("id", "org_id", "class_id", "name", "external_ref", "active"),
+    "courses": ("id", "org_id", "name", "content", "unit_price_cents", "active", "created_at"),
+    "classes": ("id", "org_id", "name", "course_id", "created_at"),
+    "students": ("id", "org_id", "name", "external_ref", "active"),
+    "student_class_enrollments": ("id", "org_id", "student_id", "class_id", "joined_at", "left_at", "created_at"),
     "opening_balances": ("org_id", "student_id", "units", "source", "review_ref"),
     "users": ("id", "org_id", "login", "display_name", "active", "created_at",
               "password_reset_required"),
     "roles": ("org_id", "user_id", "role"),
     "teacher_classes": ("org_id", "user_id", "class_id"),
+    "class_schedule_templates": ("id", "org_id", "class_id", "weekday", "interval_weeks",
+        "anchor_date", "start_time", "end_time", "duration_minutes", "end_day_offset",
+        "effective_date", "teacher_id"),
     "devices": ("id", "org_id", "name", "active", "created_at", "token_reissue_required"),
 }
 TOP_LEVEL = {"format", "source_sha256", *ROW_COLUMNS, "counts", "history_migrated",
@@ -62,12 +64,45 @@ def validate_bundle(bundle, raw):
                 raise FreshStartError("Row columns differ from the migration contract")
             if table != "organizations" and row.get("org_id") != org_id:
                 raise FreshStartError("Cross-organization rows are not supported")
-    students = {row["id"]: row for row in bundle["students"]}
+
+    def identities(table):
+        rows = bundle[table]
+        result = {row["id"]: row for row in rows}
+        if len(result) != len(rows):
+            raise FreshStartError("Duplicate identities in " + table)
+        return result
+
+    courses = identities("courses")
+    classes = identities("classes")
+    students = identities("students")
+    users = identities("users")
+    identities("student_class_enrollments")
+    identities("class_schedule_templates")
+    if len({row["name"] for row in courses.values()}) != len(courses):
+        raise FreshStartError("Course names must be unique")
+    for row in courses.values():
+        if (not isinstance(row["content"], str) or not row["content"].strip() or
+                type(row["unit_price_cents"]) is not int or row["unit_price_cents"] < 0):
+            raise FreshStartError("Course content and nonnegative price are required")
+    for row in classes.values():
+        if row["course_id"] not in courses:
+            raise FreshStartError("Every class must reference a course")
+    active_enrollments = set()
+    for row in bundle["student_class_enrollments"]:
+        if row["student_id"] not in students or row["class_id"] not in classes:
+            raise FreshStartError("Enrollment references an unknown student or class")
+        if any(type(row[key]) is not int or row[key] < 0 for key in ("joined_at", "created_at")):
+            raise FreshStartError("Enrollment timestamps must be nonnegative integers")
+        if row["left_at"] is not None and (type(row["left_at"]) is not int or row["left_at"] < row["joined_at"]):
+            raise FreshStartError("Enrollment exit time is invalid")
+        key = (row["student_id"], row["class_id"])
+        if row["left_at"] is None:
+            if key in active_enrollments:
+                raise FreshStartError("Duplicate active student-class enrollment")
+            active_enrollments.add(key)
     balances = bundle["opening_balances"]
-    if len(students) != len(bundle["students"]) or len(balances) != len(students):
-        raise FreshStartError("Student and opening-balance identities must be unique and complete")
-    if {row["student_id"] for row in balances} != set(students):
-        raise FreshStartError("Opening balances must exactly cover current students")
+    if len(balances) != len(students) or {row["student_id"] for row in balances} != set(students):
+        raise FreshStartError("Opening balances must uniquely and exactly cover current students")
     for row in balances:
         if type(row["units"]) is not int or not MIN_UNITS <= row["units"] <= MAX_UNITS:
             raise FreshStartError("Opening balance is outside the supported range")
@@ -79,10 +114,23 @@ def validate_bundle(bundle, raw):
                 raise FreshStartError("Manual opening balance needs a concise review reference")
         else:
             raise FreshStartError("Unknown opening-balance source")
-    for table in ("students", "users", "devices"):
+    for table in ("courses", "students", "users", "devices"):
         for row in bundle[table]:
             if type(row["active"]) is not bool:
                 raise FreshStartError("Active flags must be JSON booleans")
+    teachers = {row["user_id"] for row in bundle["roles"] if row["role"] == "teacher"}
+    if not teachers <= set(users):
+        raise FreshStartError("Teacher roles reference unknown users")
+    authorized = set()
+    for row in bundle["teacher_classes"]:
+        if row["user_id"] not in teachers or row["class_id"] not in classes:
+            raise FreshStartError("Teacher-class authorization is invalid")
+        authorized.add((row["user_id"], row["class_id"]))
+    for row in bundle["class_schedule_templates"]:
+        if row["class_id"] not in classes or (row["teacher_id"], row["class_id"]) not in authorized:
+            raise FreshStartError("Schedule teacher must be authorized for its class")
+        if not users.get(row["teacher_id"], {}).get("active"):
+            raise FreshStartError("Schedule teacher must be active")
     for row in bundle["users"]:
         if row["password_reset_required"] is not True:
             raise FreshStartError("Every imported account must require a password reset")

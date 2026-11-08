@@ -51,19 +51,26 @@ final class CanonicalSyncTransport {
     }
     private JSONObject profile()throws Exception{return profile(true);}
     private JSONObject profile(boolean requireEnabled)throws Exception{
+        return profile(requireEnabled,false);
+    }
+    private JSONObject profile(boolean requireEnabled,boolean allowExpired)throws Exception{
         if(requireEnabled&&(!prefs.getBoolean("enabled",false)||prefs.getBoolean("activation_pending",false)))throw new IOException("disabled");
         KeyStore keys=KeyStore.getInstance("AndroidKeyStore");keys.load(null);
         SecretKey key=(SecretKey)keys.getKey(AES,null);if(key==null)throw new IOException("unprovisioned");
         Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE,key,new GCMParameterSpec(128,Base64.decode(prefs.getString("iv",""),2)));
         JSONObject p=new JSONObject(new String(cipher.doFinal(Base64.decode(prefs.getString("secret",""),2)),StandardCharsets.UTF_8));
-        validate(p);return p;
+        validate(p,allowExpired);return p;
     }
     private void validate(JSONObject p)throws Exception{
+        validate(p,false);
+    }
+    private void validate(JSONObject p,boolean allowExpired)throws Exception{
         fields(p,"e t d p o g id b n x");
         if(!pin.matches("[a-f0-9]{64}")||!pin.equals(p.getString("p"))||!p.getString("t").matches("wxd_[A-Za-z0-9_-]{43}"))throw new IOException("profile");
         for(String k:new String[]{"o","d","g","id"})if(!p.getString(k).matches("[a-f0-9]{32}"))throw new IOException("profile");
-        if(!p.getString("b").matches("[a-f0-9]{64}")||!p.getString("n").matches("[a-f0-9]{32}")||p.getLong("x")<=System.currentTimeMillis()/1000)throw new IOException("baseline or expiry");
+        long expiresAt=p.getLong("x");
+        if(!p.getString("b").matches("[a-f0-9]{64}")||!p.getString("n").matches("[a-f0-9]{32}")||expiresAt<=0||(!allowExpired&&expiresAt<=System.currentTimeMillis()/1000))throw new IOException("baseline or expiry");
         String endpoint=p.getString("e");
         if(!endpoint.equals("https://47.97.226.219:18083")&&!(BuildConfig.DEBUG&&endpoint.matches("https://127\\.0\\.0\\.1:[0-9]{4,5}")))throw new IOException("endpoint");
     }
@@ -71,7 +78,10 @@ final class CanonicalSyncTransport {
         if(prefs.getBoolean("activation_pending",false))try{JSONObject p=profile(false);return new JSONObject().put("configured",false).put("staged",true).put("activationPending",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d")).put("generation",p.getString("g")).put("profileId",p.getString("id")).put("baselineSha256",p.getString("b")).toString();}catch(Exception ignored){}
         if(!prefs.getBoolean("enabled",false)&&prefs.getBoolean("staged",false))try{JSONObject p=profile(false);return new JSONObject().put("configured",false).put("staged",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d")).put("generation",p.getString("g")).put("profileId",p.getString("id")).put("baselineSha256",p.getString("b")).toString();}catch(Exception ignored){}
         try{JSONObject p=profile();return new JSONObject().put("configured",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d"))
-            .put("generation",p.getString("g")).put("profileId",p.getString("id")).toString();}catch(Exception e){return "{\"configured\":false}";}
+            .put("generation",p.getString("g")).put("profileId",p.getString("id")).toString();}catch(Exception e){
+            try{JSONObject p=profile(true,true);return new JSONObject().put("configured",false).put("rebindAvailable",true)
+                .put("orgId",p.getString("o")).put("deviceId",p.getString("d")).toString();}catch(Exception invalid){return "{\"configured\":false}";}
+        }
     }
     private KeyStore keys()throws Exception{KeyStore k=KeyStore.getInstance("AndroidKeyStore");k.load(null);return k;}
     private PrivateKey rsa()throws Exception{
@@ -227,8 +237,12 @@ final class CanonicalSyncTransport {
             .setPositiveButton("安全开通",(dialog,which)->activateRuntimeNow(input.getText().toString().trim(),baseline)).show());
     }
     private JSONObject runtimeProfile(String code,String baseline)throws Exception{
+        return runtimeProfile(code,baseline,null);
+    }
+    private JSONObject runtimeProfile(String code,String baseline,JSONObject previous)throws Exception{
         if(code==null||!code.matches("wxa_[A-Za-z0-9_-]{43}")||baseline==null||!baseline.matches("[a-f0-9]{64}"))throw new IOException("activation input");
         JSONObject body=new JSONObject().put("activation_code",code);
+        if(previous!=null)body.put("expected_org_id",previous.getString("o")).put("expected_device_id",previous.getString("d"));
         JSONObject response=http("https://47.97.226.219:18083",null,"/v1/tablet/activate",body.toString().getBytes(StandardCharsets.UTF_8),16384);
         if(!response.getBoolean("ok"))throw new IOException("activation");JSONObject data=response.getJSONObject("data");
         if(data.getInt("protocol")!=2)throw new IOException("activation protocol");
@@ -258,19 +272,24 @@ final class CanonicalSyncTransport {
         }catch(Exception e){reply("runtime-activation",result(false,0,null));}finally{busy.set(false);}});
     }
     void reissueRuntime(){
-        if(closed||!prefs.getBoolean("enabled",false)||prefs.getBoolean("activation_pending",false))return;
-        try{profile();}catch(Exception e){return;}
+        try{if(closed)throw new IOException("closed");profile(true,true);}catch(Exception e){reply("runtime-reissue",result(false,409,null));return;}
         android.widget.EditText input=new android.widget.EditText(activity);input.setHint("wxa_ 开头的新开通码");input.setSingleLine(true);
         activity.runOnUiThread(()->new AlertDialog.Builder(activity).setTitle("安全换绑这台签到平板")
             .setMessage("旧设备令牌已由管理员撤销。请输入同一设备的新开通码；换绑期间暂停签到，本机历史和未上传记录不会删除。")
-            .setView(input).setNegativeButton("取消",null)
+            .setView(input).setNegativeButton("取消",(dialog,which)->cancelRuntimeReissue())
+            .setOnCancelListener(dialog->cancelRuntimeReissue())
             .setPositiveButton("安全换绑",(dialog,which)->reissueRuntimeNow(input.getText().toString().trim())).show());
+    }
+    private void cancelRuntimeReissue(){
+        JSONObject data=new JSONObject();
+        try{data.put("cancelled",true);}catch(Exception ignored){}
+        reply("runtime-reissue",result(false,0,data));
     }
     synchronized void reissueRuntimeNow(String code){
         if(closed||!prefs.getBoolean("enabled",false)||prefs.getBoolean("activation_pending",false)){reply("runtime-reissue",result(false,409,null));return;}
         if(!busy.compareAndSet(false,true)){reply("runtime-reissue",result(false,429,null));return;}
         worker.execute(()->{try{
-            JSONObject previous=profile(),p=runtimeProfile(code,previous.getString("b"));
+            JSONObject previous=profile(true,true),p=runtimeProfile(code,previous.getString("b"),previous);
             if(!p.getString("o").equals(previous.getString("o"))||!p.getString("d").equals(previous.getString("d"))||p.getString("g").equals(previous.getString("g")))throw new IOException("reissue identity");
             saveRuntimeProfile(p);reply("runtime-reissue",result(true,200,runtimeReceipt(p,true)));
         }catch(Exception e){reply("runtime-reissue",result(false,0,null));}finally{busy.set(false);}});
@@ -281,15 +300,18 @@ final class CanonicalSyncTransport {
         worker.execute(()->{
             try{
                 JSONObject p=profile();if(!p.getString("id").equals(profileId))throw new IOException("profile changed");
-                JSONObject body=new JSONObject(text);boolean bootstrap=kind.equals("bootstrap");
-                if(!bootstrap&&!body.getString("generation").equals(p.getString("g")))throw new IOException("generation");
+                JSONObject body=new JSONObject(text);boolean bootstrap=kind.equals("bootstrap"),faces=kind.equals("faces");
+                boolean protocol2=bootstrap||faces||kind.equals("resolve")||(kind.equals("checkin")&&!body.has("generation"));
+                if(!protocol2&&!body.getString("generation").equals(p.getString("g")))throw new IOException("generation");
                 String route;
                 switch(kind){
                     case "bootstrap":route="/v1/tablet/bootstrap";if(body.length()!=0)throw new IOException("fields");break;
+                    case "faces":route="/v1/tablet/face-profiles";if(body.length()!=0)throw new IOException("fields");break;
                     case "checkin":
                         if(body.has("generation")){route="/v1/management/device/checkin";fields(body,"generation event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units remaining_units occurred_at");}
                         else{route="/v1/tablet/checkins";fields(body,"event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units occurred_at");}
                         break;
+                    case "resolve":route="/v1/tablet/checkins/resolve";fields(body,"event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units occurred_at");break;
                     case "next":route="/v1/management/device/next?generation="+URLEncoder.encode(p.getString("g"),"UTF-8")+deferredQuery(body);break;
                     case "class-ready":route="/v1/management/device/class-ready";fields(body,"generation");break;
                     case "history-ready":route="/v1/management/device/history-ready";fields(body,"generation");break;
@@ -299,8 +321,8 @@ final class CanonicalSyncTransport {
                         fields(body,body.optString("status").equals("applied")?"generation event_id receipt_token sha256 status attendance_revision balance_revision balance_units":"generation event_id receipt_token sha256 status conflict_code");break;
                     default:throw new IOException("route");
                 }
-                boolean download=kind.equals("next")||kind.equals("class-next")||bootstrap;
-                JSONObject response=http(p,route,download?null:text.getBytes(StandardCharsets.UTF_8),bootstrap?2*1024*1024:65536);
+                boolean download=kind.equals("next")||kind.equals("class-next")||bootstrap||faces;
+                JSONObject response=http(p,route,download?null:text.getBytes(StandardCharsets.UTF_8),faces?16*1024*1024:bootstrap?2*1024*1024:65536);
                 if(!profile().getString("id").equals(profileId))throw new IOException("profile changed");
                 reply(id,response);
             }catch(Exception e){reply(id,result(false,0,null));}

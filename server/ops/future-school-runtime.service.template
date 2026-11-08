@@ -1,0 +1,44 @@
+# Candidate systemd unit; render with ops/render-runtime-service.py.
+# This file intentionally contains no host-specific path, password, token or key.
+[Unit]
+Description=Future School unified runtime (loopback candidate)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+DynamicUser=true
+WorkingDirectory=@RUNTIME_ROOT@
+EnvironmentFile=@ENVIRONMENT_FILE@
+ExecStart=@PYTHON@ -m uvicorn management.runtime_main:app --host 127.0.0.1 --port @PORT@ --workers 1 --no-proxy-headers --no-server-header --no-access-log --no-use-colors --ws none --limit-concurrency 32 --timeout-keep-alive 5 --timeout-graceful-shutdown 10
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=64
+LimitNOFILE=1024
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=future-school-runtime
+
+[Install]
+WantedBy=multi-user.target

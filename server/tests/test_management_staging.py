@@ -112,4 +112,3 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(before['management_legacy_rows'],self.snapshot()['management_legacy_rows'])
         # Restarting the real API with a sealed admission preserves later business.
         self.assertIsNotNone(create_app(self.store.path,lambda:self.now,allow_test_client=True))
-

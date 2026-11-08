@@ -30,6 +30,14 @@ CREATE TABLE auth_sessions (
     FOREIGN KEY(org_id, user_id) REFERENCES users(org_id, id),
     CHECK(expires_at > created_at)
 );
+CREATE TABLE user_versions (
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 0),
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY(org_id, user_id),
+    FOREIGN KEY(org_id, user_id) REFERENCES users(org_id, id)
+);
 CREATE TABLE runtime_login_limits (
     bucket TEXT PRIMARY KEY,
     failures INTEGER NOT NULL CHECK(failures >= 0),
@@ -74,15 +82,35 @@ CREATE TABLE lessons (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     class_id TEXT NOT NULL,
+    schedule_id TEXT,
     starts_at BIGINT NOT NULL,
     ends_at BIGINT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('scheduled','cancelled')),
     created_at BIGINT NOT NULL,
     UNIQUE(org_id, id),
     UNIQUE(org_id, class_id, id),
-    UNIQUE(org_id, class_id, starts_at),
     FOREIGN KEY(org_id, class_id) REFERENCES classes(org_id, id),
+    FOREIGN KEY(org_id, schedule_id) REFERENCES class_schedule_templates(org_id, id),
     CHECK(ends_at > starts_at)
+);
+CREATE UNIQUE INDEX lessons_scheduled_class_time
+    ON lessons(org_id, class_id, starts_at) WHERE state='scheduled';
+CREATE TABLE lesson_versions (
+    org_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 0),
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY(org_id, lesson_id),
+    FOREIGN KEY(org_id, lesson_id) REFERENCES lessons(org_id, id)
+);
+CREATE TABLE lesson_charge_rules (
+    org_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    charge_units INTEGER NOT NULL CHECK(charge_units > 0),
+    revision INTEGER NOT NULL CHECK(revision >= 1),
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY(org_id, lesson_id),
+    FOREIGN KEY(org_id, lesson_id) REFERENCES lessons(org_id, id)
 );
 CREATE TABLE lesson_teachers (
     org_id TEXT NOT NULL,
@@ -93,8 +121,22 @@ CREATE TABLE lesson_teachers (
     FOREIGN KEY(org_id, lesson_id) REFERENCES lessons(org_id, id),
     FOREIGN KEY(org_id, user_id) REFERENCES users(org_id, id)
 );
-ALTER TABLE students
-    ADD CONSTRAINT students_org_class_id_key UNIQUE(org_id, class_id, id);
+CREATE TABLE class_versions (
+    org_id TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 0),
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY(org_id, class_id),
+    FOREIGN KEY(org_id, class_id) REFERENCES classes(org_id, id)
+);
+CREATE TABLE student_versions (
+    org_id TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 0),
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY(org_id, student_id),
+    FOREIGN KEY(org_id, student_id) REFERENCES students(org_id, id)
+);
 CREATE TABLE lesson_students (
     org_id TEXT NOT NULL,
     class_id TEXT NOT NULL,
@@ -105,7 +147,7 @@ CREATE TABLE lesson_students (
     PRIMARY KEY(org_id, lesson_id, student_id),
     UNIQUE(org_id, lesson_id, student_id),
     FOREIGN KEY(org_id, class_id, lesson_id) REFERENCES lessons(org_id, class_id, id),
-    FOREIGN KEY(org_id, class_id, student_id) REFERENCES students(org_id, class_id, id)
+    FOREIGN KEY(org_id, student_id) REFERENCES students(org_id, id)
 );
 CREATE TABLE attendance_records (
     org_id TEXT NOT NULL,
@@ -178,14 +220,18 @@ CREATE TABLE enrollment_records (
     created_at BIGINT NOT NULL,
     UNIQUE(org_id, student_id),
     UNIQUE(org_id, source_ref),
-    FOREIGN KEY(org_id, class_id, student_id) REFERENCES students(org_id, class_id, id),
+    FOREIGN KEY(org_id, student_id) REFERENCES students(org_id, id),
+    FOREIGN KEY(org_id, class_id) REFERENCES classes(org_id, id),
     FOREIGN KEY(org_id, actor_id) REFERENCES users(org_id, id)
 );
 CREATE TABLE renewal_records (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     student_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
     units_added INTEGER NOT NULL CHECK(units_added > 0),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents >= 0),
+    unit_price_cents INTEGER NOT NULL CHECK(unit_price_cents >= 0),
     occurred_at BIGINT NOT NULL,
     source_ref TEXT NOT NULL,
     actor_id TEXT NOT NULL,
@@ -193,6 +239,7 @@ CREATE TABLE renewal_records (
     created_at BIGINT NOT NULL,
     UNIQUE(org_id, source_ref),
     FOREIGN KEY(org_id, student_id) REFERENCES students(org_id, id),
+    FOREIGN KEY(org_id, course_id) REFERENCES courses(org_id, id),
     FOREIGN KEY(org_id, actor_id) REFERENCES users(org_id, id)
 );
 CREATE TABLE face_profiles (
@@ -207,6 +254,8 @@ CREATE TABLE face_profiles (
     retired_at BIGINT,
     FOREIGN KEY(org_id, student_id) REFERENCES students(org_id, id)
 );
+CREATE UNIQUE INDEX face_profiles_active_student
+    ON face_profiles(org_id, student_id) WHERE active;
 CREATE TABLE wechat_identities (
     org_id TEXT NOT NULL,
     openid TEXT NOT NULL,
@@ -306,7 +355,7 @@ BEGIN
 END;
 $$;
 INSERT INTO schema_migrations VALUES(
-    'fresh-start-runtime-v1', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
+    'fresh-start-runtime-v2', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT
 );
 """.strip() + "\n"
 

@@ -127,13 +127,13 @@ function deviceSyncSettingsMarkup(){
   if(sync?.enabled===true&&sync.mode==='server_authoritative'){
     const conflicts=Array.isArray(sync.queue)?sync.queue.filter(e=>e.status==='blocked'):[];
     const details=conflicts.length?`<details class="settings-card"><summary>查看待核对签到（${conflicts.length} 条）</summary>
-      <p>请对照网页上的同一课次及课时流水核对，原签到仍保存在平板。</p>
+      <p>请对照网页上的同一课次及课时流水核对，原签到仍保存在平板。网页完成补签或请假后，再获取处理回执并归档；未处理时不会清除冲突。</p>
       <ul>${conflicts.slice(0,50).map(e=>{
         const student=sync.students?.[e.payload?.student_id],lesson=sync.lessons?.[e.payload?.lesson_id];
-        const reasons={attendance_changed:'网页考勤已变化',balance_changed:'网页课时已变化',checkin_scope:'班级或学生授权已变化',
-          lesson_day:'日期和课次不符',idempotency_conflict:'签到编号冲突'};
+        const reasons={attendance_changed:'网页考勤已变化',attendance_conflict:'网页考勤已变化',balance_changed:'网页课时或扣课规则已变化',checkin_scope:'班级或学生授权已变化',
+          lesson_day:'日期和课次不符',lesson_unavailable:'课次已取消',device_clock:'平板时间需核对',idempotency_conflict:'签到编号冲突'};
         return `<li>${esc(student?.name||'待确认学生')} · ${esc(lesson?.date||'待确认日期')} · ${esc(reasons[e.error]||'连接或授权待核对')}
-          <button type="button" class="secondary-btn" data-retry-canonical-checkin="${esc(e.eventRef)}">重新核对上传</button></li>`;
+          <button type="button" class="secondary-btn" data-retry-canonical-checkin="${esc(e.eventRef)}">按原记录重试</button> <button type="button" class="secondary-btn" data-resolve-canonical-checkin="${esc(e.eventRef)}">网页已处理，核对并归档</button></li>`;
       }).join('')}</ul>${conflicts.length>50?'<p>此处显示前 50 条。</p>':''}</details>`:'';
     return `<section class="panel"><div class="panel-head"><div><h2>网页与平板同步</h2><p>学生、班级和课时由网页管理，平板负责签到</p></div></div><div class="setting-row"><div><b id="canonicalSyncStatus">${esc(deviceSyncSummary())}</b><small>签到先保存在平板，联网后核对上传；网页审批和任课变更保存到平板后生效。</small></div></div>${details}</section>`;
   }

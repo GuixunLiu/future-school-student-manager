@@ -2,17 +2,25 @@
 let adminWeek='';
 function shiftWeek(week,days){const value=new Date(week+'T00:00:00Z');value.setUTCDate(value.getUTCDate()+days);return value.toISOString().slice(0,10);}
 function adminIdentity(){$('identity').replaceChildren(node('span',identity.display_name+' · 管理员'),button('退出',logout,'secondary'));}
-async function adminWeeklyReport(week=adminWeek||mondayFor(chinaToday())){
- const data=await api('/v1/admin/reports/weekly?week_start='+encodeURIComponent(week));adminWeek=data.week_start;adminIdentity();const overall=data.overall;
- const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','全校周报'),node('p',data.week_start+' 至 '+data.week_end+' · 实到 ÷ 应到（含请假），按人次加权。'));
- const actions=node('div',undefined,'toolbar');actions.append(button('返回设备管理',dashboard,'secondary'),button('刷新',()=>adminWeeklyReport(adminWeek),'secondary'));heading.append(copy,actions);
+async function adminWeeklyReport(week=adminWeek||mondayFor(chinaToday()),runId=null){
+ const selectedWeek=mondayFor(week),detail=runId?await api('/v1/admin/report-runs/'+encodeURIComponent(runId)):null;
+ const data=runId?detail.payload:await api('/v1/admin/reports/weekly?week_start='+encodeURIComponent(selectedWeek));
+ const history=await api('/v1/admin/report-runs?kind=weekly&period_start='+encodeURIComponent(selectedWeek));
+ const selected=detail?.run||null;adminWeek=selected?.period_start||data?.week_start||selectedWeek;adminIdentity();
+ const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','全校周报'+(selected?' · 版本 '+selected.version:'')),node('p',(data?data.week_start+' 至 '+data.week_end:adminWeek+' 所在周')+' · 实到 ÷ 应到（含请假），按人次加权。'));
+ const actions=node('div',undefined,'toolbar');actions.append(button('返回设备管理',dashboard,'secondary'),button('刷新',()=>adminWeeklyReport(adminWeek,selected?.id||null),'secondary'));heading.append(copy,actions);
  const filter=node('section',undefined,'panel teacher-filter'),form=node('form',undefined,'classroom-date'),label=node('label','查看所在周'),date=node('input');date.type='date';date.required=true;date.value=adminWeek;date.setAttribute('aria-label','查看所在周');label.append(date);const submit=node('button','查看周报');submit.type='submit';form.append(label,submit);
- const navigation=node('nav',undefined,'weekly-navigation');navigation.setAttribute('aria-label','周次切换');const previous=button('上一周',()=>adminWeeklyReport(shiftWeek(adminWeek,-7)),'secondary'),current=button('回到本周',()=>adminWeeklyReport(mondayFor(chinaToday())),'secondary'),next=button('下一周',()=>adminWeeklyReport(shiftWeek(adminWeek,7)),'secondary');previous.dataset.action='previous-week';current.dataset.action='current-week';next.dataset.action='next-week';navigation.append(previous,current,next);filter.append(form,navigation,node('p','选择任意日期查询它所在的周一至周日；历史周按当前账本实时统计。','weekly-note'));
+ const navigation=node('nav',undefined,'weekly-navigation');navigation.setAttribute('aria-label','周次切换');const previous=button('上一周',()=>adminWeeklyReport(shiftWeek(adminWeek,-7)),'secondary'),current=button('回到本周',()=>adminWeeklyReport(mondayFor(chinaToday())),'secondary'),next=button('下一周',()=>adminWeeklyReport(shiftWeek(adminWeek,7)),'secondary');previous.dataset.action='previous-week';current.dataset.action='current-week';next.dataset.action='next-week';navigation.append(previous,current,next);filter.append(form,navigation,node('p','选择任意日期查询它所在的周一至周日；实时统计随当前账本更新，历史快照保持生成时的结果。','weekly-note'));
  form.addEventListener('submit',async event=>{event.preventDefault();submit.disabled=true;try{await adminWeeklyReport(mondayFor(date.value));}catch(error){showError(error);}finally{submit.disabled=false;}});
+ const versions=reportHistoryPanel('weekly',adminWeek,history.items,selected?.id||null,id=>adminWeeklyReport(adminWeek,id));
+ if(selected&&!data){const failed=node('section',undefined,'panel report-failed');failed.append(node('h2','版本 '+selected.version+' 生成失败'),node('p','此版本没有可展示的报表内容。请在上方历史快照中重试，系统会生成一个新版本。','error'));$('main').replaceChildren(heading,filter,versions,failed);return;}
+ const overall=data.overall;
  const summary=node('section',undefined,'panel weekly-summary'),rate=node('div',undefined,'weekly-rate');rate.append(node('span','全校到课率'),node('strong',percent(overall.rate_percent)),node('p','实到 '+overall.arrived_count+' / 应到 '+overall.expected_count+' 人次'));summary.append(rate,countCards({expected:overall.expected_count,arrived:overall.arrived_count,leave:overall.leave_count,missing:overall.missing_count}));
- const note=node('p','仅统计已结束且未取消的课堂；未结束课次 '+overall.pending_lessons+' 节，不计入分母。没有应到人次时，到课率显示“—”。','weekly-note');
+ const source=selected?'历史快照 · 版本 '+selected.version+' · 生成于 '+reportTime(selected.created_at)+'，此后业务变化不会改写此页。':'当前实时统计 · 查询于 '+reportTime(data.generated_at)+'。';
+ const periodNote=data.final_period?'本周期已结束。':'本周期尚未结束，这是进行中的数据，不是最终报表。';
+ const note=node('p',source+periodNote+' 仅统计已结束且未取消的课堂；未结束课次 '+overall.pending_lessons+' 节，不计入分母。没有应到人次时，到课率显示“—”。','weekly-note');
  const panel=node('section',undefined,'panel attendance-panel weekly-table'),scroll=node('div',undefined,'table-scroll'),table=node('table');table.setAttribute('aria-label','全校各班到课率');const head=node('thead'),headRow=node('tr');for(const title of ['班级','应到人次','实到人次','请假人次','未签到人次','课次','到课率'])headRow.append(node('th',title));head.append(headRow);const body=node('tbody');
  if(!data.classes.length){const row=node('tr'),cell=node('td','本周没有课堂记录');cell.colSpan=7;cell.className='empty';row.append(cell);body.append(row);}
  for(const item of data.classes){const row=node('tr'),name=node('td',undefined,'weekly-class');name.append(node('strong',item.class_name),node('small',item.course_name||'未设置课程名称'));const lessons=node('td');lessons.append(node('span','已结束 '+item.completed_lessons+' 节'),node('small','未结束 '+item.pending_lessons+' 节','revision'));const rateCell=node('td',percent(item.rate_percent),'weekly-rate-value');for(const [index,value] of [name,item.expected_count,item.arrived_count,item.leave_count,item.missing_count,lessons,rateCell].entries()){const cell=index===0||index===5||index===6?value:node('td',String(value));if(index>0)cell.dataset.label=['','应到人次','实到人次','请假人次','未签到人次','课次','到课率'][index];row.append(cell);}body.append(row);}
- table.append(head,body);scroll.append(table);panel.append(scroll);$('main').replaceChildren(heading,filter,summary,note,panel);
+ table.append(head,body);scroll.append(table);panel.append(scroll);$('main').replaceChildren(heading,filter,versions,summary,note,panel);
 }

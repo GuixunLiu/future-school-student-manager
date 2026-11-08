@@ -16,17 +16,17 @@
   function nextEntry(queue){
     const blockedStudents=new Set();
     for(const entry of queue){
-      if(entry.status==='accepted')continue;
+      if(entry.status==='accepted'||entry.status==='resolved')continue;
       if(isConflict(entry)){blockedStudents.add(entry.payload.student_id);continue;}
       if(!blockedStudents.has(entry.payload.student_id))return entry;
     }
     return null;
   }
   function compact(queue){
-    let remove=queue.filter(e=>e.status==='accepted').length-receiptHistory;
+    let remove=queue.filter(e=>e.status==='accepted'||e.status==='resolved').length-receiptHistory;
     if(remove<=0)return queue;
     return queue.filter(entry=>{
-      if(entry.status!=='accepted'||remove===0)return true;
+      if(!['accepted','resolved'].includes(entry.status)||remove===0)return true;
       remove--;
       return false;
     });
@@ -58,21 +58,24 @@
       const binding=sync.students[studentId],lesson=sync.lessons[lessonId],fact=sync.facts[lessonId][studentId];
       if(!Array.isArray(state.students)||!Array.isArray(state.classes)||!Array.isArray(state.attendance)||!Array.isArray(state.transactions)||!Array.isArray(state.settings?.studentLeaves))fail('invalid_state');
       if(state.attendance.some(a=>a.deviceEventRef===eventRef)||state.transactions.some(t=>t.deviceEventRef===eventRef))fail('idempotency_conflict');
-      const students=state.students.filter(s=>s.id===binding.localId),classes=state.classes.filter(c=>c.id===binding.localClassId);
+      const students=state.students.filter(s=>s.id===binding.localId),classes=state.classes.filter(c=>c.id===(sync.protocol===2&&sync.classes?sync.classes[lesson.classId]?.localId:binding.localClassId));
       if(students.length!==1||classes.length!==1)fail('mapping_changed');
       const student=students[0],course=classes[0];
-      if(student.studentNo!==binding.studentNo||student.name!==binding.name||student.className!==binding.className||course.name!==binding.className||course.teacher!==binding.teacher||student.longTermAbsent===true||student.status==='archived'||lesson.classId!==binding.classId||!lesson.studentIds?.includes(studentId)||(sync.protocol===2&&lesson.state!=='scheduled'))fail('mapping_changed');
+      if(student.studentNo!==binding.studentNo||student.name!==binding.name||(sync.protocol===1&&(student.className!==binding.className||course.name!==binding.className||course.teacher!==binding.teacher))||student.longTermAbsent===true||student.status==='archived'||((sync.protocol===1||!sync.classes)&&lesson.classId!==binding.classId)||!lesson.studentIds?.includes(studentId)||(sync.protocol===2&&lesson.state!=='scheduled'))fail('mapping_changed');
       if(!integer(lesson.startsAt)||lesson.date!==day(lesson.startsAt)||day(occurredAt)!==lesson.date)fail('lesson_day');
       if(fact.expected!==true||fact.status!=='missing'||!integer(fact.revision)||!integer(fact.revision+1)||fact.revision<0||!integer(fact.chargeUnits)||fact.chargeUnits<=0)fail('attendance_changed');
       if(!integer(binding.balanceRevision)||!integer(binding.balanceRevision+1)||binding.balanceRevision<0||!integer(binding.balanceUnits)||units(student.hours)!==binding.balanceUnits)fail('balance_changed');
-      if(state.attendance.some(a=>a.studentId===student.id&&a.date===lesson.date)||state.settings.studentLeaves.some(l=>l.studentId===student.id&&l.date===lesson.date&&l.status==='approved'))fail('attendance_changed');
+      // Server attendance is lesson-scoped. Two different lessons on one day are valid;
+      // old queue entries remain recognizable through their stable device event ref.
+      const sameLesson=state.attendance.some(a=>a.studentId===student.id&&(a.deviceLessonId===lessonId||sync.queue.some(e=>e.eventRef===a.deviceEventRef&&e.payload?.lesson_id===lessonId)));
+      if(sameLesson||state.settings.studentLeaves.some(l=>l.studentId===student.id&&l.date===lesson.date&&l.status==='approved'))fail('attendance_changed');
       const payload={student_id:studentId,lesson_id:lessonId,attendance_revision:fact.revision,balance_revision:binding.balanceRevision,
         previous_balance_units:binding.balanceUnits,consumed_units:fact.chargeUnits,remaining_units:binding.balanceUnits-fact.chargeUnits,occurred_at:occurredAt};
       if(!integer(payload.remaining_units))fail('balance_changed');
       let last=0;for(const rows of [state.students,state.classes,state.attendance,state.transactions,state.settings.studentLeaves])for(const row of rows){if(!integer(row.id)||row.id<=0)fail('invalid_state');last=Math.max(last,row.id);}
       const id=()=>{last++;if(!integer(last))fail('invalid_state');return last;};
       const attendanceId=id(),time=new Date((occurredAt+28800)*1000).toISOString().slice(11,16);
-      const snapshot={classId:course.id,className:binding.className,teacher:binding.teacher,classroom:course.classroom||'',source:'canonical_device',deviceEventRef:eventRef};
+      const snapshot={classId:course.id,className:course.name,teacher:course.teacher||'',classroom:course.classroom||'',source:'canonical_device',deviceEventRef:eventRef,deviceLessonId:lessonId};
       state.attendance.push({id:attendanceId,studentId:student.id,date:lesson.date,time,method:'平板签到',...snapshot});
       state.transactions.push({id:id(),attendanceId,studentId:student.id,amount:-fact.chargeUnits/100,reason:'平板签到扣减',date:lesson.date,time,...snapshot});
       student.hours=payload.remaining_units/100;binding.balanceUnits=payload.remaining_units;binding.balanceRevision++;fact.status='arrived';fact.revision++;
@@ -126,6 +129,24 @@
     write(storage,raw,state);
     return{ok:true};
   });}
+  function resolveConflict(storage,eventRef,receipt){return attempt(()=>{
+    const raw=storage.read(),state=JSON.parse(raw),sync=context(state);
+    if(sync.protocol!==2)fail('invalid_conflict');
+    const entry=sync.queue.find(e=>e.eventRef===eventRef),p=entry?.payload;
+    if(!entry||!p)fail('invalid_conflict');
+    const saved={eventId:receipt?.event_id,status:receipt?.status,attendanceRevision:receipt?.attendance_revision,
+      balanceRevision:receipt?.balance_revision,balanceUnits:receipt?.balance_units};
+    if(!isConflict(entry)&&entry.status!=='resolved')fail('invalid_conflict');
+    if(!receipt||receipt.protocol!==2||receipt.accepted!==true||receipt.resolved!==true||receipt.apply_local_debit!==false||receipt.org_id!==sync.orgId||receipt.device_id!==sync.deviceId||receipt.generation!==sync.generation||receipt.event_ref!==eventRef||receipt.student_id!==p.student_id||receipt.lesson_id!==p.lesson_id||!['arrived','leave'].includes(receipt.status)||typeof receipt.event_id!=='string'||!/^[A-Za-z0-9_.:-]{1,80}$/.test(receipt.event_id)||!integer(receipt.attendance_revision)||receipt.attendance_revision<=p.attendance_revision||!integer(receipt.balance_revision)||receipt.balance_revision<0||!integer(receipt.balance_units))fail('receipt_mismatch');
+    if(entry.status==='resolved'){if(!equal(entry.receipt,saved))fail('receipt_mismatch');return{ok:true,duplicate:true,status:entry.receipt.status};}
+    const attendance=state.attendance.filter(row=>row.deviceEventRef===eventRef);
+    if(attendance.length!==1)fail('mapping_changed');
+    attendance[0].syncResolution='web_resolved';attendance[0].serverStatus=receipt.status;attendance[0].serverEventId=receipt.event_id;
+    entry.status='resolved';entry.receipt=saved;delete entry.error;
+    // Keep the original local debit as evidence. Bootstrap alone applies the
+    // authoritative server balance after all pending and blocked entries finish.
+    write(storage,raw,state);return{ok:true,duplicate:false,status:receipt.status};
+  });}
   const flights=new WeakSet();
   async function pump(storage,transport){
     if(flights.has(storage))return{ok:true,busy:true,uploaded:0};
@@ -154,6 +175,6 @@
       return{ok:true,uploaded,more:true};
     }finally{flights.delete(storage);}
   }
-  const api={record,next,acknowledge,block,retryConflict,pump};
+  const api={record,next,acknowledge,block,retryConflict,resolveConflict,pump};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.ManagementCheckinQueue=api;
 })(globalThis);

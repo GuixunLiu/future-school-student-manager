@@ -12,14 +12,14 @@ function fixture(active=true){
  const disk={raw:JSON.stringify(state),getItem(){return this.raw;},setItem(k,v){this.raw=v;}},notes=[];
  const bridge={getCanonicalSyncProfile:()=>JSON.stringify({configured:true,orgId:'org',deviceId:'device',generation:'generation',profileId:'profile'})};
  class FixedDate extends Date{static now(){return now;}}
- const c=vm.createContext({console,crypto:webcrypto,TextEncoder,TextDecoder,atob,Date:FixedDate,localStorage:disk,AndroidBridge:bridge,notes,initial:state,
+ const c=vm.createContext({console,crypto:webcrypto,TextEncoder,TextDecoder,atob,btoa,Date:FixedDate,localStorage:disk,AndroidBridge:bridge,notes,initial:state,
  setTimeout:()=>1,setInterval:()=>1,clearTimeout:()=>{},document:{hidden:false,addEventListener(){},getElementById(){return null;}}});
  vm.runInContext("globalThis.window=globalThis;window.addEventListener=()=>{};let state=initial;const STORAGE_KEY='fixture';let committedStateSnapshot=JSON.stringify(state);let nonce=0;function syncNonce(){return String(++nonce).padStart(32,'0');}function invalidatePageCache(){}function toast(s){notes.push(s);}function localDate(){return '2026-11-01';}function studentById(id){return state.students.find(s=>s.id===id);}const listPages={attendance:1};",c);
- for(const file of ['snapshot-store.js','checkin-queue.js','approval-receiver.js','runtime-bootstrap.js','sync-runtime.js','activation-commit.js'])vm.runInContext(fs.readFileSync(path.join(repo,'server/management/tablet',file),'utf8'),c);
+ for(const file of ['snapshot-store.js','checkin-queue.js','approval-receiver.js','runtime-bootstrap.js','face-profiles.js','sync-runtime.js','activation-commit.js'])vm.runInContext(fs.readFileSync(path.join(repo,'server/management/tablet',file),'utf8'),c);
  vm.runInContext(fs.readFileSync(path.join(repo,'app/src/main/assets/canonical-app.js'),'utf8'),c);
  vm.runInContext(fn('function persistCurrentState(){','function rollbackUnsavedState'),c);
  vm.runInContext(fn('function saveState(){','async function optimizeExistingFacePhotos'),c);
- vm.runInContext(fn('function recordStudentAttendance(studentId,method){','function recordHoursAddition'),c);
+ vm.runInContext(fn("function recordStudentAttendance(studentId,method,lessonId=''){",'function recordHoursAddition'),c);
  return{c,disk,notes,bridge,run:s=>vm.runInContext(s,c),snapshot:()=>JSON.parse(disk.raw)};
 }
 test('actual App check-in entry uses canonical writer exactly once and ordinary save preserves queue',()=>{
@@ -52,8 +52,16 @@ test('mode gate is off for existing daily data; legacy persist path still works'
 });
 test('App startup does not replay a local repair checkpoint into canonical data',()=>{
  const f=fixture();let recover=0;f.bridge.recoverLocalRepairCheckpoint=()=>{recover++;return f.disk.raw;};
- vm.runInContext('function emptyState(){return {settings:{}};}'+fn('function loadState(){','function classReminderCalendar'),f.c);
+ vm.runInContext('function emptyState(){return {settings:{legacyDefault:true}};}'+fn('function loadState(){','function classReminderCalendar'),f.c);
  assert.equal(f.run('loadState().managementSync.enabled'),true);assert.equal(recover,0);
+ assert.equal(f.run('JSON.stringify(loadState())'),f.disk.raw);
+});
+test('empty roster keeps all three check-in entries away from local student management',()=>{
+ const f=fixture(false);f.run('state.students=[];');
+ vm.runInContext(fn('function openCheckin(method){','function openCheckinChoices'),f.c);
+ for(const method of ['人脸','姓名','学号'])f.run(`openCheckin(${JSON.stringify(method)})`);
+ assert.equal(f.notes.length,3);
+ assert(f.notes.every(note=>note.includes('设备设置')));
 });
 test('canonical tablet cannot clear or restore an old backup to bypass canonical authority',()=>{
  const f=fixture(),raw=f.disk.raw;
@@ -139,12 +147,95 @@ test('actual App safe rebind pauses check-in and never passes a token through th
   classes:[{id:'class',name:'演示班',course_name:'演示课程'}],lessons:[{id:'lesson',class_id:'class',starts_at:starts,ends_at:starts+7200,state:'scheduled',students:[{student_id:'student',name:'演示学生',external_ref:'TEST',expected:true,charge_units:100,status:'missing',attendance_revision:0,balance_units:1000,balance_revision:0}]}]};
  f.bridge.requestCanonicalSync=(id,profile,kind,payload)=>{requests.push({id,profile,kind,payload});f.run('window.onCanonicalSyncNativeResult('+JSON.stringify(id)+','+JSON.stringify(JSON.stringify({ok:true,status:200,data}))+')');};
  await f.run('finishRuntimeReissue()');const state=f.snapshot();assert.equal(state.managementSync.generation,'generation-2');assert.equal(state.managementSync.profileId,'profile-2');
- assert.equal(f.run('canonicalRebindPending'),false);assert.equal(requests.length,1);assert.equal(requests[0].profile,'profile-2');assert(!requests[0].payload.includes('token'));
+ assert.equal(f.run('canonicalRebindPending'),false);assert.equal(state.managementSync.rebindPending,true);
+ assert.equal(requests.length,0);
+ await f.run('ManagementSyncRuntime.create({store:canonicalGuardedStore(),profile:canonicalProfile,request:canonicalNativeRequest}).tick()');
+ assert.equal(f.snapshot().managementSync.rebindPending,undefined);
+ assert.equal(requests[0].kind,'bootstrap');assert.equal(requests[0].profile,'profile-2');assert(!requests[0].payload.includes('token'));
 });
 
-test('actual App refuses native rebind while an offline check-in awaits upload',async()=>{
+test('actual App can rebind while retaining an offline check-in',async()=>{
  const f=fixture();f.run('state.managementSync.protocol=2;committedStateSnapshot=JSON.stringify(state);');f.disk.raw=f.run('committedStateSnapshot');
  f.run('let isAdminAuthenticated=true;');assert.equal(f.run("recordStudentAttendance(1,'手动')").ok,true);const raw=f.disk.raw;let calls=0;f.bridge.reissueRuntime=()=>calls++;
- await f.run('startRuntimeReissue()');assert.equal(calls,0);assert.equal(f.disk.raw,raw);assert.equal(f.run('canonicalRebindPending'),false);
- assert(f.notes.some(n=>n.includes('未上传')));assert.equal(f.snapshot().managementSync.queue[0].status,'pending');
+ await f.run('startRuntimeReissue()');assert.equal(calls,1);assert.equal(f.disk.raw,raw);assert.equal(f.run('canonicalRebindPending'),true);
+ f.run('window.onCanonicalSyncNativeResult("runtime-reissue",{ok:false,data:{cancelled:true}})');
+ assert.equal(f.run('canonicalRebindPending'),false);assert.equal(f.snapshot().managementSync.queue[0].status,'pending');
+});
+
+test('actual settings UI exposes only tablet operations in server-authoritative mode',()=>{
+ const f=fixture();f.run('function esc(value){return String(value??"");}function cameraPositionSummary(){return "横屏：顶部";}function deviceSyncSettingsMarkup(){return "<section data-test-device-sync>待上传与冲突核对</section>";}');
+ vm.runInContext(fn('function renderSettings(){','function handleContentAction(event){'),f.c);
+ const html=f.run('renderSettings()');assert.ok(html.includes('data-tablet-refresh'));assert.ok(html.includes('data-canonical-enrollment="reissue"'));assert.ok(html.includes('data-test-device-sync'));
+ for(const forbidden of ['data-action="add-student"','id="exportExcel"','id="batchImport"','id="exportBackup"','id="openWebMirror"','id="openWechatNotices"'])assert.equal(html.includes(forbidden),false,forbidden);
+});
+
+test('actual kiosk UI reflects real pending and blocked queue counts',()=>{
+ const f=fixture();f.run('state.managementSync.protocol=2;committedStateSnapshot=JSON.stringify(state);');f.disk.raw=f.run('committedStateSnapshot');
+ f.run('function todayAttendance(){return state.attendance;}function esc(value){return String(value??"");}function uiIcon(){return "";}');
+ const source=fs.readFileSync(path.join(repo,'app/src/main/assets/class-space.js'),'utf8'),begin=source.indexOf('function renderClassSpaceKiosk(){'),end=source.indexOf('function setClassSpaceDate',begin);
+ assert.ok(begin>=0&&end>begin);vm.runInContext(source.slice(begin,end),f.c);
+ assert.equal(f.run("recordStudentAttendance(1,'手动')").ok,true);let html=f.run('renderClassSpaceKiosk()');
+ assert.ok(html.includes('待上传 1 条'));assert.ok(html.includes('断网也不会丢失'));assert.equal(f.run('canonicalQueueStatus().pending'),1);assert.equal(f.run('canonicalQueueStatus().blocked'),0);
+ assert.equal(f.run("ManagementCheckinQueue.block(canonicalGuardedStore(),'checkin:'+String(1).padStart(32,'0'),'lesson_unavailable').ok"),true);
+ html=f.run('renderClassSpaceKiosk()');assert.ok(html.includes('待核对 1 条'));assert.ok(html.includes('原记录已保留'));assert.equal(f.run('canonicalQueueStatus().pending'),0);assert.equal(f.run('canonicalQueueStatus().blocked'),1);
+});
+
+test('actual App asks before ambiguous same-day lessons and shows the configured debit',()=>{
+ const f=fixture();f.run("state.managementSync.protocol=2;state.managementSync.lessons['lesson-2']={...state.managementSync.lessons.lesson,startsAt:state.managementSync.lessons.lesson.startsAt+3600,endsAt:state.managementSync.lessons.lesson.endsAt+3600};state.managementSync.facts['lesson-2']={student:{expected:true,status:'missing',revision:0,chargeUnits:150}};committedStateSnapshot=JSON.stringify(state);");f.disk.raw=f.run('committedStateSnapshot');
+ vm.runInContext(fn('function performCheckin(student,method,successSuffix=\'\',lessonId=\'\'){','function classroomForStudent'),f.c);
+ f.run('let selectedLesson="",successCharge=0;function openCanonicalLessonChoices(){selectedLesson="required";}function closeModal(){}function render(){}function showCheckinSuccess(student,method,suffix,charge){successCharge=charge;}');
+ f.run("performCheckin(studentById(1),'手动')");assert.equal(f.run('selectedLesson'),'required');assert.equal(f.snapshot().attendance.length,0);
+ f.run("performCheckin(studentById(1),'手动','','lesson-2')");assert.equal(f.run('successCharge'),1.5);assert.equal(f.snapshot().students[0].hours,8.5);assert.equal(f.snapshot().transactions[0].amount,-1.5);
+ f.run("performCheckin(studentById(1),'手动')");const state=f.snapshot();assert.equal(state.attendance.length,2);assert.equal(state.transactions.length,2);assert.equal(state.students[0].hours,7.5);
+ assert.deepEqual(Array.from(state.attendance,row=>row.deviceLessonId),['lesson-2','lesson']);
+});
+
+function conflictFixture(){
+ const f=fixture();f.run('state.managementSync.protocol=2;committedStateSnapshot=JSON.stringify(state);let isAdminAuthenticated=true;');f.disk.raw=f.run('committedStateSnapshot');
+ assert.equal(f.run("recordStudentAttendance(1,'手动')").ok,true);const eventRef=f.snapshot().managementSync.queue[0].eventRef;
+ assert.equal(f.run(`ManagementCheckinQueue.block(canonicalGuardedStore(),${JSON.stringify(eventRef)},'attendance_conflict').ok`),true);
+ return{...f,eventRef};
+}
+function webReceipt(f,status='arrived'){
+ const entry=f.snapshot().managementSync.queue[0],p=entry.payload;
+ return{protocol:2,org_id:'org',device_id:'device',generation:'generation',accepted:true,resolved:true,duplicate:false,
+  event_id:'web-event-1',event_ref:entry.eventRef,student_id:p.student_id,lesson_id:p.lesson_id,status,apply_local_debit:false,
+  attendance_revision:p.attendance_revision+1,balance_revision:p.balance_revision+1,balance_units:status==='leave'?p.previous_balance_units:p.remaining_units};
+}
+
+test('actual conflict action keeps pending resolution blocked and uploads the exact original wire without token',async()=>{
+ const f=conflictFixture(),calls=[],button={disabled:false},raw=f.disk.raw;f.c.button=button;
+ f.bridge.requestCanonicalSync=(id,profile,kind,payload)=>{calls.push({id,profile,kind,payload});f.run('window.onCanonicalSyncNativeResult('+JSON.stringify(id)+','+JSON.stringify(JSON.stringify({ok:false,status:409,data:{error:{code:'resolution_pending'}}}))+')');};
+ await f.run(`resolveCanonicalConflict(${JSON.stringify(f.eventRef)},button)`);const state=f.snapshot();
+ assert.equal(calls.length,1);assert.equal(calls[0].kind,'resolve');assert.equal(calls[0].payload,state.managementSync.queue[0].wire);
+ assert.equal(calls[0].payload.includes('token'),false);assert.equal(calls[0].payload.includes('generation'),false);assert.equal(f.disk.raw,raw);
+ assert.equal(state.managementSync.queue[0].status,'blocked');assert.equal(button.disabled,false);assert(f.notes.some(n=>n.includes('网页尚未完成')));
+});
+
+test('actual conflict action archives arrived and leave receipts without another local debit',async()=>{
+ for(const status of ['arrived','leave']){
+  const f=conflictFixture(),calls=[],button={disabled:false};f.c.button=button;f.run('function render(){}');
+  f.bridge.requestCanonicalSync=(id,profile,kind,payload)=>{calls.push({kind,payload});const data=webReceipt(f,status);f.run('window.onCanonicalSyncNativeResult('+JSON.stringify(id)+','+JSON.stringify(JSON.stringify({ok:true,status:200,data}))+')');};
+  await f.run(`resolveCanonicalConflict(${JSON.stringify(f.eventRef)},button)`);const state=f.snapshot();
+  assert.equal(calls.length,1);assert.equal(calls[0].kind,'resolve');assert.equal(state.managementSync.queue[0].status,'resolved');
+  assert.equal(state.attendance[0].syncResolution,'web_resolved');assert.equal(state.attendance[0].serverStatus,status);assert.equal(state.attendance[0].serverEventId,'web-event-1');
+  assert.equal(state.students[0].hours,9);assert.equal(state.attendance.length,1);assert.equal(state.transactions.length,1);assert.equal(button.disabled,true);
+ }
+});
+
+test('actual conflict action rejects an altered success receipt without clearing evidence',async()=>{
+ const f=conflictFixture(),button={disabled:false},raw=f.disk.raw;f.c.button=button;
+ f.bridge.requestCanonicalSync=(id,profile,kind,payload)=>{const data={...webReceipt(f),apply_local_debit:true};f.run('window.onCanonicalSyncNativeResult('+JSON.stringify(id)+','+JSON.stringify(JSON.stringify({ok:true,status:200,data}))+')');};
+ await f.run(`resolveCanonicalConflict(${JSON.stringify(f.eventRef)},button)`);assert.equal(f.disk.raw,raw);assert.equal(button.disabled,false);
+ assert.equal(f.snapshot().managementSync.queue[0].status,'blocked');assert(f.notes.some(n=>n.includes('原冲突和签到证据仍保留')));
+});
+
+test('native protocol 2 transport bypasses legacy generation only for fixed runtime routes',()=>{
+ const source=fs.readFileSync(path.join(repo,'app/src/main/java/cn/mashangchengzhang/studentmanager/CanonicalSyncTransport.java'),'utf8');
+ assert.ok(source.includes('boolean protocol2=bootstrap||faces||kind.equals("resolve")||(kind.equals("checkin")&&!body.has("generation"));'));
+ assert.ok(source.includes('if(!protocol2&&!body.getString("generation").equals(p.getString("g")))'));
+ assert.ok(source.includes('case "faces":route="/v1/tablet/face-profiles";if(body.length()!=0)throw new IOException("fields");break;'));
+ assert.ok(source.includes('faces?16*1024*1024:bootstrap?2*1024*1024:65536'));
+ assert.ok(source.includes('case "resolve":route="/v1/tablet/checkins/resolve";fields(body,"event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units occurred_at");break;'));
+ assert.ok(source.includes('else{route="/v1/tablet/checkins";fields(body,"event_ref student_id lesson_id attendance_revision balance_revision previous_balance_units consumed_units occurred_at");}'));
 });
