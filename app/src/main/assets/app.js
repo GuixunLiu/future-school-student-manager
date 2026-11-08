@@ -73,11 +73,15 @@ const lowHoursStudents = (students=reportableStudents()) => studentsUnderHours(H
 const studentHoursWarningLevel = student => isLongTermAbsent(student)?'':hoursWarningLevel(student.hours);
 const studentHoursWarningLabel = student => isLongTermAbsent(student)?'':hoursWarningLabel(student.hours);
 
-ensureClasses();
-ensureEnrollmentHistory();
-normalizeLongTermStudentAssignments();
-ensureAttendanceSnapshots();
-compactAllFaceProfiles();
+// The server-managed snapshot is already committed. Legacy startup repair
+// would change its in-memory representation before the first sync or rebind.
+if(typeof canonicalModeActive!=='function'||!canonicalModeActive()){
+  ensureClasses();
+  ensureEnrollmentHistory();
+  normalizeLongTermStudentAssignments();
+  ensureAttendanceSnapshots();
+  compactAllFaceProfiles();
+}
 let committedStateSnapshot = JSON.stringify(state);
 
 function loadLocalScript(src){
@@ -226,7 +230,10 @@ function loadState(){
       if(approved){try{const checked=JSON.parse(approved);if(!Array.isArray(checked.students)||!Array.isArray(checked.attendance))throw Error('Invalid checkpoint');localStorage.setItem(STORAGE_KEY,approved);stored=approved;window.__localRepairRecovered=true}catch(_){}}
     }
     const parsed = JSON.parse(stored);
-    if (parsed && Array.isArray(parsed.students) && Array.isArray(parsed.attendance)) return {...emptyState(), ...parsed, settings:{...emptyState().settings,...parsed.settings}};
+    if (parsed && Array.isArray(parsed.students) && Array.isArray(parsed.attendance)) {
+      if(canonicalStored)return parsed;
+      return {...emptyState(), ...parsed, settings:{...emptyState().settings,...parsed.settings}};
+    }
   } catch (_) {}
   return emptyState();
 }
@@ -1079,7 +1086,7 @@ function openHoursModal(student,onSaved=null){
 }
 
 function openCheckin(method){
-  if(!state.students.length){const serverMode=typeof canonicalModeActive==='function'&&canonicalModeActive();toast(serverMode?'暂时没有可签到名单，请在设备页刷新或联系管理员':'请先录入学生',true);return serverMode?go('settings'):openStudentModal()}
+  if(!state.students.length)return toast('暂时没有可签到名单，请在设备设置中开通或刷新名单',true);
   if(method==='人脸')return openFaceCheckin();
   openModal(`<div class="modal-head"><span>${method==='姓名'?'名':'#'}</span><div><h2>${method}签到</h2><p>签到成功后按本节课规则扣除课时</p></div></div><form id="checkinForm" class="simple-form"><label class="field"><span>请输入学生${method}</span><input name="query" required autofocus placeholder="输入后点击确认签到"></label><div class="form-actions"><button type="button" class="secondary-btn" id="cancelModal">取消</button><button class="primary-btn" type="submit">确认签到</button></div></form>`);$('#cancelModal').onclick=closeModal;$('#checkinForm').onsubmit=e=>{e.preventDefault();const query=String(new FormData(e.target).get('query')).trim();const matches=state.students.filter(x=>String(method==='学号'?x.studentNo:x.name).trim()===query);if(!matches.length)return toast('没有找到这位学生',true);if(matches.length>1)return openCheckinChoices(matches,method);const s=matches[0];if(isLongTermAbsent(s))return toast('该学生当前为长期不来，请先在后台恢复正常在读',true);performCheckin(s,method);};
 }
@@ -1105,7 +1112,7 @@ function openMakeupCheckin(initialDate=localDate(),initialClassKey=''){
 function openFaceCheckin(){
   if(!state.settings.cameraPositionConfigured)return openCameraPositionSetup(true,openFaceCheckin);
   const eligible=reportableStudents().filter(canPrepareSFaceProfile);
-  if(!eligible.length){const serverMode=typeof canonicalModeActive==='function'&&canonicalModeActive();toast(serverMode?'暂无可用人脸，请由教师在网页端录入；也可使用姓名或学号签到':'没有可用于识别的人脸，请先编辑学生并拍照或采集人脸',true);return serverMode?undefined:go('students')}
+  if(!eligible.length)return toast('暂无可用人脸，请由教师在网页端录入；也可使用姓名或学号签到',true);
   openModal(`<div class="modal-head face-checkin-head"><span>⌾</span><div><h2 id="faceDialogTitle">高精度人脸签到</h2><p id="faceDialogSubtitle">SFace 五官校正 · 多帧安全核对</p></div></div><div class="face-checkin-shell" id="faceCheckinShell"><div class="face-scan-stage" id="faceScanStage"><div class="camera-frame recognition-camera"><video id="camera" autoplay playsinline muted></video><div class="face-guide"></div><div class="scan-line"></div><div class="recognition-badge" id="recognitionBadge">准备识别</div></div><aside class="face-scan-aside"><div class="scan-state-icon"><span>⌾</span><i></i></div><b>识别状态</b><p class="camera-note" id="cameraStatus">正在加载 SFace 高精度离线模型…</p><div class="scan-tips"><span>单人入镜</span><span>正对镜头</span><span>保持光线充足</span></div></aside></div><div class="recognition-result hidden" id="recognitionResult"></div><div class="form-actions face-checkin-footer"><button type="button" class="secondary-btn" id="cancelModal">取消识别</button></div></div>`);document.body.classList.add('face-dialog-open');$('#modal').classList.add('face-checkin-modal');applyFacePopupPosition();playCameraPopupAnimation();$('#cancelModal').onclick=closeModal;
   startAutomaticRecognition(eligible);
 }

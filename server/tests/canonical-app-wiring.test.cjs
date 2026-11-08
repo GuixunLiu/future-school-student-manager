@@ -52,8 +52,16 @@ test('mode gate is off for existing daily data; legacy persist path still works'
 });
 test('App startup does not replay a local repair checkpoint into canonical data',()=>{
  const f=fixture();let recover=0;f.bridge.recoverLocalRepairCheckpoint=()=>{recover++;return f.disk.raw;};
- vm.runInContext('function emptyState(){return {settings:{}};}'+fn('function loadState(){','function classReminderCalendar'),f.c);
+ vm.runInContext('function emptyState(){return {settings:{legacyDefault:true}};}'+fn('function loadState(){','function classReminderCalendar'),f.c);
  assert.equal(f.run('loadState().managementSync.enabled'),true);assert.equal(recover,0);
+ assert.equal(f.run('JSON.stringify(loadState())'),f.disk.raw);
+});
+test('empty roster keeps all three check-in entries away from local student management',()=>{
+ const f=fixture(false);f.run('state.students=[];');
+ vm.runInContext(fn('function openCheckin(method){','function openCheckinChoices'),f.c);
+ for(const method of ['人脸','姓名','学号'])f.run(`openCheckin(${JSON.stringify(method)})`);
+ assert.equal(f.notes.length,3);
+ assert(f.notes.every(note=>note.includes('设备设置')));
 });
 test('canonical tablet cannot clear or restore an old backup to bypass canonical authority',()=>{
  const f=fixture(),raw=f.disk.raw;
