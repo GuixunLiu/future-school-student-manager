@@ -35,8 +35,9 @@ def main():
         shutil.copyfile(folder / name, output / name)
     page = page.replace("</head>", '  <link rel="stylesheet" href="classboard-compat.css">\n</head>')
     page = page.replace(
-        '<script src="xlsx.full.min.js">',
-        '<script src="classboard-compat.js"></script>\n  <script src="xlsx.full.min.js">',
+        '<script src="class-space.js">',
+        '<script src="classboard-compat.js"></script>\n  <script src="class-space.js">',
+        1,
     )
     index.write_text(page, encoding="utf-8")
 

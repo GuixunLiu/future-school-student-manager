@@ -231,6 +231,16 @@ class RuntimeBusinessTests(unittest.TestCase):
         entries = self.store.fee_reviews(reviewer)
         self.assertEqual({north, south}, {row['id'] for row in entries['campuses']})
         snapshot = entries['items'][0]['snapshot']
+        summary = self.store.fee_reviews(reviewer, include_snapshots=False)
+        self.assertEqual([submitted['id']], [row['id'] for row in summary['items']])
+        self.assertNotIn('snapshot', summary['items'][0])
+        self.assertEqual({'version': 1, 'snapshot': snapshot}, self.store.fee_review_detail(admin, submitted['id']))
+        self.assert_problem(403, 'review_required', self.store.fee_review_detail, USER_TOKEN, submitted['id'])
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("UPDATE organization_staff_access SET campus_id=%s WHERE role='campus_admin'", (south,))
+        self.assert_problem(404, 'review_missing', self.store.fee_review_detail, admin, submitted['id'])
+        with psycopg.connect(self.conninfo) as connection:
+            connection.execute("UPDATE organization_staff_access SET campus_id=%s WHERE role='campus_admin'", (north,))
         self.assertEqual(300, snapshot['total_cents'])
         self.assertEqual(1, snapshot['items'][0]['lessons'][0]['arrived_count'])
         self.assertNotIn('虚构学生甲', json.dumps(snapshot, ensure_ascii=False))

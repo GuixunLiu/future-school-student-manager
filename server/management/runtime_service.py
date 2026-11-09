@@ -55,6 +55,7 @@ class RuntimeStore(CampusPermissions):
         if token.startswith('wxu_'):
             row = db.execute('''SELECT u.id,u.org_id,u.login,u.display_name,s.id AS session_id,
                     a.role AS staff_role,a.campus_id,cp.name AS staff_campus_name,
+                    ARRAY(SELECT r.role FROM roles r WHERE r.org_id=u.org_id AND r.user_id=u.id) AS roles,
                     EXISTS(SELECT 1 FROM organization_staff_access own WHERE own.org_id=u.org_id
                            AND own.role='owner') AS managed_access
                 FROM auth_sessions s JOIN users u ON u.org_id=s.org_id AND u.id=s.user_id
@@ -63,8 +64,7 @@ class RuntimeStore(CampusPermissions):
                 WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s AND u.active=TRUE''',
                 (digest, now)).fetchone()
             if row:
-                roles = {r['role'] for r in db.execute(
-                    'SELECT role FROM roles WHERE org_id=%s AND user_id=%s', (row['org_id'], row['id']))}
+                roles = set(row['roles'])
                 if row['managed_access']:
                     roles.discard('admin')
                 if row['staff_role']:

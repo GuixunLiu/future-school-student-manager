@@ -1,9 +1,25 @@
 'use strict';
 let teacherDay='',teacherLessons=[],currentLesson=null;
-function chinaToday(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()),values={};for(const part of parts)values[part.type]=part.value;return values.year+'-'+values.month+'-'+values.day;}
-function lessonTime(seconds){return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(seconds*1000));}
+const chinaDateFormat=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'});
+const lessonTimeFormat=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hour12:false});
+function chinaDateKey(date){
+ const values={};
+ for(const part of chinaDateFormat.formatToParts(date))values[part.type]=part.value;
+ return values.year+'-'+values.month+'-'+values.day;
+}
+function chinaToday(){return chinaDateKey(new Date());}
+function lessonTime(seconds){return lessonTimeFormat.format(new Date(seconds*1000));}
 function attendanceLabel(student){if(!student.expected)return['无需到课','badge'];return{arrived:['已到','badge arrived'],leave:['请假','badge leave'],missing:['未签到','badge late']}[student.status]||['待核对','badge'];}
-function attendanceCounts(students){return{expected:students.filter(item=>item.expected).length,arrived:students.filter(item=>item.status==='arrived').length,leave:students.filter(item=>item.status==='leave').length,missing:students.filter(item=>item.expected&&item.status==='missing').length};}
+function attendanceCounts(students){
+ const counts={expected:0,arrived:0,leave:0,missing:0};
+ for(const student of students){
+  if(student.expected)counts.expected++;
+  if(student.status==='arrived')counts.arrived++;
+  else if(student.status==='leave')counts.leave++;
+  else if(student.expected&&student.status==='missing')counts.missing++;
+ }
+ return counts;
+}
 function countCards(counts){const container=node('div',undefined,'course-counts');for(const [key,label] of [['expected','应到'],['arrived','已到'],['leave','请假'],['missing','未签到']]){const item=node('div');item.append(node('strong',String(counts[key])),node('span',label));container.append(item);}return container;}
 function teacherIdentity(){$('identity').replaceChildren(node('span',identity.display_name+' · '+(identity.campus_name||'教师')),button('退出',logout,'secondary'));}
 async function teacherDashboard(day=teacherDay||chinaToday()){

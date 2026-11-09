@@ -172,7 +172,7 @@ test('actual settings UI exposes only tablet operations in server-authoritative 
 test('actual kiosk UI reflects real pending and blocked queue counts',()=>{
  const f=fixture();f.run('state.managementSync.protocol=2;committedStateSnapshot=JSON.stringify(state);');f.disk.raw=f.run('committedStateSnapshot');
  f.run('function todayAttendance(){return state.attendance;}function esc(value){return String(value??"");}function uiIcon(){return "";}');
- const source=fs.readFileSync(path.join(repo,'app/src/main/assets/class-space.js'),'utf8'),begin=source.indexOf('function renderClassSpaceKiosk(){'),end=source.indexOf('function setClassSpaceDate',begin);
+ const source=fs.readFileSync(path.join(repo,'app/src/main/assets/class-space.js'),'utf8'),begin=source.indexOf('function renderClassSpaceKiosk(){'),end=source.indexOf('function bindClassSpaceShell',begin);
  assert.ok(begin>=0&&end>begin);vm.runInContext(source.slice(begin,end),f.c);
  assert.equal(f.run("recordStudentAttendance(1,'手动')").ok,true);let html=f.run('renderClassSpaceKiosk()');
  assert.ok(html.includes('待上传 1 条'));assert.ok(html.includes('断网也不会丢失'));assert.equal(f.run('canonicalQueueStatus().pending'),1);assert.equal(f.run('canonicalQueueStatus().blocked'),0);

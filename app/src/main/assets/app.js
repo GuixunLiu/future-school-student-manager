@@ -24,10 +24,7 @@ let studentSearchFrame = null;
 let dataRevision = 0;
 let studentLookupSource=null,studentLookupLength=-1,studentLookupRevision=-1;
 let studentLookup=new Map();
-const pageCache = new Map();
-let mountedPageKey = '';
-let mountedPageName = '';
-let mountedPageRevision = -1;
+let mountedKioskDate = '';
 const LIST_PAGE_SIZE = 40;
 const listPages = {students:1,hours:1,attendance:1,dashboard:1};
 const nameCollator = typeof Intl!=='undefined'&&Intl.Collator?new Intl.Collator('zh-CN'):null;
@@ -84,11 +81,11 @@ if(typeof canonicalModeActive!=='function'||!canonicalModeActive()){
 }
 let committedStateSnapshot = JSON.stringify(state);
 
-function loadLocalScript(src){
+function loadLocalScript(src,errorMessage='离线人脸组件加载失败，请重试'){
   return new Promise((resolve,reject)=>{
     const script=document.createElement('script');script.src=src;script.async=true;
     script.onload=()=>resolve();
-    script.onerror=()=>{script.remove();reject(new Error('离线人脸组件加载失败，请重试'))};
+    script.onerror=()=>{script.remove();reject(new Error(errorMessage))};
     document.head.appendChild(script);
   });
 }
@@ -248,7 +245,6 @@ function reminderSyncPayload(){
   return {orgName:state.settings.orgName||'未来学校学生管理系统',classes:state.classes.map(course=>({id:course.id,name:course.name,teacher:course.teacher||'',classroom:course.classroom||'',scheduleWeekday:Number(course.scheduleWeekday||0),...lessonCycleSnapshot(course),scheduleStart:String(course.scheduleStart||''),reminderEnabled:Boolean(course.reminderEnabled),...classReminderCalendar(course)})),students:state.students.map(student=>({id:student.id,name:student.name,contact:student.contact||'',className:student.className||'',longTermAbsent:Boolean(student.longTermAbsent),...studentReminderCalendar(student)})),attendance:state.attendance.filter(record=>record.date>=yesterday&&record.date<=today).map(record=>({studentId:record.studentId,date:record.date}))};
 }
 function syncNativeReminders(){try{if(window.AndroidBridge&&typeof AndroidBridge.syncReminderState==='function')AndroidBridge.syncReminderState(JSON.stringify(reminderSyncPayload()))}catch(_){}}
-function nativeBackupInfo(){try{if(window.AndroidBridge&&typeof AndroidBridge.getAutoBackupInfo==='function')return JSON.parse(AndroidBridge.getAutoBackupInfo()||'{}')}catch(_){}return{}}
 function createNativeBackup(reason='每日自动备份',force=false){try{if(!state.students.length&&!state.attendance.length&&!state.classes.length)return false;if(window.AndroidBridge&&typeof AndroidBridge.createAutoBackup==='function'&&(force||typeof AndroidBridge.shouldAutoBackup!=='function'||AndroidBridge.shouldAutoBackup())){return AndroidBridge.createAutoBackup(JSON.stringify(state),reason,Boolean(force))!==false}}catch(_){}return false}
 function requireSafetyBackup(reason){
   if(typeof canonicalModeActive==='function'&&canonicalModeActive()&&(reason==='恢复前备份'||reason==='清空前备份')){toast('网页主管理模式下不能在平板清空或恢复旧备份，请由管理员按迁移流程处理',true);return false;}
@@ -391,11 +387,7 @@ function studentFacingTeacherName(value){
   const compoundSurnames=['欧阳','太史','端木','上官','司马','东方','独孤','南宫','万俟','闻人','夏侯','诸葛','尉迟','公羊','赫连','澹台','皇甫','宗政','濮阳','公冶','太叔','申屠','公孙','慕容','仲孙','钟离','长孙','宇文','司徒','鲜于','司空','闾丘','子车','亓官','司寇','巫马','公西','颛孙','壤驷','公良','漆雕','乐正','宰父','谷梁','拓跋','夹谷','轩辕','令狐','段干','百里','呼延','东郭','南门','羊舌','微生','梁丘','左丘','东门','西门'];
   const surname=compoundSurnames.find(item=>compact.startsWith(item))||Array.from(compact)[0];return`${surname}老师`;
 }
-function groupBy(items,key){ return items.reduce((out,item) => { const k=item[key] || '未填写';if(!out[k])out[k]=[];out[k].push(item); return out; },{}); }
 function normalizedGroupLabel(value){ return String(value||'未填写').trim().replace(/\s+/g,' ')||'未填写'; }
-function groupByNormalized(items,key){
-  return items.reduce((out,item)=>{const label=normalizedGroupLabel(item[key]);if(!out[label])out[label]=[];if(!out[label].some(existing=>existing.id===item.id))out[label].push(item);return out},{});
-}
 function teacherStudentGroups(students=state.students){
   return students.reduce((out,student)=>{const teacher=reportTeacherForProfile(student);if(!out[teacher])out[teacher]=[];if(!out[teacher].some(existing=>existing.id===student.id))out[teacher].push(student);return out},{});
 }
@@ -617,38 +609,23 @@ function bindReliableTap(element,handler){
 }
 
 const uiIcon = name => `<svg class="ui-icon" aria-hidden="true" focusable="false"><use href="ui-icons.svg#${name}"></use></svg>`;
-const views = {
-  dashboard:['教务工作台','今天也要陪孩子们一起成长'],
-  students:['学生信息','录入、修改与查询学生档案'],
-  classes:['班级管理','创建班级、安排老师并查看班级数据'],
-  checkin:['签到中心','支持姓名、学号和安全人脸签到'],
-  hours:['课时管理','查看余额并记录每次课时变化'],
-  report:['每周上课报告','按自然周查看全校、班级与老师到课情况'],
-  settings:['单机设置','机构名称、统计规则与本机数据备份']
-};
-
-function invalidatePageCache(){dataRevision++;pageCache.clear();mountedPageKey=''}
-function pageCacheKey(view){
-  const filters=view==='classes'?[selectedCourseGroup,courseClassSearch]:view==='dashboard'?classSpaceCacheFilters():view==='students'?[studentStatusFilter,studentClassFilter,studentSearchQuery,listPages.students]:view==='hours'?[hoursClassFilter,hoursSortOrder,listPages.hours]:view==='report'?[selectedReportWeekOffset,selectedReportScopeType,selectedReportScopeValue]:view==='checkin'?[listPages.attendance]:[];
-  return JSON.stringify([view,isAdminAuthenticated,dataRevision,localDate(),filters]);
-}
+function invalidatePageCache(){dataRevision++;mountedKioskDate=''}
 function mountPageContent(view,renderer){
-  const content=$('#content'),key=pageCacheKey(view);
-  if(view!=='settings'&&mountedPageKey===key)return;
-  if(mountedPageKey&&mountedPageRevision===dataRevision&&mountedPageName!=='settings'){
-    const fragment=document.createDocumentFragment();while(content.firstChild)fragment.appendChild(content.firstChild);
-    pageCache.set(mountedPageKey,fragment);
-    while(pageCache.size>6)pageCache.delete(pageCache.keys().next().value);
-  }else content.textContent='';
-  const cached=pageCache.get(key);
-  if(cached){content.appendChild(cached);pageCache.delete(key)}else content.innerHTML=renderer();
-  mountedPageKey=view==='settings'?'':key;mountedPageName=view;mountedPageRevision=dataRevision;
+  const kioskDate=view==='kiosk'?localDate():'';
+  if(kioskDate&&mountedKioskDate===kioskDate)return;
+  $('#content').innerHTML=renderer();
+  mountedKioskDate=kioskDate;
 }
 let attendanceScreenLocked=false;
+function updateAttendanceButton(button=$('#adminAccessBtn')){
+  button.innerHTML=`<span>${uiIcon('lock')}</span><b>${attendanceScreenLocked?'解锁':'设备'}</b>`;
+  bindReliableTap(button,attendanceScreenLocked?()=>window.AndroidBridge.openAttendanceLock():openAdminLogin);
+}
 window.onAttendanceLockChanged=locked=>{
   if(attendanceScreenLocked===locked)return;
   attendanceScreenLocked=locked;
-  if(locked&&isAdminAuthenticated)exitAdmin();else render();
+  if(locked&&isAdminAuthenticated)exitAdmin();
+  else if(!isAdminAuthenticated)updateAttendanceButton();
 };
 function render(){
   syncScreenOrientationClass();
@@ -661,9 +638,8 @@ function render(){
   if(!isAdminAuthenticated){
     $('#viewTitle').textContent='学生签到';
     $('#viewSubtitle').textContent='请选择签到方式，签到成功后会显示剩余课时';
-    adminAccess.innerHTML=`<span>${uiIcon('lock')}</span><b>${attendanceScreenLocked?'解锁':'设备'}</b>`;
-    bindReliableTap(adminAccess,attendanceScreenLocked?()=>window.AndroidBridge.openAttendanceLock():openAdminLogin);
-    mountPageContent('kiosk',renderKioskCheckin);
+    updateAttendanceButton(adminAccess);
+    mountPageContent('kiosk',renderClassSpaceKiosk);
   }else{
     $('#viewTitle').textContent='设备与同步';
     $('#viewSubtitle').textContent='课堂名单、离线签到与安全连接';
@@ -674,38 +650,6 @@ function render(){
   bindViewEvents();
 }
 
-function renderKioskCheckin(){return renderClassSpaceKiosk()}
-
-function kioskAttendanceRow(a){const s=studentById(a.studentId);if(!s)return'';return `<article class="list-row">${avatarMarkup(s)}<div class="row-main"><b>${esc(s.name)}</b><small>${esc(a.className||s.className)} · ${esc(a.classroom||classroomForStudent(s))} · ${esc(attendanceMethodLabel(a.method))}</small></div><div class="row-end"><strong>${esc(a.time)}</strong><small>剩余 ${money(s.hours)} 课时</small></div></article>`}
-
-function renderDashboard(){return renderClassSpaceDashboard()}
-
-function openDashboardStatDetail(kind){
-  const today=todayAttendance(),stats=buildWeeklyStats(0),eligible=[...stats.all.members.values()],week=stats.all.records,weeklyTarget=Number(state.settings.weeklyTarget||2),weekTarget=stats.all.expected,excluded=state.students.length-eligible.length;
-  let icon='◎',title='学生总数',subtitle=`当前共有 ${state.students.length} 名学生`,body='',targetView='students',targetLabel='进入学生管理';
-  if(kind==='students'){
-    body=state.students.length?`<div class="list dashboard-detail-list">${state.students.map(s=>`<article class="list-row ${isLongTermAbsent(s)?'long-term-row':''}">${avatarMarkup(s)}<div class="row-main"><b>${esc(s.name)} ${isLongTermAbsent(s)?'<em class="long-term-badge">长期不来</em>':''}</b><small>${isLongTermAbsent(s)?'长期不来学生':esc(s.className||'未分班')} · ${esc(s.studentNo)}</small></div><div class="row-end"><strong>${money(s.hours)} 课时</strong><small>${esc(s.school)}</small></div></article>`).join('')}</div>`:empty('◎','还没有学生','录入学生后会在这里显示名单');
-  }else if(kind==='today'){
-    icon='✓';title='今日签到详情';subtitle=`今天共完成 ${today.length} 次签到`;targetView='checkin';targetLabel='进入签到管理';
-    body=today.length?`<div class="list dashboard-detail-list">${today.slice().reverse().map(a=>{const s=studentById(a.studentId);return s?`<article class="list-row">${avatarMarkup(s)}<div class="row-main"><b>${esc(s.name)}</b><small>${esc(s.className)} · ${esc(attendanceMethodLabel(a.method))}</small></div><div class="row-end"><strong>${esc(a.time)}</strong><small>剩余 ${money(s.hours)} 课时</small></div></article>`:''}).join('')}</div>`:empty('✓','今天还没有签到','进入签到管理后可开始记录');
-  }else if(kind==='week'){
-    const rate=pct(week.length,weekTarget);icon='▥';title='本周到课率详情';subtitle=`本周 ${week.length} 次签到 / ${reportCount(weekTarget)} 次应到 · 按有效排课统计`;targetView='report';targetLabel='查看完整周报';
-    body=`<div class="dashboard-rate-summary"><strong>${reportRate(stats.all)}</strong><div><b>总体到课率</b><span>${eligible.length} 名学生 · 按历史排课日和有效在读状态计算</span></div></div>${eligible.length?`<div class="list dashboard-detail-list">${eligible.map(s=>{const count=week.filter(a=>a.studentId===s.id).length,expected=stats.all.expectedByStudent.get(s.id)||0;return `<article class="list-row">${avatarMarkup(s)}<div class="row-main"><b>${esc(s.name)}</b><small>${esc(s.className)} · 本周签到 ${count} 次</small></div><div class="row-end"><strong>${reportRateForCounts(count,expected)}</strong><small>${count} / ${reportCount(expected)} 次</small></div></article>`}).join('')}</div>`:empty('▥','本周暂无有效应到安排','长期不来从生效日起不再计应到')}`;
-  }else if(kind==='low-hours'){
-    const lowStudents=lowHoursStudents().sort((a,b)=>Number(a.hours)-Number(b.hours)),criticalCount=lowStudents.filter(s=>Number(s.hours)<=HOURS_CRITICAL_THRESHOLD).length;icon='!';title='课时不足学生';subtitle=`10 节课以内 ${criticalCount} 人 · 15 节课以内共 ${lowStudents.length} 人 · 已排除长期不来学生`;targetView='hours';targetLabel='进入课时管理';
-    body=lowStudents.length?`<div class="hours-warning-legend"><span class="critical">10 节课以内 · 需要尽快续费</span><span class="low">15 节课以内 · 提前关注</span></div><div class="list dashboard-detail-list low-hours-detail">${lowStudents.map(s=>`<article class="list-row">${avatarMarkup(s)}<div class="row-main"><b>${esc(s.name)}</b><small>${esc(s.className)} · ${esc(s.studentNo)}${s.contact?` · ${esc(s.contact)}`:''}</small></div><div class="row-end"><strong class="${hoursWarningLevel(s.hours)}">${money(s.hours)} 课时</strong><small>${hoursWarningLabel(s.hours)}</small></div><button class="mini-btn" data-hours="${s.id}">＋ 加课时</button></article>`).join('')}</div>`:empty('★','没有课时不足学生','所有正常在读学生的剩余课时都大于 15，长期不来学生不参与提醒');
-  }
-  openModal(`<div class="modal-head"><span>${icon}</span><div><h2>${title}</h2><p>${subtitle}</p></div></div>${body}<div class="form-actions dashboard-detail-actions"><button type="button" class="secondary-btn" id="closeStatDetail">关闭</button><button type="button" class="primary-btn" data-detail-go="${targetView}">${targetLabel}</button></div>`);
-  $('#closeStatDetail').onclick=closeModal;
-  $$('[data-detail-go]').forEach(button=>button.onclick=()=>{if(kind==='week'){selectedReportWeekOffset=0;selectedReportScopeType='school';selectedReportScopeValue=''}closeModal();go(button.dataset.detailGo)});
-  $$('[data-hours]').forEach(button=>button.onclick=()=>openHoursModal(studentById(button.dataset.hours)));
-}
-
-function renderGroupBars(groups,att){
-  const entries=Object.entries(groups),counts=countByStudent(att);
-  if(!entries.length) return empty('▦','还没有班级数据','录入学生时填写班级和老师');
-  return `<div class="class-bars">${entries.map(([name,members])=>{const actual=members.reduce((sum,student)=>sum+(counts.get(student.id)||0),0);const rate=pct(actual,members.length*state.settings.weeklyTarget);return `<div class="bar-row"><div><b>${esc(name)}</b><small>${members.length} 名学生</small></div><div class="progress"><i style="width:${rate}%"></i></div><strong>${rate}%</strong></div>`}).join('')}</div>`;
-}
 function avatarMarkup(s){ return s.faceImage ? `<span class="avatar photo"><img loading="lazy" decoding="async" width="96" height="96" src="${s.faceImage}" alt="${esc(s.name)}登记照"></span>` : `<span class="avatar ${s.gender==='女'?'female':''}">${esc(s.name.slice(-1))}</span>`; }
 function attendanceRow(a){ const s=studentById(a.studentId); if(!s)return''; const timeLabel=a.date&&a.date!==localDate()?`${a.date} ${a.time}`:a.time;return `<article class="list-row ${a.makeup?'makeup-attendance-row':''}">${avatarMarkup(s)}<div class="row-main"><b>${esc(s.name)}${a.makeup?'<em class="makeup-badge">老师补签</em>':''}</b><small>${esc(a.className||s.className)} · ${esc(a.classroom||classroomForStudent(s))} · ${esc(attendanceMethodLabel(a.method))}</small></div><div class="row-end"><strong>${esc(timeLabel)}</strong><small>剩余 ${money(s.hours)} 课时</small></div><button class="mini-btn warn undo-checkin" data-undo="${a.id}">撤销</button></article>`; }
 function empty(icon,title,text){return `<div class="empty"><span>${icon}</span><b>${title}</b><p>${text}</p></div>`;}
@@ -732,25 +676,6 @@ function renderListPager(page){
 function filteredStudents(){
   const query=studentSearchQuery.trim().toLowerCase();
   return state.students.filter(student=>studentMatchesStatusFilter(student)&&studentMatchesClassFilter(student)&&(!query||[student.name,student.studentNo,student.contact,student.school,student.className].some(value=>String(value||'').toLowerCase().includes(query))));
-}
-function refreshStudentResults(){
-  const table=$('#studentTable');if(!table||currentView!=='students')return;
-  const students=filteredStudents();table.innerHTML=studentTable(students);
-  const count=$('#studentVisibleCount');if(count)count.textContent=students.length;
-  mountedPageKey=pageCacheKey('students');
-}
-function scheduleStudentSearch(event){
-  studentSearchQuery=event.target.value;listPages.students=1;
-  if(event.isComposing)return;
-  if(studentSearchFrame!==null)cancelAnimationFrame(studentSearchFrame);
-  studentSearchFrame=requestAnimationFrame(()=>{studentSearchFrame=null;refreshStudentResults()});
-}
-function changeListPage(key,direction){
-  if(!Object.prototype.hasOwnProperty.call(listPages,key))return;
-  listPages[key]=Math.max(1,listPages[key]+direction);
-  if(key==='students')refreshStudentResults();else render();
-  const target=key==='students'?$('#studentTable'):key==='hours'?$('.hours-balance-panel'):$('#content');
-  if(target&&target.getBoundingClientRect().top<0)target.scrollIntoView({block:'start',behavior:'auto'});
 }
 function pagedAttendanceRows(records){
   const page=listPage(records,'attendance');return renderListPager(page)+page.items.map(attendanceRow).join('');
@@ -800,8 +725,9 @@ function renderHours(){
 function lowHoursExportRows(threshold=HOURS_WARNING_THRESHOLD){
   return studentsUnderHours(threshold).map(student=>[student.name,student.studentNo||'',student.contact||'',student.school||'',student.grade||'',student.className||'',student.teacher||'',Number(student.hours||0),Number(student.hours)<=HOURS_CRITICAL_THRESHOLD?'10 节课以内':'15 节课以内']);
 }
-function exportLowHoursStudents(threshold=HOURS_WARNING_THRESHOLD){
+async function exportLowHoursStudents(threshold=HOURS_WARNING_THRESHOLD){
   const limit=Number(threshold)===HOURS_CRITICAL_THRESHOLD?HOURS_CRITICAL_THRESHOLD:HOURS_WARNING_THRESHOLD,rows=lowHoursExportRows(limit);if(!rows.length)return toast(`当前没有 ${limit} 节课以内的正常在读学生`,true);
+  if(!await prepareSpreadsheetExport())return;
   const workbook=XLSX.utils.book_new();XLSX.utils.book_append_sheet(workbook,workbookSheet(['学生姓名','学号','联系方式','学校','年级','班级','授课老师','剩余课时','提醒级别'],rows,[14,14,18,20,12,22,14,12,16]),`${limit}节以内`);const safeName=String(state.settings.orgName||'未来学校学生管理系统').replace(/[\\/:*?"<>|]/g,'_');saveWorkbook(workbook,`${safeName}_${limit}节课以内学生_${localDate()}.xlsx`);
 }
 function openHoursAlertDetail(threshold=HOURS_WARNING_THRESHOLD){
@@ -825,8 +751,6 @@ function renderReport(){
   const groupCards=[['学校到课率',stats.groups.school],['班级到课率',stats.groups.class],['老师到课率',stats.groups.teacher]].map(([title,groups])=>`<section class="panel"><div class="panel-head"><div><h2>${title}</h2><p>${esc(rangeLabel)} · ${title==='老师到课率'?'按班级管理中的任课老师汇总 · 合并所教全部班级':'按当次上课班级归属统计'}</p></div></div>${renderWeeklyGroupBars(groups)}</section>`).join('');
   return `<div class="report-toolbar"><label class="report-week-picker"><span>查看周报</span><select id="reportWeekSelect">${weekOptions}</select></label><button type="button" class="primary-btn week-calendar-open" id="openWeekCalendar"><span>${uiIcon('classes')}</span>周历到课率</button></div>${renderReportScopeControls()}<div class="report-exclusion-note"><span>${uiIcon('hours')}</span><div><b>按实际排课日和历史在读状态计算</b><small>请假单列并计入应到，不算实到、不扣课时、不催签到；长期不来生效后不再计应到，之前有效签到保留。老师归属以班级管理设置为准，人数去重，应到与实到按实际课次计算。原日期停课不计应到，新日期补上与本周常规课分别累计。${stats.fallback?'未排课班级按默认每周 '+Number(state.settings.weeklyTarget||2)+' 次、有效在读天数折算。':''}没有应到安排时显示“—”。${[...stats.groups.class.values(),...stats.groups.teacher.values()].some(reportNeedsScheduleReview)?'有签到超过应到的安排，相关到课率显示“待核对”，请在班级管理中补录实际加课日期，不会自动推算。':''}</small></div></div><section class="report-hero"><div><p>${selectedReportWeekOffset===0?'本周':selectedReportWeekOffset===-1?'上周':'所选周'}${selectedReportScopeType==='school'?'总体':esc(scope.name)}到课率</p><strong>${reportRate(scope)}</strong><small>${rangeLabel} · ${scope.records.length} 次有效签到 / ${reportCount(scope.expected)} 次应到${scope.leaves.size?` · 请假 ${scope.leaves.size} 人次（计入应到）`:``}</small></div><div class="ring" style="--p:${rate*3.6}deg"><b>${reportRate(scope)}</b></div><div class="report-summary"><div><b>${unique.size}</b><span>签到学生</span></div><div><b>${absent.length}</b><span>整周未签到</span></div><div><b>${scope.records.length}</b><span>有效签到</span></div></div></section>${selectedReportScopeType==='school'?`<div class="report-grid">${groupCards}</div>`:''}${renderWeeklyLessonSessions(scope)}<div class="grid-2 report-student-entry-grid"><button type="button" class="panel report-student-entry attended" data-report-student-detail="attended"><span class="report-entry-icon">✓</span><div><h2>该周签到学生</h2><p>按当次签到班级查看名单和次数</p></div><strong>${unique.size}</strong><small>人</small><em>查看分类详情 →</em></button><button type="button" class="panel report-student-entry absent" data-report-student-detail="absent"><span class="report-entry-icon">!</span><div><h2>该周未到学生</h2><p>整周无签到（含请假）；某次情况请看逐次名单</p></div><strong>${absent.length}</strong><small>人</small><em>查看分类详情 →</em></button></div>`;
 }
-function reportCard(title,groups,week,rangeLabel){ return `<section class="panel"><div class="panel-head"><div><h2>${title}</h2><p>${esc(rangeLabel)}</p></div></div>${renderGroupBars(groups,week)}</section>`; }
-
 function openReportStudentDetail(kind){
   const stats=buildWeeklyStats(selectedReportWeekOffset),scope=weeklyScope(stats),range=stats.range,week=scope.records,attendedIds=new Set(week.map(record=>record.studentId)),isAttended=kind==='attended',students=[...scope.members.values()].filter(student=>isAttended?attendedIds.has(student.id):!attendedIds.has(student.id)),groups={},rangeLabel=`${shortDate(range.start)}—${shortDate(range.end)}`;
   if(isAttended){const seen=new Set();week.forEach(record=>{const student=studentById(record.studentId),profile={...studentProfileAtDate(student,record.date),className:record.className||studentProfileAtDate(student,record.date).className},name=normalizedGroupLabel(profile.className),key=`${profile.id}:${name}`;if(!seen.has(key)){seen.add(key);(groups[name]||(groups[name]=[])).push(profile)}})}else students.forEach(student=>(groups[normalizedGroupLabel(student.className)]||(groups[normalizedGroupLabel(student.className)]=[])).push(student));
@@ -853,7 +777,7 @@ function renderSettings(){
     ${refresh}
     <div class="setting-row"><div><b>摄像头与签到窗口</b><small>${esc(cameraPositionSummary())}</small></div><button type="button" class="secondary-btn" id="configureCameraPosition">重新设置</button></div>
     <div class="setting-row"><div><b>设备解锁图案</b></div><button type="button" class="secondary-btn" id="configurePattern">修改图案</button></div>
-    ${typeof window.AndroidBridge?.openAttendanceLock==='function'?'<div class="setting-row"><div><b>签到专用模式</b><small>受管理平板可锁定应用，退出须验证密码</small></div><button type="button" class="secondary-btn" id="configureAttendanceLock">设置</button></div>':''}
+    ${typeof AndroidBridge!=='undefined'&&typeof AndroidBridge.openAttendanceLock==='function'?'<div class="setting-row"><div><b>签到专用模式</b><small>受管理平板可锁定应用，退出须验证密码</small></div><button type="button" class="secondary-btn" id="configureAttendanceLock">设置</button></div>':''}
     ${canonicalEnrollmentSettingsMarkup()}</section>${active?deviceSyncSettingsMarkup():''}</div>`;
 }
 
@@ -871,13 +795,6 @@ function bindViewEvents(){
   $('#configurePattern').onclick=openPatternChange;
   const attendanceLock=$('#configureAttendanceLock');
   if(attendanceLock)attendanceLock.onclick=()=>window.AndroidBridge.openAttendanceLock();
-}
-
-function mountCampusCodeSetting(){
-  const orgInput=$('#orgNameInput');if(!orgInput||$('#campusCodeInput'))return;
-  const row=document.createElement('div');row.className='setting-row campus-code-row';row.innerHTML=`<div><b>校区编号</b><small>一至两位数字，保存后自动补足两位</small></div><div class="campus-code-control"><input id="campusCodeInput" inputmode="numeric" maxlength="2" value="${esc(state.settings.campusCode||'01')}" aria-label="校区编号"><em id="nextStudentNoPreview">下一个新生学号：${esc(nextStudentNo())}</em></div>`;
-  orgInput.closest('.setting-row').after(row);
-  $('#campusCodeInput').oninput=event=>{event.target.value=event.target.value.replace(/\D/g,'').slice(0,2);const preview=event.target.value?nextStudentNo(event.target.value):'';$('#nextStudentNoPreview').textContent=preview?`下一个新生学号：${preview}`:'请输入校区编号'};
 }
 
 function deviceOrientation(){
@@ -910,11 +827,6 @@ function applyFacePopupPosition(){
   backdrop.setAttribute('data-camera-edge',edge);backdrop.setAttribute('data-camera-orientation',orientation);
 }
 function playCameraPopupAnimation(){const modal=$('#modal');if(!modal||!modal.classList.contains('face-checkin-modal'))return;modal.classList.remove('camera-popup-animate');modal.classList.add('camera-popup-waiting');void modal.offsetWidth;requestAnimationFrame(()=>requestAnimationFrame(()=>{if(!modal.classList.contains('face-checkin-modal')||$('#modalBackdrop').classList.contains('hidden'))return;modal.classList.remove('camera-popup-waiting');modal.classList.add('camera-popup-animate')}))}
-function mountCameraPositionSetting(){
-  const saveButton=$('#saveSettings');if(!saveButton||$('#configureCameraPosition'))return;
-  const row=document.createElement('div');row.className='setting-row camera-position-setting-row';row.innerHTML=`<div><b>平板摄像头与签到窗口</b><small id="cameraPositionSummary">${esc(cameraPositionSummary())}</small></div><button type="button" class="secondary-btn" id="configureCameraPosition">重新设置</button>`;
-  saveButton.closest('.setting-row').before(row);$('#configureCameraPosition').onclick=()=>openCameraPositionSetup(false);
-}
 function openCameraPositionSetup(required=!state.settings.cameraPositionConfigured,onSaved=null){
   cameraSetupCallback=typeof onSaved==='function'?onSaved:null;
   let portrait=validCameraEdge(state.settings.cameraPortraitEdge),landscape=validCameraEdge(state.settings.cameraLandscapeEdge);
@@ -1004,25 +916,6 @@ function openClassModal(course=null){
     if(!saveState())return false;closeModal();render();toast(obj.reminderEnabled?'班级已保存，按实际课日开课 5 分钟后将在本机提醒':course?'班级信息已更新':'班级创建成功');
   };
 }
-function openClassPromotionModal(sourceCourse=null){
-  const populated=state.classes.filter(course=>state.students.some(student=>student.className===course.name));
-  if(state.classes.length<2)return toast('请先建立至少两个班级，再使用集体升班',true);
-  if(!populated.length)return toast('目前没有包含学生的班级',true);
-  const initialSource=sourceCourse&&populated.some(course=>course.id===sourceCourse.id)?sourceCourse:populated[0];
-  const optionMarkup=(courses,selectedId)=>courses.map(course=>`<option value="${course.id}" ${course.id===selectedId?'selected':''}>${esc(course.name)} · ${esc(course.teacher||'未安排老师')}</option>`).join('');
-  const initialTarget=state.classes.find(course=>course.id!==initialSource.id);
-  openModal(`<div class="modal-head"><span>⇧</span><div><h2>班级集体升班</h2><p>一次性将原班全部学生转入目标班级</p></div></div><form id="promotionForm" class="simple-form"><div class="promotion-route"><div><small>原班级</small><b id="promotionSourceName">${esc(initialSource.name)}</b><span id="promotionStudentCount">${state.students.filter(student=>student.className===initialSource.name).length} 名学生</span></div><i>→</i><div><small>目标班级</small><b id="promotionTargetName">${esc(initialTarget.name)}</b><span id="promotionTeacherName">${esc(initialTarget.teacher||'未安排老师')}</span></div></div><div class="form-grid"><label class="field"><span>选择原班级 *</span><select id="promotionSource" name="sourceId" required>${optionMarkup(populated,initialSource.id)}</select></label><label class="field"><span>选择目标班级 *</span><select id="promotionTarget" name="targetId" required>${optionMarkup(state.classes,initialTarget.id)}</select></label></div><div class="promotion-notice"><b>升班后将自动完成</b><span>学生的班级改为目标班级，并同步更新为目标班级的授课老师；原班级资料会保留为空班。</span></div><label class="promotion-confirm"><input id="promotionConfirm" type="checkbox">我已核对原班级和目标班级，确认执行集体升班</label><div class="form-actions"><button type="button" class="secondary-btn" id="cancelModal">取消</button><button class="promotion-btn submit" type="submit">确认集体升班</button></div></form>`);
-  $('#cancelModal').onclick=closeModal;
-  const sourceSelect=$('#promotionSource'),targetSelect=$('#promotionTarget');
-  const refreshPromotion=()=>{const source=classById(sourceSelect.value),target=classById(targetSelect.value),members=source?state.students.filter(student=>student.className===source.name):[];$('#promotionSourceName').textContent=source&&source.name||'未选择';$('#promotionStudentCount').textContent=`${members.length} 名学生`;$('#promotionTargetName').textContent=target&&target.name||'未选择';$('#promotionTeacherName').textContent=target&&target.teacher||'未安排老师'};
-  sourceSelect.onchange=()=>{if(sourceSelect.value===targetSelect.value){const replacement=state.classes.find(course=>String(course.id)!==sourceSelect.value);if(replacement)targetSelect.value=String(replacement.id)}refreshPromotion()};targetSelect.onchange=refreshPromotion;
-  $('#promotionForm').onsubmit=event=>{event.preventDefault();const source=classById(sourceSelect.value),target=classById(targetSelect.value);if(!source||!target)return toast('请选择有效的原班级和目标班级',true);if(source.id===target.id)return toast('原班级和目标班级不能相同',true);const members=state.students.filter(student=>student.className===source.name);if(!members.length)return toast('原班级中没有学生，无需升班',true);if(!$('#promotionConfirm').checked)return toast('请先勾选确认，再执行集体升班',true);members.forEach(student=>{updateStudentEnrollment(student,target);student.className=target.name;if(target.teacher)student.teacher=target.teacher});if(!saveState())return false;closeModal();render();toast(`已将 ${members.length} 名学生从 ${source.name} 升入 ${target.name}`)};
-}
-function deleteClass(id){
-  const course=classById(id);if(!course)return;const members=state.students.filter(s=>s.className===course.name);if(members.length)return toast(`该班还有 ${members.length} 名学生，请先调整学生班级`,true);
-  openDangerConfirmation({icon:'▦',title:'删除班级',description:'请确认要删除的班级信息',subject:course.name,subjectMeta:`${course.teacher||'未安排老师'} · ${course.classroom||'未填写教室'}`,impactTitle:'班级资料将被删除',impactText:'该班目前没有学生。删除前会保存完整恢复备份，不会影响其他班级和签到记录。',confirmLabel:'确认删除班级',onConfirm:()=>{if(!requireSafetyBackup('删除班级前备份'))return false;state.classes=state.classes.filter(c=>c.id!==id);if(!saveState())return false;closeModal();render();toast('班级已删除')}});
-}
-
 function bindStudentFaceEnrollment(photoInput,photoButton,sourceInput,onProfile,onRemove){
   const token=faceScanToken;let task=0,busy=false;
   const form=$('#studentForm'),alive=id=>token===faceScanToken&&task===id&&$('#studentForm')===form;
@@ -1229,37 +1122,44 @@ function undoCheckin(attendanceId){
 
 }
 
-function toggleLongTermAbsent(id){
-  const student=studentById(id);if(!student)return;const marking=!isLongTermAbsent(student);
-  if(!marking&&!state.classes.length){toast('恢复正常上课前，请先创建一个班级',true);return go('classes')}
-  const preferred=student.pausedClassName||'',classOptions=state.classes.map(course=>`<option value="${course.id}" ${course.name===preferred?'selected':''}>${esc(course.name)} · ${esc(course.teacher||'未安排老师')}</option>`).join('');
-  openModal(`<div class="modal-head"><span>${marking?'◷':'✓'}</span><div><h2>${marking?'设为长期不来':'恢复正常在读'}</h2><p>请核对学生状态，本操作不会删除学生资料</p></div></div><div class="student-status-confirm">${avatarMarkup(student)}<div><span>学生姓名</span><b>${esc(student.name)}</b><small>${marking?`${esc(student.className||'未分班')} · `:''}${esc(student.studentNo)}</small></div><em class="${marking?'pause':'restore'}">${marking?'长期不来':'恢复上课'}</em></div><div class="student-status-impact ${marking?'pause':'restore'}"><span>${marking?'—':'＋'}</span><div><b>${marking?'移出当前班级并停止统计':'选择班级后重新计入统计'}</b><small>${marking?'学生会独立放入长期不来名单，不再属于任何班级；历史签到、课时和原班级记录仍会保留。':'恢复后可正常签到，并重新计入所选班级、任课老师和全校的到课率。'}</small></div></div>${marking?'':`<section class="restore-class-panel"><label class="field"><span>恢复到班级 *</span><select id="restoreStudentClass"><option value="" disabled ${state.classes.some(course=>course.name===preferred)?'':'selected'}>请选择班级</option>${classOptions}</select></label><div><span>授课老师</span><b id="restoreStudentTeacher">—</b><small>老师根据所选班级自动填写</small></div></section>`}<div class="form-actions student-status-actions"><button type="button" class="secondary-btn" id="cancelStudentStatus">取消</button><button type="button" class="primary-btn ${marking?'pause-btn':''}" id="confirmStudentStatus">${marking?'确认设为长期不来':'确认恢复正常在读'}</button></div>`);
-  $('#modal').classList.add('student-status-modal');$('#cancelStudentStatus').onclick=closeModal;
-  const refreshRestoreTeacher=()=>{const select=$('#restoreStudentClass'),teacher=$('#restoreStudentTeacher');if(!select||!teacher)return;const course=classById(select.value);teacher.textContent=course&&course.teacher||'暂未安排老师'};if(!marking){$('#restoreStudentClass').onchange=refreshRestoreTeacher;refreshRestoreTeacher()}
-  $('#confirmStudentStatus').onclick=()=>{if(marking)markStudentLongTerm(student);else{const course=classById($('#restoreStudentClass').value);if(!course)return toast('请选择学生恢复后所在的班级',true);restoreStudentToCourse(student,course)}if(!saveState())return false;closeModal();render();toast(marking?`${student.name} 已移入长期不来名单`:`${student.name} 已恢复到 ${student.className} 正常上课`)};
-}
-
 function deleteStudent(id){
   const s=studentById(id);if(!s)return;
   const attendanceCount=state.attendance.filter(record=>record.studentId===id).length,transactionCount=state.transactions.filter(record=>record.studentId===id).length;
   openDangerConfirmation({icon:'♙',title:'删除学生档案',description:'删除前请核对学生与关联记录',subject:`${s.name} · ${s.studentNo||'无学号'}`,subjectMeta:`${s.className||'未分班'} · 剩余 ${money(s.hours)} 课时`,impactTitle:'学生及关联记录会一并删除',impactText:`将删除 ${attendanceCount} 条签到记录、${transactionCount} 条课时变动记录和已录入的人脸信息；系统会先自动建立恢复点。`,confirmLabel:'确认删除学生',onConfirm:()=>{if(!requireSafetyBackup('删除学生前备份'))return false;removeWechatStudent(id);state.settings.studentReschedules=studentReschedules().filter(change=>change.studentId!==id);state.settings.studentLeaves=studentLeaves().filter(item=>item.studentId!==id);state.students=state.students.filter(x=>x.id!==id);state.attendance=state.attendance.filter(x=>x.studentId!==id);state.transactions=state.transactions.filter(x=>x.studentId!==id);if(!saveState())return false;closeModal();render();toast('学生档案已删除，删除前数据已自动备份')}});
 }
-function saveSettings(){const org=$('#orgNameInput').value.trim(),campusRaw=$('#campusCodeInput').value.trim(),target=Number($('#weeklyTargetInput').value);if(!org||!Number.isInteger(target)||target<1||target>14)return toast('请填写有效的机构名称和默认应到次数',true);if(!/^\d{1,2}$/.test(campusRaw))return toast('校区编号请填写 1 至 2 位数字',true);state.settings={...state.settings,orgName:org,campusCode:normalizeCampusCode(campusRaw),weeklyTarget:target};if(!saveState())return false;render();toast('设置与校区编号已保存');}
 
+let spreadsheetLoad;
+function loadSpreadsheetLibrary(){
+  if(typeof XLSX!=='undefined')return Promise.resolve();
+  if(!spreadsheetLoad){
+    const errorMessage='Excel 组件加载失败，请重试';
+    spreadsheetLoad=loadLocalScript('xlsx.full.min.js',errorMessage).then(()=>{
+      if(typeof XLSX==='undefined')throw new Error(errorMessage);
+    }).catch(error=>{spreadsheetLoad=null;throw error});
+  }
+  return spreadsheetLoad;
+}
+async function prepareSpreadsheetExport(){
+  try{await loadSpreadsheetLibrary();return true}
+  catch(error){toast(error.message,true);return false}
+}
 function workbookSheet(headers,rows,widths=[]){const sheet=XLSX.utils.aoa_to_sheet([headers,...rows]);sheet['!cols']=(widths.length?widths:headers.map(()=>14)).map(w=>({wch:w}));return sheet}
 function saveWorkbook(workbook,fileName){
-  if(typeof XLSX==='undefined')return toast('Excel 组件加载失败，请重新打开应用',true);
   try{const base64=XLSX.write(workbook,{bookType:'xlsx',type:'base64',compression:true});if(window.AndroidBridge&&AndroidBridge.saveBase64File){AndroidBridge.saveBase64File(fileName,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',base64);toast('Excel 正在保存到手机“下载”目录')}else XLSX.writeFile(workbook,fileName)}catch(_){toast('Excel 文件生成失败，请重试',true)}
 }
-function exportExcel(){
+async function exportExcel(){
+  if(!await prepareSpreadsheetExport())return;
   const workbook=XLSX.utils.book_new();
+  const classSizes=new Map();
+  for(const student of state.students)classSizes.set(student.className,(classSizes.get(student.className)||0)+1);
   XLSX.utils.book_append_sheet(workbook,workbookSheet(['学生姓名','学生状态','年龄','性别','学号','学生联系方式','学校','年级','班级','授课老师','剩余课时'],state.students.map(s=>[s.name,isLongTermAbsent(s)?'长期不来':'正常在读',s.age,s.gender,s.studentNo,s.contact||'',s.school,s.grade,s.className,s.teacher,Number(s.hours||0)]),[14,12,8,8,14,18,20,12,22,12,12]),'学生信息');
-  XLSX.utils.book_append_sheet(workbook,workbookSheet(['班级名称','授课老师','上课安排','上课教室','未签到提醒','学生人数','所属课程（展示）','班内显示名'],state.classes.map(c=>[c.name,c.teacher,classScheduleLabel(c),c.classroom||'',c.reminderEnabled?'开课5分钟后提醒':'未开启',state.students.filter(s=>s.className===c.name).length,classCourseName(c)||'待分类',classWithinCourseName(c)]),[24,14,24,18,20,12,22,22]),'班级信息');
+  XLSX.utils.book_append_sheet(workbook,workbookSheet(['班级名称','授课老师','上课安排','上课教室','未签到提醒','学生人数','所属课程（展示）','班内显示名'],state.classes.map(c=>[c.name,c.teacher,classScheduleLabel(c),c.classroom||'',c.reminderEnabled?'开课5分钟后提醒':'未开启',classSizes.get(c.name)||0,classCourseName(c)||'待分类',classWithinCourseName(c)]),[24,14,24,18,20,12,22,22]),'班级信息');
   XLSX.utils.book_append_sheet(workbook,workbookSheet(['日期','时间','学生姓名','学号','班级','授课老师','上课教室','签到方式'],state.attendance.map(a=>{const s=studentById(a.studentId)||{};return[a.date,a.time,s.name||'已删除学生',s.studentNo||'',a.className||s.className||'',a.teacher||s.teacher||'',a.classroom||'',a.method]}),[14,10,14,14,22,14,18,12]),'签到记录');
   XLSX.utils.book_append_sheet(workbook,workbookSheet(['日期','时间','学生姓名','学号','课时变化','原因'],state.transactions.map(t=>{const s=studentById(t.studentId)||{};return[t.date,t.time,s.name||'已删除学生',s.studentNo||'',Number(t.amount||0),t.reason]}),[14,10,14,14,12,24]),'课时记录');
   const safeName=String(state.settings.orgName||'未来学校学生管理系统').replace(/[\\/:*?"<>|]/g,'_');saveWorkbook(workbook,`${safeName}_教务数据_${localDate()}.xlsx`);
 }
-function exportStudentTemplate(){
+async function exportStudentTemplate(){
+  if(!await prepareSpreadsheetExport())return;
   const workbook=XLSX.utils.book_new(),headers=['学生姓名','长期不来','年龄','性别','学生联系方式','学校','年级','班级','授课老师','剩余课时'];
   XLSX.utils.book_append_sheet(workbook,workbookSheet(headers,[['张小明','否',10,'男','13800000000','示例小学','四年级','少儿编程启蒙班','王老师',20],['李小华','是','','','','','','','',10]],[14,12,8,8,18,20,12,22,12,12]),'学生导入模板');
   XLSX.utils.book_append_sheet(workbook,workbookSheet(['填写说明','内容'],[['所有学生必填','学生姓名、剩余课时'],['正常在读学生必填','班级、授课老师'],['长期不来学生','“长期不来”填写“是”时，班级和授课老师可留空；导入后独立放入长期不来名单'],['可选列','年龄、性别、学生联系方式、学校、年级，均可留空'],['长期不来标记','填写“是”会直接录入为长期不来学生；填写“否”或留空为正常在读'],['状态列兼容','也支持使用“学生状态”列，并填写“长期不来”或“正常在读”'],['学号生成','无需填写学号，导入时会根据入学年份、校区编号和四位学生编号自动连续生成'],['旧表兼容','旧模板中的学号列可以保留；已填写且不重复的学号会继续使用，空白学号自动生成'],['学生照片','照片文件请使用“学生姓名.jpg”命名，导入时可一次选择多张'],['照片要求','正面、单人、光线充足，建议 JPG 或 PNG'],['性别格式','选填；填写时使用“男”或“女”'],['年龄格式','选填；填写时应为 3–25'],['课时格式','必填；填写数字，允许负数；负数表示欠课']], [18,76]),'填写说明');
@@ -1272,15 +1172,20 @@ function matchImportPhoto(student,photoMap,nameCounts){
   const name=String(student.name||'').trim().toLowerCase();return nameCounts.get(name)===1?photoMap.get(name):null;
 }
 function openBatchImport(){
-  let readyRows=[],selectedPhotos=[],autoGeneratedCount=0,longTermCount=0,importing=false;
+  let readyRows=[],selectedPhotos=[],autoGeneratedCount=0,longTermCount=0,importing=false,readRequest=0;
   openModal(`<div class="modal-head"><span>⇧</span><div><h2>批量导入学生</h2><p>无需填写学号，系统会按当前校区自动连续生成</p></div></div><div class="simple-form"><label class="excel-drop"><span>▤</span><b>选择 Excel 文件</b><small>支持 .xlsx、.xls 和 .csv</small><input id="batchFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></label><div id="importPreview" class="import-preview">尚未选择文件</div><div class="form-actions"><button type="button" class="secondary-btn" id="cancelModal">取消</button><button type="button" class="primary-btn" id="confirmBatchImport" disabled>确认批量导入</button></div></div>`);
   $('#cancelModal').onclick=closeModal;
   const photoPicker=document.createElement('label');photoPicker.className='excel-drop compact';photoPicker.innerHTML='<span>▧</span><b>选择学生照片（可多选）</b><small id="photoPickState">照片可用学号或姓名命名，同名学生必须使用学号</small><input id="batchPhotos" type="file" multiple accept="image/jpeg,image/png,image/webp">';$('#importPreview').before(photoPicker);$('#batchPhotos').onchange=event=>{selectedPhotos=[...(event.target.files||[])];$('#photoPickState').textContent=selectedPhotos.length?`已选择 ${selectedPhotos.length} 张照片，将优先按学号、其次按唯一姓名匹配`:'照片请用学生姓名命名，例如 张小明.jpg'};
   $('#batchFile').onchange=async event=>{
     const file=event.target.files&&event.target.files[0],preview=$('#importPreview'),confirmButton=$('#confirmBatchImport');
-    readyRows=[];autoGeneratedCount=0;longTermCount=0;confirmButton.disabled=true;if(!file)return;preview.innerHTML='<b>正在读取并检查文件…</b>';
+    const request=++readRequest,stillCurrent=()=>request===readRequest&&$('#importPreview')===preview&&!$('#modalBackdrop').classList.contains('hidden');
+    readyRows=[];autoGeneratedCount=0;longTermCount=0;confirmButton.disabled=true;
+    if(!file){preview.textContent='尚未选择文件';return}
+    preview.innerHTML='<b>正在读取并检查文件…</b>';
     try{
-      const workbook=XLSX.read(await readLocalFile(file),{type:'array'}),sheet=workbook.Sheets[workbook.SheetNames[0]],matrix=XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',raw:false});
+      const [contents]=await Promise.all([readLocalFile(file),loadSpreadsheetLibrary()]);
+      if(!stillCurrent())return;
+      const workbook=XLSX.read(contents,{type:'array'}),sheet=workbook.Sheets[workbook.SheetNames[0]],matrix=XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',raw:false});
       if(matrix.length<2)throw new Error('表格中没有学生数据');
       const headers=matrix[0].map(value=>String(value).replace(/\s/g,'')),aliases={name:['学生姓名','姓名','name'],longTermAbsent:['长期不来','学生状态','状态','longTermAbsent'],age:['年龄','age'],gender:['性别','gender'],studentNo:['学号','学生学号','studentNo'],contact:['学生联系方式','联系方式','联系电话','手机号','contact'],school:['学校','所在学校','school'],grade:['年级','grade'],className:['班级','所在班级','className'],teacher:['授课老师','老师','teacher'],hours:['剩余课时','课时','hours']},indexes={};
       Object.entries(aliases).forEach(([key,names])=>indexes[key]=headers.findIndex(header=>names.some(name=>header.toLowerCase()===name.toLowerCase())));
@@ -1305,7 +1210,7 @@ function openBatchImport(){
       const longTermNote=longTermCount?`<p class="import-status-note">已标记 ${longTermCount} 名长期不来学生，将独立归入长期不来名单，不进入任何班级</p>`:'';
       preview.innerHTML=`<div class="import-summary"><strong>${readyRows.length}</strong><span>可导入</span><strong class="${issues.length?'bad':''}">${issues.length}</strong><span>跳过</span></div>${autoNote}${longTermNote}${issues.length?`<div class="import-issues">${issues.slice(0,8).map(item=>`<p>${esc(item)}</p>`).join('')}${issues.length>8?`<p>另有 ${issues.length-8} 条未显示</p>`:''}</div>`:'<p class="import-ok">检查通过，可以批量导入</p>'}`;
       confirmButton.disabled=!readyRows.length;
-    }catch(error){preview.innerHTML=`<p class="import-error">${esc(error.message||'无法读取该文件，请使用模板重新填写')}</p>`}
+    }catch(error){if(stillCurrent())preview.innerHTML=`<p class="import-error">${esc(error.message||'无法读取该文件，请使用模板重新填写')}</p>`}
   };
   $('#confirmBatchImport').onclick=async()=>{
     if(!readyRows.length||importing)return;
@@ -1336,20 +1241,6 @@ function openBatchImport(){
 }
 function openExport(){const text=JSON.stringify(state,null,2);openModal(`<div class="modal-head"><span>⇩</span><div><h2>导出本机备份</h2><p>长按全选复制，并保存到安全的位置</p></div></div><div class="simple-form"><label class="field"><span>备份文本</span><textarea id="backupText" readonly style="height:230px;padding:10px;border:1px solid #dfe4e1;border-radius:9px;font-size:8px;resize:none">${esc(text)}</textarea></label><div class="form-actions"><button class="secondary-btn" id="copyBackup">复制文本</button><button class="primary-btn" id="doneBackup">完成</button></div></div>`);$('#doneBackup').onclick=closeModal;$('#copyBackup').onclick=async()=>{const ta=$('#backupText');ta.select();try{await navigator.clipboard.writeText(ta.value)}catch(_){document.execCommand('copy')}toast('备份文本已复制');};}
 function openImport(){openModal(`<div class="modal-head"><span>⇧</span><div><h2>恢复完整备份</h2><p>可以选择自动备份文件，也可以粘贴此前导出的备份文本</p></div></div><form id="importForm" class="simple-form"><label class="excel-drop compact"><span>▤</span><b>选择 JSON 备份文件</b><small id="backupFileState">支持每日自动备份和手动导出的完整备份</small><input id="backupJsonFile" type="file" accept=".json,application/json"></label><label class="field"><span>备份文本</span><textarea id="backupImportText" name="data" required style="height:190px;padding:10px;border:1px solid #dfe4e1;border-radius:9px;font-size:8px;resize:none" placeholder="选择文件后会自动填入，也可以在这里粘贴 JSON"></textarea></label><div class="form-actions"><button type="button" class="secondary-btn" id="cancelModal">取消</button><button class="primary-btn" type="submit">验证并恢复</button></div></form>`);$('#cancelModal').onclick=closeModal;$('#backupJsonFile').onchange=async event=>{const file=event.target.files&&event.target.files[0];if(!file)return;try{$('#backupImportText').value=await readLocalTextFile(file);$('#backupFileState').textContent=`已读取：${file.name}`}catch(_){toast('无法读取该备份文件',true)}};$('#importForm').onsubmit=e=>{e.preventDefault();try{const restored=validateBackupState(JSON.parse(new FormData(e.target).get('data')));if(!requireSafetyBackup('恢复前备份'))return;state=restored;lastGeneratedId=['students','classes','attendance','transactions'].reduce((max,key)=>state[key].reduce((highest,item)=>Math.max(highest,item.id),max),lastGeneratedId);ensureClasses();ensureEnrollmentHistory();normalizeLongTermStudentAssignments();ensureAttendanceSnapshots();if(!saveState())return false;closeModal();render();toast('备份恢复成功，恢复前数据也已另存一份')}catch(error){toast(error&&error.message||'备份文件或文本无效，请检查是否完整',true)}};}
-function resetData(){
-  const summary=`${state.students.length} 名学生 · ${state.classes.length} 个班级 · ${state.attendance.length} 条签到记录 · ${state.transactions.length} 条课时记录`;
-  openDangerConfirmation({icon:'⌫',title:'清空本机全部数据',description:'这是最高风险操作，请仔细确认',subject:'未来学校学生管理系统本机数据',subjectMeta:summary,impactTitle:'全部资料会从应用中删除',impactText:'清空前会先在平板“下载”目录创建完整恢复备份；学生、班级、签到、课时、人脸和设置随后恢复为初始状态。',confirmLabel:'备份后清空全部数据',verifyText:'确认清空',onConfirm:()=>{if(!requireSafetyBackup('清空前备份'))return false;state=emptyState();if(!saveState())return false;isAdminAuthenticated=false;currentView='checkin';closeModal();render();toast('本机数据已清空，清空前备份正在保存')}});
-}
-function seedDemo(){
-  const base=Date.now();state.classes=[];state.students=[
-    {id:base+1,name:'林一诺',age:12,gender:'女',studentNo:'S001',contact:'13800000001',school:'育才实验学校',grade:'六年级',className:'Python 基础 A 班',teacher:'王老师',hours:22,faceRegistered:true},
-    {id:base+2,name:'周子墨',age:9,gender:'男',studentNo:'S002',contact:'13800000002',school:'星河小学',grade:'三年级',className:'少儿编程启蒙班',teacher:'李老师',hours:15,faceRegistered:false},
-    {id:base+3,name:'陈雨桐',age:14,gender:'女',studentNo:'S003',contact:'13800000003',school:'启明中学',grade:'八年级',className:'C++ 信息学 B 班',teacher:'张老师',hours:6,faceRegistered:true},
-    {id:base+4,name:'许嘉言',age:11,gender:'男',studentNo:'S004',contact:'13800000004',school:'育才实验学校',grade:'五年级',className:'Python 基础 A 班',teacher:'王老师',hours:4,faceRegistered:true}
-  ];
-  ensureClasses();ensureEnrollmentHistory();state.classes.forEach((course,index)=>{course.schedule=['每周六两课时','每周日两课时','每周六两课时'][index]||'';course.scheduleWeekday=[6,7,6][index]||0;course.scheduleStart=['09:00','14:00','14:00'][index]||'';course.reminderEnabled=false;course.classroom=`编程教室 ${index+1}`});const now=new Date();state.attendance=[];[0,1,3,5].forEach((ago,i)=>{const d=new Date(now);d.setDate(d.getDate()-ago);const s=state.students[i%state.students.length],snapshot=studentProfileAtDate(s,localDate(d));state.attendance.push({id:uid(),studentId:s.id,date:localDate(d),time:`${String(10+i).padStart(2,'0')}:18`,method:['人脸','姓名','学号'][i%3],classId:snapshot.classId||'',className:snapshot.className||'',teacher:snapshot.teacher||'',classroom:snapshot.classroom||''})});state.transactions=[];if(!saveState())return false;render();toast('演示数据已添加');
-}
-
 $('#todayLabel').textContent = new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
 bindClassSpaceShell();
 render();
@@ -1370,7 +1261,6 @@ function scheduleFacePhotoMaintenance(){
 let displayedDay = localDate();
 function refreshDayContext(){
   const today=localDate();if(today===displayedDay)return;
-  if(spaceSelectedDate===displayedDay)spaceSelectedDate='';
   displayedDay=today;$('#todayLabel').textContent=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
   invalidatePageCache();syncNativeReminders();listPages.attendance=1;
   if(currentView!=='settings')render();
@@ -1378,6 +1268,6 @@ function refreshDayContext(){
 window.addEventListener('focus',refreshDayContext);
 window.addEventListener('pageshow',refreshDayContext);
 if(typeof document.addEventListener==='function')document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='hidden')refreshDayContext()});
-if(typeof window.setInterval==='function')window.setInterval(()=>{if(document.visibilityState!=='hidden'){refreshDayContext();refreshClassSpaceClock()}},30000);
+if(typeof window.setInterval==='function')window.setInterval(()=>{if(document.visibilityState!=='hidden')refreshDayContext()},30000);
 setTimeout(scheduleFacePhotoMaintenance,1500);
 setTimeout(()=>{if(!state.settings.cameraPositionConfigured&&$('#modalBackdrop').classList.contains('hidden'))openCameraPositionSetup(true)},260);

@@ -639,12 +639,16 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
         return store.assign_class_campus(token, class_id, data.model_dump())
 
     @app.get('/v1/fee-reviews')
-    def fee_reviews(token: Token):
-        return store.fee_reviews(token)
+    def fee_reviews(token: Token, include_snapshots: bool = True):
+        return store.fee_reviews(token, include_snapshots=include_snapshots)
 
     @app.get('/v1/fee-reviews/preview')
     def preview_fee_review(token: Token, campus_id: str, period: Literal['week', 'month'], date: str):
         return store.preview_fee_review(token, campus_id, period, date)
+
+    @app.get('/v1/fee-reviews/{review_id}')
+    def fee_review_detail(review_id: str, token: Token):
+        return store.fee_review_detail(token, review_id)
 
     @app.post('/v1/fee-reviews', status_code=201)
     def submit_fee_review(data: FeeReviewSubmitInput, token: Token):

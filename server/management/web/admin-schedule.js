@@ -1,6 +1,6 @@
 'use strict';
 let adminScheduleDate='';
-function scheduleDateKey(seconds){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(seconds*1000)),values={};for(const part of parts)values[part.type]=part.value;return values.year+'-'+values.month+'-'+values.day;}
+function scheduleDateKey(seconds){return chinaDateKey(new Date(seconds*1000));}
 function shiftScheduleDay(day,offset){const [year,month,date]=day.split('-').map(Number);return new Date(Date.UTC(year,month-1,date+offset)).toISOString().slice(0,10);}
 async function openLessonSubstitute(item){
  const {items}=await api('/v1/admin/teachers');

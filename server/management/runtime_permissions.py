@@ -243,19 +243,32 @@ class CampusPermissions:
             return {'id': proposal_id, 'status': action}
         return self.command(token, 'user', run)
 
-    def fee_reviews(self, token):
+    def fee_reviews(self, token, *, include_snapshots=True):
         def run(db, actor):
             self._require_fee_review_role(actor)
-            rows = db.execute('''SELECT f.id,f.campus_id,c.name AS campus_name,f.period,f.period_start,
-                    f.status,f.version,f.reason,f.updated_at,f.snapshot
+            fields = sql.SQL(',f.snapshot' if include_snapshots else '')
+            rows = db.execute(sql.SQL('''SELECT f.id,f.campus_id,c.name AS campus_name,f.period,f.period_start,
+                    f.status,f.version,f.reason,f.updated_at{}
                 FROM teaching_fee_reviews f JOIN campuses c ON c.org_id=f.org_id AND c.id=f.campus_id
                 WHERE f.org_id=%s AND (%s::text IS NULL OR f.campus_id=%s)
-                ORDER BY f.period_start DESC,c.name,f.period''',
+                ORDER BY f.period_start DESC,c.name,f.period''').format(fields),
                 (actor['org_id'], actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             campuses = db.execute('''SELECT id,name FROM campuses WHERE org_id=%s
                 AND (%s::text IS NULL OR id=%s) ORDER BY name,id''',
                 (actor['org_id'], actor.get('campus_id'), actor.get('campus_id'))).fetchall()
             return {'items': rows, 'campuses': campuses}
+        return self.command(token, 'user', run)
+
+    def fee_review_detail(self, token, review_id):
+        def run(db, actor):
+            self._require_fee_review_role(actor)
+            campus_id = actor.get('campus_id')
+            row = db.execute('''SELECT version,snapshot FROM teaching_fee_reviews
+                WHERE org_id=%s AND id=%s AND (%s::text IS NULL OR campus_id=%s)''',
+                (actor['org_id'], review_id, campus_id, campus_id)).fetchone()
+            if not row:
+                raise Problem(404, 'review_missing', '未找到审核单')
+            return row
         return self.command(token, 'user', run)
 
     def _fee_review_snapshot(self, db, org_id, now, period, date, campus_id):

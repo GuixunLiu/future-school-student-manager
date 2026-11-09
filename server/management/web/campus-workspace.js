@@ -114,7 +114,7 @@ function renderFeeSnapshot(data){
 }
 
 async function feeReviewDashboard(){
- const data=await api('/v1/fee-reviews'),reviewer=hasStaffRole('performance_reviewer'),owner=hasStaffRole('owner');
+ const data=await api('/v1/fee-reviews?include_snapshots=false'),reviewer=hasStaffRole('performance_reviewer');
  $('identity').replaceChildren(node('span',identity.display_name+' · '+(reviewer?'绩效审核员':identity.campus_name||'老板')),button('退出',logout,'secondary'));
  const heading=campusHeading('课时费审核','按周核对，月度审核通过后由老板确认结算。');
  if(!reviewer)heading.append(button('返回管理',dashboard,'secondary'));
@@ -127,17 +127,7 @@ async function feeReviewDashboard(){
  if(!data.campuses.length){submit.disabled=true;filters.append(node('p','还没有可用校区。','hint'));}
  const preview=node('div'),list=node('section',undefined,'panel teaching-fee-list');list.append(node('h2','已提交的审核单'));
  if(!data.items.length)list.append(node('p','暂无已提交的审核单。','hint'));
- for(const item of data.items){
-  const entry=node('details',undefined,'panel');
-  entry.append(node('summary',item.campus_name+' · '+(item.period==='week'?'周':'月')+' · '+item.period_start+' · '+feeReviewStatus[item.status]),
-   node('p','最近操作说明：'+item.reason,'hint'),renderFeeSnapshot(item.snapshot));
-  if(reviewer&&['submitted','approved'].includes(item.status)){
-   if(item.status==='submitted')entry.append(button('审核通过',()=>openFeeDecision(item,'approved')));
-   entry.append(button('退回',()=>openFeeDecision(item,'returned'),'secondary'));
-  }
-  if(owner&&item.period==='month'&&item.status==='approved')entry.append(button('确认月度结算',()=>openFeeDecision(item,'settled')));
-  list.append(entry);
- }
+ for(const item of data.items)list.append(feeReviewEntry(item));
  form.addEventListener('submit',async event=>{
   event.preventDefault();submit.disabled=true;
   const query={campus_id:campus.value,period:period.value,date:date.value};
@@ -149,6 +139,40 @@ async function feeReviewDashboard(){
   }catch(error){showError(error);}finally{submit.disabled=false;}
  });
  $('main').replaceChildren(heading,filters,preview,list);
+}
+
+function feeReviewEntry(item){
+ const entry=node('details',undefined,'panel'),body=node('div');
+ entry.append(node('summary',item.campus_name+' · '+(item.period==='week'?'周':'月')+' · '+item.period_start+' · '+feeReviewStatus[item.status]),body);
+ let loading=false,loaded=false;
+ async function loadDetails(){
+  if(!entry.open||loading||loaded)return;
+  loading=true;
+  const status=node('p','正在加载审核明细…','hint');status.setAttribute('role','status');
+  body.replaceChildren(status);
+  try{
+   const data=await api('/v1/fee-reviews/'+encodeURIComponent(item.id));
+   if(!entry.isConnected)return;
+   if(data.version!==item.version){
+    loaded=true;
+    body.replaceChildren(node('p','审核单已更新，请刷新列表。','hint'),button('刷新列表',feeReviewDashboard,'secondary'));
+    return;
+   }
+   body.replaceChildren(node('p','最近操作说明：'+item.reason,'hint'),renderFeeSnapshot(data.snapshot));
+   if(hasStaffRole('performance_reviewer')&&['submitted','approved'].includes(item.status)){
+    if(item.status==='submitted')body.append(button('审核通过',()=>openFeeDecision(item,'approved')));
+    body.append(button('退回',()=>openFeeDecision(item,'returned'),'secondary'));
+   }
+   if(hasStaffRole('owner')&&item.period==='month'&&item.status==='approved'){
+    body.append(button('确认月度结算',()=>openFeeDecision(item,'settled')));
+   }
+   loaded=true;
+  }catch(error){
+   if(entry.isConnected)body.replaceChildren(node('p',error.message,'hint'),button('重试加载',loadDetails,'secondary'));
+  }finally{loading=false;}
+ }
+ entry.addEventListener('toggle',loadDetails);
+ return entry;
 }
 
 function openFeeDecision(item,action,query){
