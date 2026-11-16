@@ -3,6 +3,19 @@ plugins {
 }
 
 def classboardCompat = providers.gradleProperty('classboardCompat').isPresent()
+def runtimeEndpoint = providers.gradleProperty('canonicalRuntimeEndpoint').orElse('https://47.97.226.219:18083').get()
+def runtimePin = providers.gradleProperty('canonicalRuntimePin').orElse('').get()
+def customRuntime = providers.gradleProperty('canonicalRuntimeEndpoint').isPresent()
+if (customRuntime != providers.gradleProperty('canonicalRuntimePin').isPresent() ||
+        (customRuntime && !(runtimePin ==~ /[a-f0-9]{64}/))) {
+    throw new GradleException('Supply an HTTPS runtime endpoint and its SHA-256 public key pin together.')
+}
+def runtimeUri = new URI(runtimeEndpoint)
+if (runtimeUri.scheme != 'https' || !runtimeUri.host || runtimeUri.rawUserInfo != null ||
+        runtimeUri.rawPath != '' || runtimeUri.rawQuery != null || runtimeUri.rawFragment != null ||
+        runtimeUri.port == 0 || runtimeUri.port > 65535) {
+    throw new GradleException('The canonical runtime endpoint must be a bare HTTPS origin.')
+}
 
 android {
     namespace 'cn.mashangchengzhang.studentmanager'
@@ -15,6 +28,8 @@ android {
         targetSdk 35
         versionCode classboardCompat ? 93 : 92
         versionName classboardCompat ? '4.14.0-classboard-layout' : '4.14.0-tablet-runtime'
+        buildConfigField 'String', 'CANONICAL_RUNTIME_ENDPOINT', groovy.json.JsonOutput.toJson(runtimeEndpoint)
+        buildConfigField 'String', 'CANONICAL_RUNTIME_PIN', groovy.json.JsonOutput.toJson(runtimePin)
 
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a'
@@ -23,9 +38,9 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix '.synctest'
-            versionNameSuffix '-isolated-test'
-            resValue 'string', 'app_name', '未来学校同步测试（独立）'
+            applicationIdSuffix customRuntime ? '.runtimebridge' : '.synctest'
+            versionNameSuffix customRuntime ? '-runtime-bridge-test' : '-isolated-test'
+            resValue 'string', 'app_name', customRuntime ? '未来学校新版联调（独立）' : '未来学校同步测试（独立）'
         }
         release {
             minifyEnabled false

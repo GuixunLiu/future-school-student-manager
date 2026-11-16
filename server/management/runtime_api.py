@@ -11,6 +11,7 @@ from business.api import LocalGuard
 from business.models import Input, Login
 from business.store import Problem
 from .runtime_service import RuntimeStore
+from .runtime_schema import runtime_readiness
 
 
 class TabletCheckinInput(Input):
@@ -36,6 +37,12 @@ class BalanceAdjustmentInput(Input):
     reason: str = Field(min_length=1, max_length=200)
     expected_revision: int = Field(ge=0)
     command_ref: str = Field(min_length=1, max_length=80)
+
+
+class BalanceDecisionInput(Input):
+    action: Literal['approved', 'rejected']
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=200)
 
 
 class StudentEnrollmentInput(Input):
@@ -205,6 +212,7 @@ class AccountPasswordInput(Input):
 class RenewalInput(Input):
     student_id: str = Field(min_length=1, max_length=80)
     course_id: str = Field(min_length=1, max_length=80)
+    campus_id: str | None = Field(default=None, min_length=1, max_length=80)
     units_added: int = Field(gt=0, le=11_000_000)
     amount_cents: int = Field(ge=0, le=100_000_000)
     unit_price_cents: int = Field(ge=0, le=100_000_000)
@@ -287,7 +295,8 @@ class TabletActivationInput(Input):
     expected_device_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
-def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
+def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None,
+               web_face_enabled=False, web_hour_unit_scale=1):
     store = RuntimeStore(conninfo, clock, face_key=face_key)
     app = FastAPI(title='未来学校统一运行 API', docs_url=None, redoc_url=None,
                   openapi_url=None, redirect_slashes=False)
@@ -320,6 +329,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
         return value[7:]
 
     Token = Annotated[str, Depends(authorization)]
+
+    def require_web_face():
+        if not web_face_enabled:
+            raise Problem(403, 'web_face_paused', '等待开放')
 
     from pathlib import Path
     from fastapi.responses import FileResponse
@@ -360,6 +373,10 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     @app.get('/admin-monthly.js')
     def admin_monthly_script():
         return FileResponse(assets / 'admin-monthly.js', media_type='application/javascript')
+
+    @app.get('/admin-balances.js')
+    def admin_balances_script():
+        return FileResponse(assets / 'admin-balances.js', media_type='application/javascript')
 
     @app.get('/admin-renewal.js')
     def admin_renewal_script():
@@ -430,15 +447,22 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
 
     @app.get('/health/ready')
     def health():
-        with store.connect() as db:
-            row = db.execute("SELECT applied_at FROM schema_migrations WHERE version='fresh-start-runtime-v2'").fetchone()
-        return {'status': 'ready' if row else 'not_initialized',
-                'schema': 'fresh-start-runtime-v2', 'initialized': bool(row),
-                'production_ready': False, 'wechat_sending_enabled': False}
+        try:
+            with store.connect() as db:
+                state = runtime_readiness(db)
+        except psycopg.Error:
+            state = {'status': 'database_unavailable', 'initialized': False}
+        return JSONResponse({**state, 'schema': 'fresh-start-runtime-v2',
+                             'production_ready': False, 'wechat_sending_enabled': False},
+                            status_code=200 if state['status'] == 'ready' else 503)
 
     @app.get('/v1/me')
     def me(token: Token):
-        return store.me(token)
+        identity = store.me(token)
+        if identity['kind'] == 'user':
+            identity['web_face_enabled'] = web_face_enabled
+            identity['web_hour_unit_scale'] = web_hour_unit_scale
+        return identity
 
     @app.post('/v1/auth/login')
     def login(data: RuntimeLogin, request: Request):
@@ -465,6 +489,7 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
 
     @app.put('/v1/admin/students/{student_id}/face-profile', status_code=201)
     def admin_face_profile(student_id: str, data: FaceProfileInput, response: Response, token: Token):
+        require_web_face()
         result = store.admin_face_profile(token, student_id, data.model_dump())
         if result['duplicate']:
             response.status_code = 200
@@ -760,6 +785,7 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
 
     @app.post('/v1/teacher/lessons/{lesson_id}/face-checkin', status_code=201)
     def teacher_face_checkin(lesson_id: str, data: FaceCheckinInput, response: Response, token: Token):
+        require_web_face()
         result = store.teacher_face_checkin(token, lesson_id, data.model_dump())
         if result['duplicate']:
             response.status_code = 200
@@ -776,8 +802,23 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None):
     def teacher_weekly_report(token: Token, week_start: str | None = None):
         return store.teacher_weekly_report(token, week_start)
 
-    @app.put('/v1/teacher/students/{student_id}/balance')
-    def teacher_balance(student_id: str, data: BalanceAdjustmentInput, token: Token):
-        return store.teacher_adjust_balance(token, student_id, data.model_dump())
+    @app.put('/v1/owner/students/{student_id}/balance')
+    def owner_balance(student_id: str, data: BalanceAdjustmentInput, token: Token):
+        return store.owner_adjust_balance(token, student_id, data.model_dump())
+
+    @app.get('/v1/balance-adjustment-requests')
+    def balance_requests(token: Token):
+        return store.balance_requests(token)
+
+    @app.post('/v1/admin/students/{student_id}/balance-request', status_code=201)
+    def balance_request(student_id: str, data: BalanceAdjustmentInput, response: Response, token: Token):
+        result = store.submit_balance_request(token, student_id, data.model_dump())
+        if result['duplicate']:
+            response.status_code = 200
+        return result
+
+    @app.put('/v1/owner/balance-adjustment-requests/{request_id}')
+    def balance_decision(request_id: str, data: BalanceDecisionInput, token: Token):
+        return store.decide_balance_request(token, request_id, data.model_dump())
 
     return app

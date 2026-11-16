@@ -124,8 +124,7 @@ class RuntimePreflightTests(unittest.TestCase):
         connection.close.assert_called_once_with()
 
     def test_installed_candidate_dependencies_match_and_failures_are_redacted(self):
-        result = preflight.check_dependencies(
-            SERVER, SERVER / '.test-venv' / 'Scripts' / 'python.exe')
+        result = preflight.check_dependencies(SERVER, Path(sys.executable))
         self.assertEqual('pass', result['status'], result)
         with patch.object(preflight, 'read_pins', return_value={'fastapi': '0.162.0'}), patch.object(
                 preflight.subprocess, 'run', return_value=subprocess.CompletedProcess(

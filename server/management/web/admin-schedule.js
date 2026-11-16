@@ -40,7 +40,7 @@ function scheduleOperations(item,serverTime,desktop=false){
 function scheduleLessonTable(items,serverTime){
  const section=node('section',undefined,'panel'),table=directoryTable(['开始时间','班级与课程','授课教师','扣课规则','应到 / 已到 / 请假 / 未签到','状态','课次操作']),cards=node('div',undefined,'schedule-mobile-list');section.append(node('h2','当日课次'));
  if(!items.length){section.append(node('div','这一天没有课次','empty'));return section;}
- for(const item of items){const row=node('tr'),course=item.class_name+(item.course_name?' · '+item.course_name:''),charge=item.charge_units===null?'—':item.charge_units+' 课时 · 规则 v'+item.charge_rule_revision,counts=item.expected_count+' / '+item.arrived_count+' / '+item.leave_count+' / '+item.missing_count,state=(item.state==='scheduled'?'正常':'已取消')+' · 资料 v'+item.version;
+ for(const item of items){const row=node('tr'),course=item.class_name+(item.course_name?' · '+item.course_name:''),charge=item.charge_units===null?'—':teacherLessonHours(item.charge_units)+' · 规则 v'+item.charge_rule_revision,counts=item.expected_count+' / '+item.arrived_count+' / '+item.leave_count+' / '+item.missing_count,state=(item.state==='scheduled'?'正常':'已取消')+' · 资料 v'+item.version;
   row.append(node('td',monthlyTime(item.starts_at)),node('td',course),node('td',item.teacher_names||'未安排'),node('td',charge),node('td',counts),node('td',state),scheduleOperations(item,serverTime,true));table.body.append(row);
   const card=node('article',undefined,'item schedule-mobile-card');card.append(node('h3',monthlyTime(item.starts_at)+' · '+course),node('p','授课教师：'+(item.teacher_names||'未安排')+'　｜　'+charge),node('p','应到 / 已到 / 请假 / 未签到：'+counts),node('p',state),scheduleOperations(item,serverTime));cards.append(card);
  }
@@ -50,7 +50,7 @@ function scheduleReceipt(receipt){
  if(!receipt)return null;const result=receipt.result,panel=node('section',undefined,'panel enrollment-receipt');
  if(receipt.kind==='cancel'){panel.append(node('h2',result.duplicate?'已恢复取消回执':'课次已取消'),node('p',monthlyTime(result.starts_at)+' · '+result.class_name+' · 资料版本 '+result.version),node('p','应到名单与签到记录已保留；统计排除该课次；未自动退课时。'));}
  else if(receipt.kind==='reschedule'){panel.append(node('h2',result.duplicate?'已恢复改期回执':'课次时间已调整'),node('p',result.class_name+' · '+monthlyTime(result.starts_at)+' · 资料版本 '+result.version),node('p','原名单、签到、课时余额和课时流水均未改变。'));}
- else panel.append(node('h2',result.duplicate?'该课次已创建':'课次创建完成'),node('p',monthlyTime(result.starts_at)+' · '+result.class_name+' · '+result.teacher_name),node('p','统一扣课 '+result.charge_units+' 课时，已纳入 '+result.roster_count+' 名在读学生；余额与历史未改变。'));
+ else panel.append(node('h2',result.duplicate?'该课次已创建':'课次创建完成'),node('p',monthlyTime(result.starts_at)+' · '+result.class_name+' · '+result.teacher_name),node('p','统一扣课 '+teacherLessonHours(result.charge_units)+'，已纳入 '+result.roster_count+' 名在读学生；余额与历史未改变。'));
  return panel;
 }
 let adminScheduleView='daily';
@@ -120,7 +120,7 @@ async function adminScheduleDashboard(day=adminScheduleDate||chinaToday(),receip
  const templateLabel=node('label','排课模板（可选）'),templateSelect=node('select');templateSelect.setAttribute('aria-label','排课模板');templateLabel.append(templateSelect);form.append(templateLabel);
  const teacherLabel=node('label','授课教师'),teacherSelect=node('select');teacherSelect.required=true;teacherSelect.setAttribute('aria-label','授课教师');teacherLabel.append(teacherSelect);form.append(teacherLabel);
  const start=field(form,'开始时间（北京时间）','datetime-local'),end=field(form,'结束时间（北京时间）','datetime-local');start.value=chinaDateTimeLocal(new Date(Date.now()+3600000));end.value=chinaDateTimeLocal(new Date(Date.now()+2*3600000));
- const charge=field(form,'统一扣课课时','number');charge.min='1';charge.max='10000000';charge.step='1';charge.value='1';charge.inputMode='numeric';
+ const charge=field(form,'统一扣课课时','number');hourInput(charge,1,10000000);charge.value='1';
  const confirmation=node('label',undefined,'check renewal-confirmation enrollment-wide'),check=node('input');check.type='checkbox';check.required=true;confirmation.append(check,node('span','已核对班级、模板、教师、时间和扣课单位'));form.append(confirmation);
  const hint=node('p','','hint enrollment-wide'),submit=node('button','确认创建课次','enrollment-wide');submit.type='submit';form.append(hint,submit);create.append(form);sections.push(create,scheduleLessonTable(lessonData.items,lessonData.server_time));
  function refreshTeachers(){const selected=teacherSelect.value,eligible=teacherData.items.filter(item=>(item.class_ids||[]).includes(classSelect.value));teacherSelect.replaceChildren();for(const teacher of eligible){const option=node('option',teacher.display_name+' · '+teacher.login);option.value=teacher.id;teacherSelect.append(option);}if(eligible.some(item=>item.id===selected))teacherSelect.value=selected;teacherSelect.disabled=!eligible.length;submit.disabled=!activeClasses.length||!eligible.length;const count=studentData.items.filter(item=>item.active&&(item.class_ids||[]).includes(classSelect.value)).length;hint.textContent=eligible.length?'本班当前 '+count+' 名在读学生将在创建时加入应到名单；空班也会保存课次和默认扣课规则。':'该班暂无在职且已授权的教师，请先完成教师班级授权。';}
@@ -129,10 +129,10 @@ async function adminScheduleDashboard(day=adminScheduleDate||chinaToday(),receip
  if(!activeClasses.length){classSelect.disabled=true;templateSelect.disabled=true;teacherSelect.disabled=true;submit.disabled=true;hint.textContent='没有启用课程的班级，不能创建课次。';}else{refreshTeachers();refreshTemplates();}
  classSelect.addEventListener('change',()=>{refreshTeachers();refreshTemplates();applyTemplate();});templateSelect.addEventListener('change',applyTemplate);$('main').replaceChildren(...sections);
  filterForm.addEventListener('submit',async event=>{event.preventDefault();view.disabled=true;try{await adminScheduleDashboard(date.value);}catch(error){showError(error);}finally{if(view.isConnected)view.disabled=false;}});
- let previousPayload='',commandRef='';form.addEventListener('submit',async event=>{event.preventDefault();const units=Number(charge.value),startsAt=Math.floor(Date.parse(start.value+':00+08:00')/1000),endsAt=Math.floor(Date.parse(end.value+':00+08:00')/1000);
-  if(!Number.isInteger(units)||units<1||units>10000000){charge.setCustomValidity('扣课课时必须是 1 至 10000000 的整数');charge.reportValidity();return;}charge.setCustomValidity('');
+ let previousPayload='',commandRef='';form.addEventListener('submit',async event=>{event.preventDefault();const units=lessonUnits(charge.value),startsAt=Math.floor(Date.parse(start.value+':00+08:00')/1000),endsAt=Math.floor(Date.parse(end.value+':00+08:00')/1000);
+  if(!Number.isInteger(units)||units<1||units>10000000){charge.setCustomValidity('请输入有效扣课课时，最小单位 '+(1/hourUnitScale())+' 课时');charge.reportValidity();return;}charge.setCustomValidity('');
   if(!Number.isFinite(startsAt)){start.setCustomValidity('请选择有效的开始时间');start.reportValidity();return;}start.setCustomValidity('');if(!Number.isFinite(endsAt)||endsAt<=startsAt||endsAt-startsAt>12*3600){end.setCustomValidity('结束时间必须晚于开始时间，且时长不超过 12 小时');end.reportValidity();return;}end.setCustomValidity('');
-  const payload={class_id:classSelect.value,teacher_id:teacherSelect.value,starts_at:startsAt,ends_at:endsAt,charge_units:units,command_ref:''};if(templateSelect.value)payload.schedule_id=templateSelect.value;const serialized=JSON.stringify({...payload,command_ref:undefined});if(serialized!==previousPayload){commandRef=crypto.randomUUID().replaceAll('-','');previousPayload=serialized;}payload.command_ref=commandRef;submit.disabled=true;
+  const payload={class_id:classSelect.value,teacher_id:teacherSelect.value,starts_at:startsAt,ends_at:endsAt,charge_units:units,command_ref:''};if(templateSelect.value)payload.schedule_id=templateSelect.value;const serialized=JSON.stringify({...payload,command_ref:undefined});if(serialized!==previousPayload){commandRef=runtimeRequestRef();previousPayload=serialized;}payload.command_ref=commandRef;submit.disabled=true;
   try{const result=await api('/v1/admin/lessons',payload);adminScheduleView='daily';await adminScheduleDashboard(scheduleDateKey(result.starts_at),{kind:'create',result});notify((result.duplicate?'该课次已保存，未重复创建。':'课次创建成功：')+result.class_name+'，'+result.teacher_name+'，应到 '+result.roster_count+' 人');}catch(error){showError(error);}finally{if(submit.isConnected)submit.disabled=false;}
  });
  for(const input of [start,end,charge])input.addEventListener('input',()=>input.setCustomValidity(''));
@@ -155,15 +155,15 @@ async function openCancelledLesson(item){
   const table=directoryTable(['学生 / 学号','签到状态','剩余课时','原扣课规则','处理']);
   for(const student of data.students){const row=node('tr'),identity=node('td');identity.append(node('strong',student.name),node('small',student.external_ref));const status={arrived:'已到',leave:'请假',missing:student.expected?'未签到':'无需到课'}[student.status]||'待核对',operations=node('td',undefined,'directory-actions');
    if(student.expected&&student.status==='missing'){const leave=button('请假',()=>openCancelledLeave(item,student),'secondary');leave.dataset.action='cancelled-leave';leave.dataset.studentId=student.student_id;operations.append(leave);}else operations.append(node('span',student.status==='missing'?'无需处理':'已处理，保留记录','hint'));
-   row.append(identity,node('td',status+' · v'+student.attendance_revision),node('td',student.balance_units==null?'—':student.balance_units+' 课时'),node('td',student.charge_units+' 课时'),operations);table.body.append(row);
+   row.append(identity,node('td',status+' · v'+student.attendance_revision),node('td',teacherLessonHours(student.balance_units)),node('td',teacherLessonHours(student.charge_units)),operations);table.body.append(row);
   }content.append(table.scroll);
  }
  if(!$('device-dialog').open)$('device-dialog').showModal();
 }
 function openCancelledLeave(item,student){
- const content=directoryDialog('取消课次请假 · '+student.name),form=node('form',undefined,'directory-form');content.append(node('p','学号 '+student.external_ref+' · 当前未签到 v'+student.attendance_revision+' · 原扣课 '+student.charge_units+' 课时','hint'));
+ const content=directoryDialog('取消课次请假 · '+student.name),form=node('form',undefined,'directory-form');content.append(node('p','学号 '+student.external_ref+' · 当前未签到 v'+student.attendance_revision+' · 原扣课 '+teacherLessonHours(student.charge_units),'hint'));
  const reason=scheduleReason(form,'请假原因','例如：家长已提前请假，取消前仍需归档'),checkLabel=node('label',undefined,'check directory-confirm'),check=node('input');check.type='checkbox';check.required=true;checkLabel.append(check,node('span','已核对请假；本次不扣课时，平板仅归档结果'));form.append(checkLabel,node('p','此操作不会恢复课次，取消课次仍不进入到课率。重复点击或网络重试使用同一操作编号。','hint'));
- const submit=node('button','确认请假');submit.type='submit';form.append(submit);content.append(form);if(!$('device-dialog').open)$('device-dialog').showModal();const eventRef=crypto.randomUUID().replaceAll('-','');
+ const submit=node('button','确认请假');submit.type='submit';form.append(submit);content.append(form);if(!$('device-dialog').open)$('device-dialog').showModal();const eventRef=runtimeRequestRef();
  form.addEventListener('submit',async event=>{event.preventDefault();const payload={student_id:student.student_id,reason:reason.value.trim(),event_ref:eventRef,expected_revision:student.attendance_revision};submit.disabled=true;try{const result=await api('/v1/admin/lessons/'+encodeURIComponent(item.id)+'/leave',payload);$('device-dialog').close();await adminScheduleDashboard(scheduleDateKey(item.starts_at));notify((result.duplicate?'已恢复上次处理结果：':'请假完成：')+student.name+'，未扣课时；平板可核对归档');}catch(error){if(!scheduleConflict(error,scheduleDateKey(item.starts_at)))showError(error);}finally{if(submit.isConnected)submit.disabled=false;}});
 }
 function openScheduleCancel(item){

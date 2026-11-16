@@ -10,8 +10,8 @@ function renewalStudentRows(items){
  if(!items.length){const row=node('tr'),cell=node('td','没有符合条件的在读学生');cell.colSpan=5;cell.className='empty';row.append(cell);body.append(row);return body;}
  for(const student of items){
   const row=node('tr'),name=node('td',undefined,'student-name');name.textContent=student.name;
-  const balance=node('td',String(student.balance_units)+' 课时','renewal-balance');balance.append(node('small','余额版本 '+student.balance_revision,'revision'));
-  const operations=node('td',undefined,'roster-operation'),renew=button('续费登记',()=>openAdminRenewal(student.id)),sync=button('同步课次',()=>adminRosterSyncDashboard(student.id),'secondary');renew.dataset.action='renew';renew.dataset.studentId=student.id;sync.dataset.action='sync-roster';sync.dataset.studentId=student.id;operations.append(renew,sync);
+  const balance=node('td',teacherLessonHours(student.balance_units),'renewal-balance');if(student.balance_units!=null)balance.append(node('small','余额版本 '+student.balance_revision,'revision'));
+  const operations=node('td',undefined,'roster-operation'),renew=button('续费登记',()=>openAdminRenewal(student.id)),sync=button('同步课次',()=>adminRosterSyncDashboard(student.id),'secondary');renew.disabled=student.balance_units==null;renew.title=renew.disabled?'请先核对期初课时':'';renew.dataset.action='renew';renew.dataset.studentId=student.id;sync.dataset.action='sync-roster';sync.dataset.studentId=student.id;operations.append(renew,sync);
   row.append(name,node('td',student.external_ref||'—'),node('td',(student.class_names||[]).join('、')||'未分班'),balance,operations);body.append(row);
  }
  return body;
@@ -29,10 +29,19 @@ async function adminRenewalDashboard(){
 }
 function openAdminRenewal(studentId){
  const student=adminStudents.find(item=>item.id===studentId&&item.active);if(!student)throw Error('学生资料已变化，请刷新后重新选择');
+ if(student.balance_units==null)throw Error('期初课时待核对，请先由管理员核实余额');
  const courses=renewalCourses(student),content=$('dialog-content');content.replaceChildren();const title=node('h2','为学生办理续费');title.id='dialog-title';content.append(title);
- const summary=node('div',undefined,'renewal-form-summary');summary.append(node('strong',student.name+' · '+(student.external_ref||'无学号')),node('p',(student.class_names||[]).join('、')+' · 页面余额 '+student.balance_units+' 课时'),node('p','最终入账以服务器锁定的最新余额为准；历史续费单价不受以后调价影响。'));content.append(summary);
+ const summary=node('div',undefined,'renewal-form-summary');summary.append(node('strong',student.name+' · '+(student.external_ref||'无学号')),node('p',(student.class_names||[]).join('、')+' · 页面余额 '+teacherLessonHours(student.balance_units)),node('p','最终入账以服务器锁定的最新余额为准；历史续费单价不受以后调价影响。'));content.append(summary);
  const form=node('form'),courseLabel=node('label','续费课程'),course=node('select');course.required=true;course.setAttribute('aria-label','续费课程');for(const item of courses){const option=node('option',item.name);option.value=item.id;course.append(option);}courseLabel.append(course);form.append(courseLabel);
- const units=field(form,'续费课时','number');units.min='1';units.max='11000000';units.step='1';units.inputMode='numeric';units.placeholder='请输入正整数课时';
+ const campusLabel=node('label','收费校区'),campus=node('select');campusLabel.append(campus);form.append(campusLabel);
+ function updateCampus(){
+  const eligible=adminClasses.filter(row=>(student.class_ids||[]).includes(row.id)&&row.course_id===course.value),options=new Map();
+  for(const row of eligible)if(row.campus_id)options.set(row.campus_id,row.campus_name||row.name);
+  campus.replaceChildren();if(options.size>1)campus.append(new Option('请选择收费校区',''));for(const [id,label] of options)campus.append(new Option(label,id));
+  campus.required=options.size>1;campusLabel.hidden=options.size<=1;
+ }
+ course.addEventListener('change',updateCampus);updateCampus();
+ const units=field(form,'续费课时','number');hourInput(units,1,11000000);units.placeholder='请输入续费课时';
  const price=field(form,'成交单价（元 / 课时）','number');price.min='0';price.max='1000000';price.step='0.01';price.required=true;price.inputMode='decimal';
  const amount=field(form,'实收金额（元）','number');amount.min='0';amount.max='1000000';amount.step='0.01';amount.required=true;amount.inputMode='decimal';
  const occurred=field(form,'业务发生时间（北京时间）','datetime-local');occurred.value=chinaDateTimeLocal();
@@ -44,21 +53,21 @@ function openAdminRenewal(studentId){
  let previousPayload='',commandRef='',amountTouched=false;
  function selectedCourse(){return courses.find(item=>item.id===course.value);}
  function defaultPrice(){const item=selectedCourse();price.value=item?(item.unit_price_cents/100).toFixed(2):'';if(!amountTouched)defaultAmount();}
- function defaultAmount(){const added=Number(units.value),unitPrice=Number(price.value);if(Number.isInteger(added)&&added>0&&Number.isFinite(unitPrice))amount.value=(added*unitPrice).toFixed(2);}
+ function defaultAmount(){const added=Number(units.value),unitPrice=Number(price.value);if(Number.isFinite(added)&&added>0&&Number.isFinite(unitPrice))amount.value=(added*unitPrice).toFixed(2);}
  course.addEventListener('change',defaultPrice);units.addEventListener('input',()=>{units.setCustomValidity('');if(!amountTouched)defaultAmount();});price.addEventListener('input',()=>{price.setCustomValidity('');if(!amountTouched)defaultAmount();});amount.addEventListener('input',()=>{amountTouched=true;amount.setCustomValidity('');});defaultPrice();
  form.addEventListener('submit',async event=>{
-  event.preventDefault();const added=Number(units.value),occurredAt=Math.floor(Date.parse(occurred.value+':00+08:00')/1000),amountCents=Math.round(Number(amount.value)*100),priceCents=Math.round(Number(price.value)*100);
-  if(!Number.isInteger(added)||added<1){units.setCustomValidity('续费课时必须是正整数');units.reportValidity();return;}units.setCustomValidity('');
+  event.preventDefault();const added=lessonUnits(units.value),occurredAt=Math.floor(Date.parse(occurred.value+':00+08:00')/1000),amountCents=Math.round(Number(amount.value)*100),priceCents=Math.round(Number(price.value)*100);
+  if(!Number.isSafeInteger(added)||added<1||added>11000000){units.setCustomValidity('请输入有效课时，最小单位 '+(1/hourUnitScale())+' 课时');units.reportValidity();return;}units.setCustomValidity('');
   if(!Number.isFinite(occurredAt)){occurred.setCustomValidity('请选择有效的业务发生时间');occurred.reportValidity();return;}occurred.setCustomValidity('');
   if(!/^\d+(?:\.\d{1,2})?$/.test(amount.value)||!Number.isSafeInteger(amountCents)||amountCents<0||amountCents>100000000){amount.setCustomValidity('实收金额须为 0 至 1000000 元，最多两位小数');amount.reportValidity();return;}amount.setCustomValidity('');
   if(!/^\d+(?:\.\d{1,2})?$/.test(price.value)||!Number.isSafeInteger(priceCents)||priceCents<0||priceCents>100000000){price.setCustomValidity('成交单价须为 0 至 1000000 元，最多两位小数');price.reportValidity();return;}price.setCustomValidity('');
-  const payload={student_id:student.id,course_id:course.value,units_added:added,amount_cents:amountCents,unit_price_cents:priceCents,occurred_at:occurredAt,source_ref:source.value.trim(),reason:reason.value.trim(),command_ref:''};
+  const payload={student_id:student.id,course_id:course.value,...(campus.value?{campus_id:campus.value}:{}),units_added:added,amount_cents:amountCents,unit_price_cents:priceCents,occurred_at:occurredAt,source_ref:source.value.trim(),reason:reason.value.trim(),command_ref:''};
   if(!payload.course_id){course.setCustomValidity('学生当前没有可续费课程');course.reportValidity();return;}course.setCustomValidity('');
   if(!payload.source_ref){source.setCustomValidity('请填写业务来源编号');source.reportValidity();return;}source.setCustomValidity('');if(!payload.reason){reason.setCustomValidity('请填写续费说明');reason.reportValidity();return;}reason.setCustomValidity('');
-  const serialized=JSON.stringify({...payload,command_ref:undefined});if(serialized!==previousPayload){commandRef=crypto.randomUUID().replaceAll('-','');previousPayload=serialized;}payload.command_ref=commandRef;submit.disabled=true;
+  const serialized=JSON.stringify({...payload,command_ref:undefined});if(serialized!==previousPayload){commandRef=runtimeRequestRef();previousPayload=serialized;}payload.command_ref=commandRef;submit.disabled=true;
   try{
    const result=await api('/v1/admin/renewals',payload);$('device-dialog').close();await adminRenewalDashboard();
-   notify((result.duplicate?'该笔续费已登记，未重复入账。':'续费成功：')+student.name+' · '+result.course_name+'，实收 '+(result.amount_cents/100).toFixed(2)+' 元，余额 '+result.previous_balance_units+' → '+result.balance_units+' 课时；家长通知待发送任务 '+result.notification_tasks+' 条（微信发送未启用）');
+   notify((result.duplicate?'该笔续费已登记，未重复入账。':'续费成功：')+student.name+' · '+result.course_name+'，实收 '+(result.amount_cents/100).toFixed(2)+' 元，余额 '+lessonHours(result.previous_balance_units)+' → '+teacherLessonHours(result.balance_units)+'；家长通知待发送任务 '+result.notification_tasks+' 条（微信发送未启用）');
   }catch(error){showError(error);}finally{submit.disabled=false;}
  });
  occurred.addEventListener('input',()=>occurred.setCustomValidity(''));source.addEventListener('input',()=>source.setCustomValidity(''));reason.addEventListener('input',()=>reason.setCustomValidity(''));

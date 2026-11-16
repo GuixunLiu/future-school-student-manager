@@ -8,7 +8,8 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node scripts/test-web.cjs",
+    "test:runtime-browser": "node server/tests/runtime-hours-browser.cjs && node server/tests/runtime-permissions-browser.cjs"
   },
   "repository": {
     "type": "git",

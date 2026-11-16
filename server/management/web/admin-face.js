@@ -1,5 +1,6 @@
 'use strict';
 async function adminFaceDashboard(){
+ if(!webFaceEnabled())return notify('等待开放');
  const data=await api('/v1/admin/students'),students=data.items;$('identity').replaceChildren(node('span',identity.display_name+' · 管理员'),button('退出',logout,'secondary'));
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','学生人脸档案'),node('p','人脸仅用于本人签到。录入前须核验监护人授权；原始照片不上传，服务器只保存加密后的三帧特征。'));
  const actions=node('div',undefined,'toolbar');actions.append(button('返回设备管理',dashboard,'secondary'),button('刷新',adminFaceDashboard,'secondary'));heading.append(copy,actions);
@@ -9,10 +10,11 @@ async function adminFaceDashboard(){
  search.addEventListener('input',render);render();$('main').replaceChildren(heading,filter,list);
 }
 function openFaceEnrollment(student){
+ if(!webFaceEnabled())return notify('等待开放');
  const content=$('dialog-content');content.replaceChildren();const title=node('h2',(student.face_registered?'重新录入':'录入')+'人脸 · '+student.name);title.id='dialog-title';content.append(title,node('p',student.external_ref+' · '+((student.class_names||[]).join('、')||'未分班')+'。请学生本人正对镜头，连续采集 3 帧。','hint'));
  const stage=node('div',undefined,'face-camera-stage'),video=node('video');video.autoplay=true;video.muted=true;video.playsInline=true;video.setAttribute('aria-label','学生人脸采集画面');stage.append(video,node('div','请保持光线充足，画面中只能有一人','face-camera-guide'));
  const status=node('p','尚未打开摄像头','face-status'),open=button('打开摄像头',async()=>{open.disabled=true;try{await FaceEngine.prepare(text=>status.textContent=text);await FaceEngine.open(video);status.textContent='摄像头已就绪，请学生本人正对镜头';submit.disabled=false;}catch(error){showError(error);status.textContent='摄像头或模型启动失败';}finally{open.disabled=false;}},'secondary');
  const form=node('form'),consentLabel=node('label','监护人授权凭证'),consent=node('input');consent.required=true;consent.maxLength=100;consent.placeholder='例如：2026 年监护人授权登记编号';consentLabel.append(consent);const checkLabel=node('label',undefined,'check'),check=node('input');check.type='checkbox';check.required=true;checkLabel.append(check,node('span','已核验学生本人及监护人授权'));const submit=node('button','采集并加密保存');submit.type='submit';submit.disabled=true;form.append(consentLabel,checkLabel,submit);content.append(stage,status,open,form);if(!$('device-dialog').open)$('device-dialog').showModal();
- const commandRef=crypto.randomUUID().replaceAll('-','');let payload=null;
+ const commandRef=runtimeRequestRef();let payload=null;
  form.addEventListener('submit',async event=>{event.preventDefault();submit.disabled=true;try{if(!payload){const frames=await FaceEngine.capture(video,text=>status.textContent=text);FaceEngine.stop(video);payload={model_version:FaceEngine.MODEL,descriptors:frames,consent_ref:consent.value.trim(),command_ref:commandRef};}status.textContent='正在由服务器加密保存…';const result=await api('/v1/admin/students/'+encodeURIComponent(student.id)+'/face-profile',payload,'PUT');if(result.duplicate)notify('已恢复上次保存结果，未重复建档');else notify(student.name+' 的人脸档案已加密保存');$('device-dialog').close();await adminFaceDashboard();}catch(error){showError(error);status.textContent='保存未完成，可用相同内容安全重试';}finally{submit.disabled=false;}});
 }

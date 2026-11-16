@@ -70,3 +70,26 @@ python -B ops/runtime-preflight.py \
 - 不得用旧数据库备份覆盖候选运行后产生的新业务；恢复前必须停止写入并另行确认恢复时点。
 - 保留日志、回执和审计，不删除失败证据，不把隔离验收写成正式上线完成。
 - 微信端等待域名、HTTPS 和备案完成后另行开发，本操作单不启用微信发送。
+
+## 七、上线准备阶段的持久私有服务
+
+负责人批准持久私有运行后，可在专用部署账号下使用 `--user-service` 渲染用户服务。
+该模式允许程序位于账号家目录，保留回环监听、失败重启和资源限制。
+私有环境中明确设置 `RUNTIME_WEB_HOUR_UNIT_SCALE=100` 才能按迁移数据的百分之一课时显示和录入。
+`RUNTIME_WEB_FACE_ENABLED=0` 保持网页人脸入口等待开放。
+
+```bash
+python -B ops/render-runtime-service.py \
+  --user-service \
+  --runtime-root /home/DEPLOY/future-school/releases/VERSION/app \
+  --python /home/DEPLOY/future-school/venvs/r8/bin/python \
+  --environment-file /home/DEPLOY/future-school/releases/VERSION/runtime.env \
+  --port 18092 --output ./future-school-teacher-roster-private.service
+```
+
+安装前验证文件，将其放入 `~/.config/systemd/user/` 后执行 `systemctl --user daemon-reload` 与
+`systemctl --user enable --now future-school-teacher-roster-private.service`。
+确认部署账号已启用 linger，使退出 SSH 后仍能运行。
+通过 `systemctl --user restart` 后重新检查健康状态与资源摘要。
+这里启用的是私有服务自启动，不会改变公网入口或防火墙。
+更新时保留原单元和版本目录，失败只回退程序与服务配置，不用旧备份覆盖业务数据。

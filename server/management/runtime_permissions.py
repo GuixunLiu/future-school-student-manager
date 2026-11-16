@@ -93,7 +93,7 @@ class CampusPermissions:
                 FROM users u LEFT JOIN organization_staff_access a ON a.org_id=u.org_id AND a.user_id=u.id
                 LEFT JOIN campuses c ON c.org_id=a.org_id AND c.id=a.campus_id
                 WHERE u.org_id=%s AND (a.role IS NOT NULL OR EXISTS(SELECT 1 FROM roles r
-                    WHERE r.org_id=u.org_id AND r.user_id=u.id AND r.role='admin'))
+                    WHERE r.org_id=u.org_id AND r.user_id=u.id AND r.role IN ('admin','teacher')))
                 ORDER BY a.role,u.display_name,u.id''', (actor['org_id'],)).fetchall()
             return {'items': rows}
         return self.command(token, 'user', run)
@@ -126,10 +126,9 @@ class CampusPermissions:
                               (org_id, login)).fetchone()
             now = self.clock()
             if user:
-                if db.execute("""SELECT 1 FROM organization_staff_access WHERE org_id=%s AND user_id=%s AND role='owner'
-                    UNION ALL SELECT 1 FROM roles WHERE org_id=%s AND user_id=%s AND role='teacher'""",
-                    (org_id, user['id'], org_id, user['id'])).fetchone():
-                    raise Problem(409, 'staff_account_protected', '请使用单独的管理账号')
+                if db.execute("SELECT 1 FROM organization_staff_access WHERE org_id=%s AND user_id=%s AND role='owner'",
+                              (org_id, user['id'])).fetchone():
+                    raise Problem(409, 'staff_account_protected', '不能通过此入口调整老板身份')
                 if data.get('password') or data.get('display_name'):
                     raise Problem(409, 'login_exists', '账号已存在，请只调整权限')
                 user_id = user['id']
@@ -326,8 +325,8 @@ class CampusPermissions:
     def decide_fee_review(self, token, review_id, data):
         def run(db, actor):
             action = data['action']
-            role = 'owner' if action == 'settled' else 'performance_reviewer'
-            if role not in actor['roles']:
+            allowed = {'owner'} if action == 'settled' else {'owner', 'performance_reviewer'}
+            if not allowed & actor['roles']:
                 raise Problem(403, 'review_role_required', '当前身份无法执行这个审核操作')
             org_id, now = actor['org_id'], self.clock()
             row = db.execute('SELECT * FROM teaching_fee_reviews WHERE org_id=%s AND id=%s FOR UPDATE',

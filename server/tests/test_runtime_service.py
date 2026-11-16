@@ -17,6 +17,7 @@ from business.security import password_hash, token_digest, verify_password
 from business.store import Problem
 from management import runtime_schema
 from management.runtime_service import RuntimeStore
+from tests.runtime_permission_checks import PermissionAlignmentChecks
 
 
 USER_TOKEN = 'wxu_' + 'u' * 43
@@ -55,7 +56,7 @@ def face_checkin(ref='web-face-1', frames=None):
 
 
 @unittest.skipUnless(importlib.util.find_spec('pgserver'), 'optional pgserver is not installed')
-class RuntimeBusinessTests(unittest.TestCase):
+class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import pgserver
@@ -152,6 +153,39 @@ class RuntimeBusinessTests(unittest.TestCase):
             function(*args)
         self.assertEqual((status, code), (caught.exception.status, caught.exception.code))
 
+
+    def test_readiness_rejects_missing_migrations_tables_and_database_errors(self):
+        from fastapi.testclient import TestClient
+        from management.runtime_api import create_app
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True))
+        self.assertEqual(200, client.get('/health/ready').status_code)
+        with psycopg.connect(self.conninfo) as db:
+            db.execute("DELETE FROM schema_migrations WHERE version='runtime-campus-access-v1'")
+        response = client.get('/health/ready')
+        self.assertEqual(503, response.status_code)
+        self.assertEqual('schema_incomplete', response.json()['status'])
+        with psycopg.connect(self.conninfo) as db:
+            db.execute("INSERT INTO schema_migrations VALUES('runtime-campus-access-v1',1)")
+            db.execute("ALTER TABLE organization_staff_access RENAME TO unavailable_staff_access")
+        self.assertEqual(503, client.get('/health/ready').status_code)
+        with patch('management.runtime_service.RuntimeStore.connect',
+                   side_effect=psycopg.OperationalError('private connection detail')):
+            response = client.get('/health/ready')
+        self.assertEqual(503, response.status_code)
+        self.assertNotIn('private connection detail', response.text)
+        self.assertEqual('database_unavailable', response.json()['status'])
+
+    def test_admin_directory_keeps_students_with_unreviewed_opening_balance(self):
+        with psycopg.connect(self.conninfo) as db:
+            db.execute("INSERT INTO students(id,org_id,name,external_ref,active) "
+                       "VALUES('student-pending','org-fiction','Fiction pending','pending',TRUE)")
+        items = self.store.admin_students(ADMIN_TOKEN)['items']
+        pending = next(row for row in items if row['id'] == 'student-pending')
+        self.assertIsNone(pending['balance_units'])
+        self.assertEqual(3, len(items))
+        self.assertEqual(2, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
+
+
     def test_teacher_campus_login_and_substitute_fees(self):
         campus = self.store.admin_create_campus(ADMIN_TOKEN, '虚构北校区')
         password = 'fictional-password-for-fee-test'
@@ -185,6 +219,25 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assertEqual(0, self.store.teaching_fees(USER_TOKEN, 'week')['total_cents'])
         self.assertEqual(750, self.store.teaching_fees(ADMIN_TOKEN, 'month', administrator=True)['total_cents'])
 
+    def test_dual_teacher_and_campus_admin_keep_separate_campus_scopes(self):
+        north = self.store.admin_create_campus(ADMIN_TOKEN, '虚构北校区')['id']
+        south = self.store.admin_create_campus(ADMIN_TOKEN, '虚构南校区')['id']
+        with psycopg.connect(self.conninfo) as db:
+            db.execute("UPDATE classes SET campus_id=%s WHERE id='class-a'", (south,))
+            db.execute("UPDATE classes SET campus_id=%s WHERE id='class-b'", (north,))
+            db.execute("UPDATE devices SET campus_id=%s WHERE id='device-a'", (south,))
+            db.execute("INSERT INTO teacher_campuses VALUES('org-fiction','teacher-a',%s)", (south,))
+            db.execute("""INSERT INTO organization_staff_access
+                VALUES('org-fiction','teacher-a','campus_admin',%s)""", (north,))
+        identity = self.store.me(USER_TOKEN)
+        self.assertEqual(['campus_admin', 'teacher'], identity['roles'])
+        self.assertEqual((north, '虚构北校区', '虚构南校区'),
+                         (identity['campus_id'], identity['campus_name'], identity['teacher_campus_name']))
+        self.assertEqual(['lesson-a'], [row['id'] for row in self.store.teacher_lessons(USER_TOKEN)['items']])
+        self.assert_problem(403, 'lesson_scope', self.store.teacher_lesson, USER_TOKEN, 'lesson-b')
+        self.assertEqual(['class-b'], [row['id'] for row in self.store.admin_classes(USER_TOKEN)['items']])
+        self.assertEqual([], self.store.admin_devices(USER_TOKEN)['items'])
+
     def test_campus_permissions_and_monthly_review_are_isolated(self):
         from management.runtime_permissions import provision_first_owner
         north = self.store.admin_create_campus(ADMIN_TOKEN, '虚构北校区')['id']
@@ -211,7 +264,7 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assertEqual(['device-a'], [row['id'] for row in self.store.admin_devices(admin)['items']])
         self.assert_problem(404, 'campus_scope', self.store.admin_lesson, admin, 'lesson-b')
         self.assert_problem(403, 'admin_required', self.store.admin_students, reviewer)
-        self.assert_problem(403, 'admin_required', self.store.admin_monthly_report, admin)
+        self.assertEqual(0, self.store.admin_monthly_report(admin)['overall']['renewal_events'])
         self.assert_problem(404, 'campus_scope', self.store.preview_fee_review, admin, south, 'month', '1970-01-01')
         rate = {'rate_cents': 600, 'expected_version': 0, 'reason': '虚构费率调整', 'command_ref': 'campus-rate'}
         self.assert_problem(404, 'course_missing', self.store.submit_course_fee_proposal, admin, 'course-b', rate)
@@ -1536,18 +1589,22 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assert_problem(403, 'lesson_scope', self.store.teacher_lesson, USER_TOKEN, 'lesson-b')
         self.assert_problem(403, 'lesson_scope', self.store.teacher_correction,
                             USER_TOKEN, 'lesson-b', 'makeup', dict(correction(), student_id='student-b'))
-        self.assert_problem(403, 'student_scope', self.store.teacher_adjust_balance,
+        self.assert_problem(403, 'owner_required', self.store.owner_adjust_balance,
                             USER_TOKEN, 'student-b', dict(units=8, reason='虚构越权', expected_revision=1, command_ref='balance-outside'))
         self.assertEqual(0, self.read('SELECT count(*) AS n FROM attendance_events')['n'])
 
-    def test_teacher_balance_adjustment_is_scoped_optimistic_and_idempotent(self):
+    def test_owner_balance_adjustment_is_optimistic_and_idempotent(self):
+        from management.runtime_permissions import provision_first_owner
+        with psycopg.connect(self.conninfo, row_factory=dict_row) as db:
+            db.execute("INSERT INTO user_credentials VALUES('org-fiction','admin-a',%s,1)", (password_hash('Fiction owner balance password!'),))
+            provision_first_owner(db, 'fiction', 'fiction-admin-a')
         data = dict(units=12, reason='虚构余额校正', expected_revision=1, command_ref='balance-1')
-        result = self.store.teacher_adjust_balance(USER_TOKEN, 'student-a', data)
+        result = self.store.owner_adjust_balance(ADMIN_TOKEN, 'student-a', data)
         self.assertEqual((12, 2, False), (result['units'], result['revision'], result['duplicate']))
-        duplicate = self.store.teacher_adjust_balance(USER_TOKEN, 'student-a', data)
+        duplicate = self.store.owner_adjust_balance(ADMIN_TOKEN, 'student-a', data)
         self.assertTrue(duplicate['duplicate'])
-        self.assert_problem(409, 'balance_changed', self.store.teacher_adjust_balance,
-                            USER_TOKEN, 'student-a', dict(data, command_ref='balance-stale'))
+        self.assert_problem(409, 'balance_changed', self.store.owner_adjust_balance,
+                            ADMIN_TOKEN, 'student-a', dict(data, command_ref='balance-stale'))
         self.assertEqual(12, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
         self.assertEqual(3, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
 
@@ -2210,7 +2267,7 @@ class RuntimeBusinessTests(unittest.TestCase):
         self.assertEqual(face_frames(1), refreshed['items'][0]['descriptors'])
         self.assert_problem(403, 'device_required', self.store.tablet_face_profiles, USER_TOKEN)
 
-    def test_http_tablet_face_profiles_requires_device_credentials(self):
+    def test_http_paused_web_face_preserves_tablet_profile_access(self):
         from fastapi.testclient import TestClient
         from management.runtime_api import create_app
         client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True, face_key=FACE_KEY))
@@ -2220,12 +2277,20 @@ class RuntimeBusinessTests(unittest.TestCase):
         empty = client.get(path, headers={'Authorization': 'Bearer ' + DEVICE_TOKEN})
         self.assertEqual(200, empty.status_code, empty.text)
         self.assertEqual([], empty.json()['items'])
-        created = client.put('/v1/admin/students/student-a/face-profile',
-                             headers={'Authorization': 'Bearer ' + ADMIN_TOKEN}, json=face_profile('tablet-http-face'))
-        self.assertEqual(201, created.status_code, created.text)
+        self.store.face_key = FACE_KEY
+        created = self.store.admin_face_profile(ADMIN_TOKEN, 'student-a', face_profile('tablet-http-face'))
+        teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        admin = {'Authorization': 'Bearer ' + ADMIN_TOKEN}
+        self.assertIs(client.get('/v1/me', headers=teacher).json()['web_face_enabled'], False)
+        blocked = client.put('/v1/admin/students/student-a/face-profile', headers=admin,
+                             json=face_profile('blocked-face', face_frames(1)))
+        self.assertEqual((403, 'web_face_paused'), (blocked.status_code, blocked.json()['error']['code']))
+        blocked = client.post('/v1/teacher/lessons/lesson-a/face-checkin', headers=teacher, json=face_checkin())
+        self.assertEqual((403, 'web_face_paused'), (blocked.status_code, blocked.json()['error']['code']))
+        self.assertEqual(0, self.read('SELECT count(*) AS n FROM attendance_events')['n'])
         downloaded = client.get(path, headers={'Authorization': 'Bearer ' + DEVICE_TOKEN})
         self.assertEqual(200, downloaded.status_code, downloaded.text)
-        self.assertEqual(created.json()['profile_id'], downloaded.json()['items'][0]['profile_id'])
+        self.assertEqual(created['profile_id'], downloaded.json()['items'][0]['profile_id'])
         self.assertEqual(face_frames(), downloaded.json()['items'][0]['descriptors'])
 
     def test_tablet_face_profiles_empty_without_key_and_existing_profile_requires_key(self):
@@ -2300,9 +2365,11 @@ class RuntimeBusinessTests(unittest.TestCase):
     def test_http_face_profile_and_checkin_statuses_and_validation(self):
         from fastapi.testclient import TestClient
         from management.runtime_api import create_app
-        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True, face_key=FACE_KEY))
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True,
+                                       face_key=FACE_KEY, web_face_enabled=True))
         admin = {'Authorization': 'Bearer ' + ADMIN_TOKEN}
         teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        self.assertIs(client.get('/v1/me', headers=teacher).json()['web_face_enabled'], True)
         profile_path = '/v1/admin/students/student-a/face-profile'
         created = client.put(profile_path, headers=admin, json=face_profile('http-face-profile'))
         self.assertEqual(201, created.status_code, created.text)
@@ -2478,23 +2545,24 @@ class RuntimeBusinessTests(unittest.TestCase):
         detail = client.get(path, headers=admin)
         self.assertEqual(200, detail.status_code, detail.text)
         self.assertEqual('student-a', detail.json()['students'][0]['student_id'])
-        data = correction('http-admin-cancel-makeup')
-        created_result = client.post(path + '/makeup', headers=admin, json=data)
+        self.assertEqual(404, client.post(path + '/makeup', headers=admin, json=correction()).status_code)
+        data = correction('http-admin-cancel-leave')
+        created_result = client.post(path + '/leave', headers=admin, json=data)
         self.assertEqual(201, created_result.status_code, created_result.text)
-        duplicate = client.post(path + '/makeup', headers=admin, json=data)
+        duplicate = client.post(path + '/leave', headers=admin, json=data)
         self.assertEqual(200, duplicate.status_code, duplicate.text)
         self.assertTrue(duplicate.json()['duplicate'])
         self.assertEqual(403, client.post(path + '/leave', headers=teacher,
                                          json=correction('http-admin-cancel-denied')).status_code)
-        self.assertEqual(422, client.post(path + '/makeup', headers=admin,
+        self.assertEqual(422, client.post(path + '/leave', headers=admin,
                                          json=dict(correction('http-admin-cancel-extra'), unexpected=True)).status_code)
         wire = dict(checkin('http-tablet-cancel-resolution'), lesson_id=lesson_id)
         resolved = client.post('/v1/tablet/checkins/resolve', headers=device, json=wire)
         self.assertEqual(200, resolved.status_code, resolved.text)
         self.assertEqual(created_result.json()['event_id'], resolved.json()['event_id'])
-        self.assertEqual(9, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
+        self.assertEqual(10, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
         self.assertEqual(1, self.read('SELECT count(*) AS n FROM attendance_events')['n'])
-        self.assertEqual(3, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
+        self.assertEqual(2, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
 
     def test_lesson_changes_reject_processed_started_conflicting_and_unauthorized_requests(self):
         created = self.store.admin_create_lesson(ADMIN_TOKEN, self.lesson_data('change-guards'))

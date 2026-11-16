@@ -21,7 +21,7 @@ def linux_path(value, label):
     return value
 
 
-def render(runtime_root, python, environment_file, port):
+def render(runtime_root, python, environment_file, port, *, user_service=False):
     values = {
         '@RUNTIME_ROOT@': linux_path(runtime_root, 'runtime root'),
         '@PYTHON@': linux_path(python, 'Python'),
@@ -31,6 +31,16 @@ def render(runtime_root, python, environment_file, port):
         raise ValueError('port must be an integer from 1 to 65535')
     values['@PORT@'] = str(port)
     text = TEMPLATE.read_text(encoding='utf-8')
+    if user_service:
+        # A restricted account cannot create the mount namespaces used by these
+        # system-service directives on every host. Keep the remaining limits.
+        for directive in ('DynamicUser=true', 'ProtectHome=true', 'PrivateTmp=true',
+                          'PrivateDevices=true', 'ProtectSystem=strict',
+                          'ProtectKernelTunables=true', 'ProtectKernelModules=true',
+                          'ProtectControlGroups=true', 'CapabilityBoundingSet=',
+                          'AmbientCapabilities='):
+            text = text.replace(directive + '\n', '')
+        text = text.replace('WantedBy=multi-user.target', 'WantedBy=default.target')
     for placeholder, value in values.items():
         if text.count(placeholder) != 1:
             raise ValueError('unexpected template placeholder count: ' + placeholder)
@@ -77,9 +87,12 @@ def main():
     parser.add_argument('--environment-file', required=True)
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--user-service', action='store_true',
+                        help='Render for systemctl --user, including releases in the account home directory')
     args = parser.parse_args()
     try:
-        raw = render(args.runtime_root, args.python, args.environment_file, args.port)
+        raw = render(args.runtime_root, args.python, args.environment_file, args.port,
+                     user_service=args.user_service)
         receipt = write(raw, args.output)
     except (ValueError, OSError) as error:
         parser.error(str(error))

@@ -3,6 +3,10 @@
 Base identities come from fresh_start.POSTGRES_SCHEMA. Historical business rows
 stay in read-only archives and are intentionally absent from this runtime schema.
 """
+import re
+
+from psycopg.rows import tuple_row
+
 from .fresh_start import POSTGRES_SCHEMA
 
 
@@ -485,6 +489,39 @@ INSERT INTO schema_migrations VALUES(
 """
 
 
+PERMISSION_ALIGNMENT_VERSION = 'runtime-permissions-v2'
+PERMISSION_ALIGNMENT_SCHEMA = """
+ALTER TABLE renewal_records ADD COLUMN campus_id TEXT;
+ALTER TABLE renewal_records ADD FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id);
+CREATE INDEX renewals_by_campus ON renewal_records(org_id,campus_id,occurred_at);
+CREATE TABLE balance_adjustment_requests (
+    org_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    campus_id TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    requested_at BIGINT NOT NULL,
+    previous_units INTEGER NOT NULL,
+    units INTEGER NOT NULL CHECK(units BETWEEN -1000000 AND 10000000),
+    balance_revision INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+    version INTEGER NOT NULL CHECK(version > 0),
+    decided_by TEXT,
+    decided_at BIGINT,
+    decision_reason TEXT,
+    PRIMARY KEY(org_id,id),
+    FOREIGN KEY(org_id,student_id) REFERENCES students(org_id,id),
+    FOREIGN KEY(org_id,campus_id) REFERENCES campuses(org_id,id),
+    FOREIGN KEY(org_id,requested_by) REFERENCES users(org_id,id),
+    FOREIGN KEY(org_id,decided_by) REFERENCES users(org_id,id)
+);
+CREATE UNIQUE INDEX pending_balance_request_per_student
+    ON balance_adjustment_requests(org_id,student_id) WHERE status='pending';
+INSERT INTO schema_migrations VALUES('runtime-permissions-v2', EXTRACT(EPOCH FROM clock_timestamp())::BIGINT);
+"""
+
+
 def upgrade_staff_schema(connection):
     """Apply the additive migration in a transaction on an initialized runtime."""
     with connection.transaction():
@@ -493,7 +530,8 @@ def upgrade_staff_schema(connection):
             raise ValueError('The runtime schema must already be initialized')
         for version, schema in ((STAFF_FEATURES_VERSION, STAFF_FEATURES_SCHEMA),
                                 ('runtime-course-fees-v1', COURSE_FEE_SCHEMA),
-                                ('runtime-campus-access-v1', CAMPUS_ACCESS_SCHEMA)):
+                                ('runtime-campus-access-v1', CAMPUS_ACCESS_SCHEMA),
+                                (PERMISSION_ALIGNMENT_VERSION, PERMISSION_ALIGNMENT_SCHEMA)):
             if not connection.execute('SELECT 1 FROM schema_migrations WHERE version=%s', (version,)).fetchone():
                 connection.execute(schema)
 
@@ -504,4 +542,26 @@ def full_schema():
     if lines[0] != "BEGIN;" or lines[-1] != "COMMIT;":
         raise ValueError("Unexpected base schema wrapper")
     return ("\n".join(lines[1:-1]) + "\n" + POSTGRES_RUNTIME_SCHEMA + STAFF_FEATURES_SCHEMA
-            + COURSE_FEE_SCHEMA + CAMPUS_ACCESS_SCHEMA)
+            + COURSE_FEE_SCHEMA + CAMPUS_ACCESS_SCHEMA + PERMISSION_ALIGNMENT_SCHEMA)
+
+
+REQUIRED_MIGRATIONS = ('fresh-start-runtime-v2', STAFF_FEATURES_VERSION,
+                       'runtime-course-fees-v1', 'runtime-campus-access-v1', PERMISSION_ALIGNMENT_VERSION)
+REQUIRED_TABLES = tuple(re.findall(r'CREATE TABLE ([a-z_]+)\s*\(', full_schema()))
+
+
+def runtime_readiness(connection):
+    """Check the current search_path without modifying or upgrading the database."""
+    with connection.cursor(row_factory=tuple_row) as cursor:
+        cursor.execute("SELECT to_regclass('schema_migrations')")
+        if cursor.fetchone()[0] is None:
+            return {'status': 'not_initialized', 'initialized': False}
+        cursor.execute('SELECT version FROM schema_migrations WHERE version=ANY(%s)',
+                       (list(REQUIRED_MIGRATIONS),))
+        versions = {row[0] for row in cursor.fetchall()}
+        cursor.execute('SELECT name FROM unnest(%s::text[]) AS t(name) WHERE to_regclass(name) IS NULL',
+                       (list(REQUIRED_TABLES),))
+        missing_tables = [row[0] for row in cursor.fetchall()]
+    ready = versions == set(REQUIRED_MIGRATIONS) and not missing_tables
+    return {'status': 'ready' if ready else 'schema_incomplete',
+            'initialized': REQUIRED_MIGRATIONS[0] in versions}

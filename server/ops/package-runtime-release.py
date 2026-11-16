@@ -15,12 +15,12 @@ CODE = [
     *(f'business/{name}.py' for name in ('__init__', 'api', 'models', 'security', 'store')),
     *(f'management/{name}.py' for name in (
         '__init__', 'fresh_start', 'fresh_start_postgres', 'runtime_api', 'runtime_faces',
-        'runtime_main', 'runtime_permissions', 'runtime_release', 'runtime_reports', 'runtime_schema', 'runtime_service')),
+        'runtime_main', 'runtime_permissions', 'runtime_balances', 'runtime_release', 'runtime_reports', 'runtime_schema', 'runtime_service')),
 ]
 WEB = [
     'runtime.html', 'runtime.js', 'runtime.css', 'workspace.css', 'teacher-runtime.js', 'campus-workspace.js',
     'teacher-report.js', 'teacher-face.js', 'report-history.js', 'admin-report.js', 'admin-monthly.js',
-    'admin-renewal.js', 'admin-enrollment.js', 'admin-roster-sync.js', 'admin-accounts.js',
+    'admin-renewal.js', 'admin-balances.js', 'admin-enrollment.js', 'admin-roster-sync.js', 'admin-accounts.js',
     'admin-schedule.js', 'admin-directory.js', 'admin-face.js', 'face-engine.js',
     'face-api.min.js', 'ort.wasm.min.js', 'ort-wasm-simd-threaded.mjs',
     'ort-wasm-simd-threaded.wasm', 'future-school-logo.png',
@@ -37,7 +37,7 @@ FILES = CODE + [f'management/web/{name}' for name in WEB] + [
     'requirements-runtime.txt', 'ops/future-school-runtime.service.template',
     'ops/runtime-preflight.py', 'ops/render-runtime-service.py',
     'management/runtime-api-v1.yaml', 'RUNTIME-RELEASE-CHECKLIST.md',
-    'ISOLATED-LAUNCH-RUNBOOK.md', 'ACCEPTANCE-REPORT.md', 'GO-LIVE-SIGNOFF.md',
+    'ISOLATED-LAUNCH-RUNBOOK.md', 'ACCEPTANCE-REPORT.md', 'GO-LIVE-SIGNOFF.md', 'PERMISSIONS.md',
 ]
 
 

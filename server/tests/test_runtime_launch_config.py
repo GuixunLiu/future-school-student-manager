@@ -22,6 +22,19 @@ ENVIRONMENT = '/etc/future-school/fiction.env'
 
 
 class RuntimeLaunchConfigTests(unittest.TestCase):
+    def test_user_service_supports_home_release_and_persistent_start(self):
+        raw = renderer.render('/home/fiction/releases/app', '/home/fiction/venv/bin/python',
+                              '/home/fiction/private/runtime.env', 18092, user_service=True)
+        text = raw.decode('utf-8')
+        self.assertNotIn('DynamicUser=', text)
+        self.assertNotIn('ProtectHome=', text)
+        self.assertNotIn('PrivateDevices=', text)
+        self.assertNotIn('CapabilityBoundingSet=', text)
+        self.assertIn('NoNewPrivileges=true', text)
+        self.assertIn('WantedBy=default.target', text)
+        self.assertIn('Restart=on-failure', text)
+        self.assertIn('--host 127.0.0.1 --port 18092', text)
+
     def test_real_cli_renders_loopback_unit_without_installing_or_starting(self):
         with tempfile.TemporaryDirectory(prefix='runtime-render-cli-') as folder:
             output = Path(folder) / 'fiction.service'

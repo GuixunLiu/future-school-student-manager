@@ -1,0 +1,4 @@
+-r requirements-runtime.txt
+httpx==0.28.1
+pgserver==0.1.4
+PyYAML==6.0.3

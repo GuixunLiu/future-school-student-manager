@@ -1,0 +1,28 @@
+name: Runtime checks
+on:
+  push:
+  pull_request:
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: server/requirements-runtime*.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: python -m pip install -r server/requirements-runtime-test.txt
+      - run: npm ci
+      - run: npm test
+        env:
+          PYTHON_BIN: python
+      - run: python -B -m unittest -q tests.test_runtime_service tests.test_runtime_release_package tests.test_runtime_release_rehearsal tests.test_runtime_launch_config tests.test_runtime_api tests.test_runtime_acceptance tests.test_runtime_service_hosting tests.test_runtime_preflight
+        working-directory: server
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:runtime-browser

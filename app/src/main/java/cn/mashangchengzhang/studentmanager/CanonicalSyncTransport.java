@@ -42,11 +42,13 @@ final class CanonicalSyncTransport {
     private final Callback callback;
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final AtomicBoolean busy=new AtomicBoolean(false);
+    private final String runtimeEndpoint=BuildConfig.CANONICAL_RUNTIME_ENDPOINT;
     private final String pin;
     private volatile boolean closed;
     CanonicalSyncTransport(Activity a,Callback cb){
         activity=a;callback=cb;prefs=a.getSharedPreferences(PREFS,0);
-        String value="";try(InputStream in=a.getResources().openRawResource(R.raw.web_mirror_server_spki)){value=new String(read(in,256),StandardCharsets.US_ASCII).trim();}catch(Exception ignored){}
+        String value=BuildConfig.CANONICAL_RUNTIME_PIN;
+        if(value.isEmpty())try(InputStream in=a.getResources().openRawResource(R.raw.web_mirror_server_spki)){value=new String(read(in,256),StandardCharsets.US_ASCII).trim();}catch(Exception ignored){}
         pin=value;
     }
     private JSONObject profile()throws Exception{return profile(true);}
@@ -72,7 +74,8 @@ final class CanonicalSyncTransport {
         long expiresAt=p.getLong("x");
         if(!p.getString("b").matches("[a-f0-9]{64}")||!p.getString("n").matches("[a-f0-9]{32}")||expiresAt<=0||(!allowExpired&&expiresAt<=System.currentTimeMillis()/1000))throw new IOException("baseline or expiry");
         String endpoint=p.getString("e");
-        if(!endpoint.equals("https://47.97.226.219:18083")&&!(BuildConfig.DEBUG&&endpoint.matches("https://127\\.0\\.0\\.1:[0-9]{4,5}")))throw new IOException("endpoint");
+        if(!endpoint.equals(runtimeEndpoint)&&!(BuildConfig.DEBUG&&BuildConfig.CANONICAL_RUNTIME_PIN.isEmpty()
+                &&endpoint.matches("https://127\\.0\\.0\\.1:[0-9]{4,5}")))throw new IOException("endpoint");
     }
     String overview(){
         if(prefs.getBoolean("activation_pending",false))try{JSONObject p=profile(false);return new JSONObject().put("configured",false).put("staged",true).put("activationPending",true).put("orgId",p.getString("o")).put("deviceId",p.getString("d")).put("generation",p.getString("g")).put("profileId",p.getString("id")).put("baselineSha256",p.getString("b")).toString();}catch(Exception ignored){}
@@ -243,10 +246,10 @@ final class CanonicalSyncTransport {
         if(code==null||!code.matches("wxa_[A-Za-z0-9_-]{43}")||baseline==null||!baseline.matches("[a-f0-9]{64}"))throw new IOException("activation input");
         JSONObject body=new JSONObject().put("activation_code",code);
         if(previous!=null)body.put("expected_org_id",previous.getString("o")).put("expected_device_id",previous.getString("d"));
-        JSONObject response=http("https://47.97.226.219:18083",null,"/v1/tablet/activate",body.toString().getBytes(StandardCharsets.UTF_8),16384);
+        JSONObject response=http(runtimeEndpoint,null,"/v1/tablet/activate",body.toString().getBytes(StandardCharsets.UTF_8),16384);
         if(!response.getBoolean("ok"))throw new IOException("activation");JSONObject data=response.getJSONObject("data");
         if(data.getInt("protocol")!=2)throw new IOException("activation protocol");
-        JSONObject p=new JSONObject().put("e","https://47.97.226.219:18083").put("t",data.getString("access_token"))
+        JSONObject p=new JSONObject().put("e",runtimeEndpoint).put("t",data.getString("access_token"))
             .put("d",data.getString("device_id")).put("p",pin).put("o",data.getString("org_id"))
             .put("g",data.getString("generation")).put("id",java.util.UUID.randomUUID().toString().replace("-",""))
             .put("b",baseline).put("n",java.util.UUID.randomUUID().toString().replace("-","")).put("x",data.getLong("expires_at"));

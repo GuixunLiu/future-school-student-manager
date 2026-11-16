@@ -259,10 +259,10 @@ paths:
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
-  /v1/teacher/students/{studentId}/balance:
+  /v1/owner/students/{studentId}/balance:
     put:
-      tags: [teacher]
-      operationId: teacherAdjustBalance
+      tags: [owner]
+      operationId: ownerAdjustBalance
       parameters:
         - { $ref: '#/components/parameters/StudentId' }
       requestBody:
@@ -272,6 +272,55 @@ paths:
             schema: { $ref: '#/components/schemas/BalanceAdjustment' }
       responses:
         '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/balance-adjustment-requests:
+    get:
+      tags: [admin]
+      operationId: listBalanceAdjustmentRequests
+      description: 老板查看全机构申请，校区管理员仅查看管理校区申请。
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/students/{studentId}/balance-request:
+    post:
+      tags: [admin]
+      operationId: submitBalanceAdjustmentRequest
+      parameters:
+        - { $ref: '#/components/parameters/StudentId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BalanceAdjustment' }
+      responses:
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/owner/balance-adjustment-requests/{requestId}:
+    put:
+      tags: [owner]
+      operationId: decideBalanceAdjustmentRequest
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action, expected_version, reason]
+              properties:
+                action: { type: string, enum: [approved, rejected] }
+                expected_version: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /v1/teacher/reports/weekly:
     get:

@@ -19,6 +19,7 @@ from business.security import identifier, new_token, password_hash, token_digest
 from business.store import Problem, uid
 from .runtime_faces import FACE_MODEL, FaceCipher, match_face, validate_frames
 from .runtime_permissions import CampusPermissions
+from .runtime_balances import BalancePermissions
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -32,7 +33,7 @@ def canonical_digest(action, payload):
     return hashlib.sha256(raw).hexdigest()
 
 
-class RuntimeStore(CampusPermissions):
+class RuntimeStore(BalancePermissions, CampusPermissions):
     def __init__(self, conninfo, clock=None, *, face_key=None):
         self.conninfo = conninfo
         self.clock = clock or (lambda: int(time.time()))
@@ -255,7 +256,7 @@ class RuntimeStore(CampusPermissions):
                     WHERE e.org_id=s.org_id AND e.student_id=s.id AND e.left_at IS NULL
                     AND c.campus_id IS DISTINCT FROM %s
                 ) AS other_campus) shared
-                JOIN student_balances sb ON sb.org_id=s.org_id AND sb.student_id=s.id
+                LEFT JOIN student_balances sb ON sb.org_id=s.org_id AND sb.student_id=s.id
                 LEFT JOIN student_versions sv ON sv.org_id=s.org_id AND sv.student_id=s.id
                 LEFT JOIN face_profiles fp ON fp.org_id=s.org_id AND fp.student_id=s.id AND fp.active=TRUE
                 WHERE s.org_id=%s AND (%s::text IS NULL OR ec.class_ids IS NOT NULL)
@@ -266,7 +267,8 @@ class RuntimeStore(CampusPermissions):
         return self.command(token, 'user', run)
 
     def _future_roster_candidates(self, db, actor, student_id, lock=False):
-        self._require_admin(actor)
+        self._require_campus_operations(actor)
+        self._scope_student_write(db, actor, student_id)
         student_query = '''SELECT id,name,external_ref,active FROM students
             WHERE org_id=%s AND id=%s'''
         if lock:
@@ -356,7 +358,8 @@ class RuntimeStore(CampusPermissions):
         digest = canonical_digest('admin_set_lesson_charge_rule',
                                   {'lesson_id': lesson_id, **data})
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_record(db, actor, "lessons", lesson_id)
             self._lock_command(db, actor, reference)
             lesson = db.execute('''SELECT id,class_id,starts_at,state FROM lessons
                 WHERE org_id=%s AND id=%s FOR UPDATE''',
@@ -427,7 +430,7 @@ class RuntimeStore(CampusPermissions):
         digest = canonical_digest('admin_sync_future_lessons',
                                   {'student_id': student_id, 'command_ref': reference})
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             # Recheck current student state even when returning a stored receipt.
             preview = self._future_roster_candidates(db, actor, student_id, lock=True)
@@ -658,15 +661,17 @@ class RuntimeStore(CampusPermissions):
         reference = data['command_ref']
         digest = canonical_digest('admin_renewal', data)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_student_write(db, actor, data["student_id"])
             self._lock_command(db, actor, reference)
             student = db.execute('''SELECT s.name,s.active,sb.units,sb.revision
                 FROM students s
                 JOIN student_balances sb ON sb.org_id=s.org_id AND sb.student_id=s.id
-                WHERE s.org_id=%s AND s.id=%s FOR UPDATE OF sb''',
+                WHERE s.org_id=%s AND s.id=%s FOR NO KEY UPDATE OF s,sb''',
                 (actor['org_id'], data['student_id'])).fetchone()
             if not student:
                 raise Problem(404, 'student_missing', '未找到学生或课时余额')
+            self._scope_student_write(db, actor, data['student_id'])
             if not student['active']:
                 raise Problem(409, 'student_inactive', '学生已停用，请先核对学籍状态')
             course = db.execute('''SELECT co.id,co.name,co.unit_price_cents AS current_unit_price_cents
@@ -677,6 +682,17 @@ class RuntimeStore(CampusPermissions):
                 (actor['org_id'], data['course_id'], actor['org_id'], data['student_id'])).fetchone()
             if not course:
                 raise Problem(409, 'course_scope', '学生未报读该课程，或课程已停用')
+            campus_rows = db.execute("""SELECT DISTINCT c.campus_id FROM student_class_enrollments e
+                JOIN classes c ON c.org_id=e.org_id AND c.id=e.class_id
+                WHERE e.org_id=%s AND e.student_id=%s AND e.left_at IS NULL AND c.course_id=%s""",
+                (actor['org_id'], data['student_id'], data['course_id'])).fetchall()
+            eligible = {row['campus_id'] for row in campus_rows}
+            campus_id = data.get('campus_id') or actor.get('campus_id')
+            if campus_id is None and len(eligible) == 1:
+                campus_id = next(iter(eligible))
+            if campus_id not in eligible or (campus_id is None and len(eligible) > 1):
+                raise Problem(409, 'renewal_campus_required', '请选择该课程对应的收费校区')
+            self._require_campus_match(actor, campus_id)
             # Permission and current student state are rechecked even for retries.
             prior = self._prior(db, actor, reference, digest)
             if prior:
@@ -699,11 +715,11 @@ class RuntimeStore(CampusPermissions):
             revision = student['revision'] + 1
             db.execute('''INSERT INTO renewal_records
                 (id,org_id,student_id,course_id,units_added,amount_cents,unit_price_cents,
-                 occurred_at,source_ref,actor_id,reason,created_at)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                 occurred_at,source_ref,actor_id,reason,created_at,campus_id)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
                 (renewal_id, actor['org_id'], data['student_id'], data['course_id'], data['units_added'],
                  data['amount_cents'], data['unit_price_cents'], data['occurred_at'],
-                 data['source_ref'], actor['id'], data['reason'], now))
+                 data['source_ref'], actor['id'], data['reason'], now, campus_id))
             db.execute('''UPDATE student_balances SET units=%s,revision=%s,updated_at=%s
                 WHERE org_id=%s AND student_id=%s AND revision=%s''',
                 (units, revision, now, actor['org_id'], data['student_id'], student['revision']))
@@ -735,7 +751,7 @@ class RuntimeStore(CampusPermissions):
                         'unit_price_cents': data['unit_price_cents'],
                         'previous_balance_units': student['units'], 'balance_units': units,
                         'balance_revision': revision, 'occurred_at': data['occurred_at'],
-                        'source_ref': data['source_ref'], 'notification_tasks': len(bindings),
+                        'source_ref': data['source_ref'], 'campus_id': campus_id, 'notification_tasks': len(bindings),
                         'notification_status': 'pending' if bindings else 'no_active_bindings',
                         'wechat_sending_enabled': False, 'audited': True}
             self._audit(db, actor, 'admin_renewal_recorded', renewal_id,
@@ -1017,6 +1033,7 @@ class RuntimeStore(CampusPermissions):
         def run(db, actor):
             self._require_campus_operations(actor)
             rows = db.execute('''SELECT u.id,u.login,u.display_name,u.active,cp.id AS campus_id,cp.name AS campus_name,
+                    access.role AS staff_role,
                     COALESCE(uv.version,0) AS version,(c.user_id IS NOT NULL) AS password_configured,
                     COALESCE((SELECT array_agg(tc.class_id ORDER BY tc.class_id)
                         FROM teacher_classes tc JOIN classes c ON c.org_id=tc.org_id AND c.id=tc.class_id
@@ -1026,12 +1043,13 @@ class RuntimeStore(CampusPermissions):
                 LEFT JOIN campuses cp ON cp.org_id=tc.org_id AND cp.id=tc.campus_id
                 LEFT JOIN user_versions uv ON uv.org_id=u.org_id AND uv.user_id=u.id
                 LEFT JOIN user_credentials c ON c.org_id=u.org_id AND c.user_id=u.id
+                LEFT JOIN organization_staff_access access ON access.org_id=u.org_id AND access.user_id=u.id
                 WHERE u.org_id=%s AND (%s::text IS NULL OR cp.id=%s)
                   AND EXISTS(SELECT 1 FROM roles r WHERE r.org_id=u.org_id AND r.user_id=u.id AND r.role='teacher')
                   AND NOT EXISTS(SELECT 1 FROM roles r WHERE r.org_id=u.org_id AND r.user_id=u.id AND r.role='admin')
                 ORDER BY u.active DESC,u.display_name,u.id''', (actor.get('campus_id'), actor.get('campus_id'), actor['org_id'],
                  actor.get('campus_id'), actor.get('campus_id'))).fetchall()
-            return {'items': [dict(row) for row in rows]}
+            return {'items': [dict(row, editable=('owner' in actor['roles'] or row['staff_role'] is None)) for row in rows]}
         return self.command(token, 'user', run)
 
     def admin_campuses(self, token):
@@ -1066,7 +1084,8 @@ class RuntimeStore(CampusPermissions):
 
     def admin_set_teacher_campus(self, token, user_id, campus_id):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._require_campus_match(actor, campus_id)
             self._lock_teacher_account(db, actor, user_id)
             campus = self._set_teacher_campus(db, actor['org_id'], user_id, campus_id)
             self._audit(db, actor, 'teacher_campus_set', user_id, {'campus_id': campus_id}, self.clock())
@@ -1131,6 +1150,14 @@ class RuntimeStore(CampusPermissions):
             (actor['org_id'], user_id)).fetchone()
         if not account or 'teacher' not in account['roles'] or 'admin' in account['roles']:
             raise Problem(404, 'teacher_account_missing', '未找到可管理的教师账号')
+        staff = db.execute("SELECT role FROM organization_staff_access WHERE org_id=%s AND user_id=%s",
+                           (actor['org_id'], user_id)).fetchone()
+        if staff and 'owner' not in actor['roles']:
+            raise Problem(403, 'staff_account_protected', '兼任管理身份的教师账号须由老板管理')
+        if actor.get('campus_id') is not None and not db.execute(
+                'SELECT 1 FROM teacher_campuses WHERE org_id=%s AND user_id=%s AND campus_id=%s',
+                (actor['org_id'], user_id, actor['campus_id'])).fetchone():
+            raise Problem(404, 'teacher_account_missing', '本校区找不到该教师')
         return account
 
     @staticmethod
@@ -1148,7 +1175,7 @@ class RuntimeStore(CampusPermissions):
         reference = data['command_ref']
         digest = canonical_digest('admin_set_account_status', payload)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             account = self._lock_teacher_account(db, actor, user_id)
             prior = self._prior(db, actor, reference, digest)
@@ -1195,7 +1222,7 @@ class RuntimeStore(CampusPermissions):
         reference = data['command_ref']
         digest = canonical_digest('admin_reset_account_password', payload)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             self._lock_command(db, actor, reference)
             account = self._lock_teacher_account(db, actor, user_id)
             prior = self._prior(db, actor, reference, digest)
@@ -2373,54 +2400,6 @@ class RuntimeStore(CampusPermissions):
             return response
         return self.command(token, 'user', run)
 
-    def teacher_adjust_balance(self, token, student_id, data):
-        reference = data['command_ref']
-        payload = dict(data, student_id=student_id)
-        digest = canonical_digest('teacher_balance_adjustment', payload)
-        def run(db, actor):
-            self._require_kind(actor, 'user')
-            self._lock_command(db, actor, reference)
-            balance = db.execute('''SELECT sb.units,sb.revision FROM students s
-                JOIN student_balances sb ON sb.org_id=s.org_id AND sb.student_id=s.id
-                WHERE s.org_id=%s AND s.id=%s FOR UPDATE OF sb''',
-                (actor['org_id'], student_id)).fetchone()
-            if not balance:
-                raise Problem(404, 'student_missing', '未找到学生或期初余额')
-            if 'teacher' not in actor['roles'] or not db.execute('''SELECT 1 FROM student_class_enrollments e
-                    JOIN teacher_classes tc ON tc.org_id=e.org_id AND tc.class_id=e.class_id
-                    WHERE e.org_id=%s AND e.student_id=%s AND e.left_at IS NULL AND tc.user_id=%s LIMIT 1''',
-                    (actor['org_id'], student_id, actor['id'])).fetchone():
-                raise Problem(403, 'student_scope', '只能调整本人班级学生的课时')
-            # Permission is rechecked even for a duplicate response.
-            prior = self._prior(db, actor, reference, digest)
-            if prior:
-                return prior
-            if balance['revision'] != data['expected_revision']:
-                raise Problem(409, 'balance_changed', '余额已更新，请刷新后重新核对')
-            if balance['units'] == data['units']:
-                raise Problem(409, 'balance_unchanged', '新余额与当前余额相同')
-            now = self.clock()
-            delta = data['units'] - balance['units']
-            revision = balance['revision'] + 1
-            db.execute('''UPDATE student_balances SET units=%s,revision=%s,updated_at=%s
-                WHERE org_id=%s AND student_id=%s AND revision=%s''',
-                (data['units'], revision, now, actor['org_id'], student_id, data['expected_revision']))
-            ledger_id = uid()
-            db.execute('''INSERT INTO balance_ledger
-                (id,org_id,student_id,kind,source_event_id,previous_units,units_delta,units,
-                 previous_revision,revision,actor_type,actor_id,reason,created_at)
-                VALUES(%s,%s,%s,'adjustment',%s,%s,%s,%s,%s,%s,'user',%s,%s,%s)''',
-                (ledger_id, actor['org_id'], student_id, reference, balance['units'], delta,
-                 data['units'], balance['revision'], revision, actor['id'], data['reason'], now))
-            response = dict(student_id=student_id, units=data['units'], revision=revision,
-                            duplicate=False, ledger_id=ledger_id, audited=True)
-            self._audit(db, actor, 'teacher_balance_adjusted', ledger_id,
-                        {'student_id': student_id, 'previous_units': balance['units'],
-                         'units': data['units'], 'reason': data['reason']}, now)
-            self._save_command(db, actor, reference, digest, response, now)
-            return response
-        return self.command(token, 'user', run)
-
     def teacher_lessons(self, token, day=None):
         def run(db, actor):
             self._require_kind(actor, 'user')
@@ -2596,7 +2575,7 @@ class RuntimeStore(CampusPermissions):
             return self._weekly_result(monday, now, rows)
         return self.command(token, 'user', run)
 
-    def _admin_weekly_report_data(self, db, org_id, monday, start, now):
+    def _admin_weekly_report_data(self, db, org_id, monday, start, now, campus_id=None):
         rows = db.execute('''SELECT c.id AS class_id,c.name AS class_name,co.name AS course_name,
                 count(ls.student_id) FILTER (WHERE ls.expected AND l.state='scheduled' AND l.ends_at<=%s) AS expected_count,
                 count(ls.student_id) FILTER (WHERE ls.expected AND ar.status='arrived' AND l.state='scheduled' AND l.ends_at<=%s) AS arrived_count,
@@ -2611,26 +2590,30 @@ class RuntimeStore(CampusPermissions):
             LEFT JOIN attendance_records ar ON ar.org_id=ls.org_id
                 AND ar.lesson_id=ls.lesson_id AND ar.student_id=ls.student_id
             WHERE l.org_id=%s AND l.starts_at>=%s AND l.starts_at<%s
+              AND (%s::text IS NULL OR l.campus_id=%s)
             GROUP BY c.id,co.id ORDER BY c.name,c.id''',
-            (now, now, now, now, now, now, org_id, start, start + 7 * 86400)).fetchall()
+            (now, now, now, now, now, now, org_id, start, start + 7 * 86400, campus_id, campus_id)).fetchall()
         return self._weekly_result(monday, now, rows)
 
     def admin_weekly_report(self, token, week_start=None):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             monday, start = self._weekly_period(week_start)
-            return self._admin_weekly_report_data(db, actor['org_id'], monday, start, self.clock())
+            return self._admin_weekly_report_data(db, actor['org_id'], monday, start, self.clock(), actor.get('campus_id'))
         return self.command(token, 'user', run)
 
-    def _monthly_report_data(self, db, org_id, selected, start, end, now):
-        enrolled = db.execute('''SELECT count(*) AS new_students FROM enrollment_records
-            WHERE org_id=%s AND occurred_at>=%s AND occurred_at<%s''',
-            (org_id, start, end)).fetchone()
+    def _monthly_report_data(self, db, org_id, selected, start, end, now, campus_id=None):
+        enrolled = db.execute('''SELECT count(*) AS new_students FROM enrollment_records e
+            JOIN classes c ON c.org_id=e.org_id AND c.id=e.class_id
+            WHERE e.org_id=%s AND e.occurred_at>=%s AND e.occurred_at<%s
+              AND (%s::text IS NULL OR c.campus_id=%s)''',
+            (org_id, start, end, campus_id, campus_id)).fetchone()
         renewed = db.execute('''SELECT count(DISTINCT student_id) AS renewal_students,
                 count(*) AS renewal_events,coalesce(sum(units_added),0) AS renewal_units,
                 coalesce(sum(amount_cents),0) AS renewal_amount_cents
-            FROM renewal_records WHERE org_id=%s AND occurred_at>=%s AND occurred_at<%s''',
-            (org_id, start, end)).fetchone()
+            FROM renewal_records WHERE org_id=%s AND occurred_at>=%s AND occurred_at<%s
+              AND (%s::text IS NULL OR campus_id=%s)''',
+            (org_id, start, end, campus_id, campus_id)).fetchone()
         enrollments = db.execute('''SELECT e.id,e.student_id,s.name AS student_name,e.class_id,
                 c.name AS class_name,e.occurred_at,e.source_ref,u.display_name AS actor_name
             FROM enrollment_records e
@@ -2638,7 +2621,8 @@ class RuntimeStore(CampusPermissions):
             JOIN classes c ON c.org_id=e.org_id AND c.id=e.class_id
             JOIN users u ON u.org_id=e.org_id AND u.id=e.actor_id
             WHERE e.org_id=%s AND e.occurred_at>=%s AND e.occurred_at<%s
-            ORDER BY e.occurred_at,e.id LIMIT 1001''', (org_id, start, end)).fetchall()
+              AND (%s::text IS NULL OR c.campus_id=%s)
+            ORDER BY e.occurred_at,e.id LIMIT 1001''', (org_id, start, end, campus_id, campus_id)).fetchall()
         renewals = db.execute('''SELECT r.id,r.student_id,s.name AS student_name,
                 r.course_id,co.name AS course_name,r.units_added,r.amount_cents,r.unit_price_cents,
                 r.occurred_at,r.source_ref,r.reason,u.display_name AS actor_name
@@ -2647,12 +2631,13 @@ class RuntimeStore(CampusPermissions):
             JOIN courses co ON co.org_id=r.org_id AND co.id=r.course_id
             JOIN users u ON u.org_id=r.org_id AND u.id=r.actor_id
             WHERE r.org_id=%s AND r.occurred_at>=%s AND r.occurred_at<%s
-            ORDER BY r.occurred_at,r.id LIMIT 1001''', (org_id, start, end)).fetchall()
+              AND (%s::text IS NULL OR r.campus_id=%s)
+            ORDER BY r.occurred_at,r.id LIMIT 1001''', (org_id, start, end, campus_id, campus_id)).fetchall()
         truncated = len(enrollments) > 1000 or len(renewals) > 1000
         overall = dict(enrolled)
         overall.update(dict(renewed))
         next_month = (selected.replace(day=28) + timedelta(days=4)).replace(day=1)
-        return {'month': selected.strftime('%Y-%m'), 'month_start': selected.isoformat(),
+        return {'campus_id': campus_id, 'month': selected.strftime('%Y-%m'), 'month_start': selected.isoformat(),
                 'month_end': (next_month - timedelta(days=1)).isoformat(),
                 'timezone': 'Asia/Shanghai', 'generated_at': now, 'final_period': now >= end,
                 'overall': overall, 'enrollments': [dict(row) for row in enrollments[:1000]],
@@ -2660,9 +2645,9 @@ class RuntimeStore(CampusPermissions):
 
     def admin_monthly_report(self, token, month=None):
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
             selected, start, end = self._monthly_period(month)
-            return self._monthly_report_data(db, actor['org_id'], selected, start, end, self.clock())
+            return self._monthly_report_data(db, actor['org_id'], selected, start, end, self.clock(), actor.get('campus_id'))
         return self.command(token, 'user', run)
 
 
@@ -2884,7 +2869,8 @@ class RuntimeStore(CampusPermissions):
         payload = dict(data, student_id=student_id)
         digest = canonical_digest('admin_face_profile', payload)
         def run(db, actor):
-            self._require_admin(actor)
+            self._require_campus_operations(actor)
+            self._scope_student_write(db, actor, student_id)
             self._lock_command(db, actor, reference)
             student = db.execute('''SELECT id,name FROM students
                 WHERE org_id=%s AND id=%s AND active=TRUE FOR UPDATE''',
@@ -3007,7 +2993,9 @@ class RuntimeStore(CampusPermissions):
                     campus = db.execute('''SELECT c.name FROM teacher_campuses tc
                         JOIN campuses c ON c.org_id=tc.org_id AND c.id=tc.campus_id
                         WHERE tc.org_id=%s AND tc.user_id=%s''', (actor['org_id'], actor['id'])).fetchone()
-                    result['campus_name'] = campus['name'] if campus else None
+                    result['teacher_campus_name'] = campus['name'] if campus else None
+                    if not actor['staff_role']:
+                        result['campus_name'] = result['teacher_campus_name']
             else:
                 result['name'] = actor['name']
             return result

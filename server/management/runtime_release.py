@@ -17,7 +17,7 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
 from . import fresh_start, fresh_start_postgres
-from .runtime_schema import POSTGRES_RUNTIME_SCHEMA, full_schema, upgrade_staff_schema
+from .runtime_schema import POSTGRES_RUNTIME_SCHEMA, full_schema, upgrade_staff_schema, runtime_readiness
 from .runtime_permissions import provision_first_owner
 
 
@@ -57,10 +57,8 @@ def _require_empty(connection):
 
 
 def _check_ready(connection):
-    row = connection.execute(
-        'SELECT applied_at FROM schema_migrations WHERE version=%s', (SCHEMA_VERSION,)).fetchone()
-    if not row:
-        raise RehearsalError('Runtime schema is not initialized')
+    if runtime_readiness(connection)['status'] != 'ready':
+        raise RehearsalError('Runtime schema is not initialized or is incomplete')
 
 
 def initialize_local(dsn, enabled):

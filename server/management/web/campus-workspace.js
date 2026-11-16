@@ -19,7 +19,7 @@ async function ownerStaffDashboard(){
  const section=node('section',undefined,'panel'),list=node('div',undefined,'device-list');
  for(const item of staff.items){
   const row=node('article',undefined,'item');
-  row.append(node('h2',item.display_name),node('p',item.login+' · '+(staffRoleNames[item.role]||'待分配')+(item.campus_name?' · '+item.campus_name:'')));
+  row.append(node('h2',item.display_name),node('p',item.login+' · '+(staffRoleNames[item.role]||'未分配管理权限')+(item.campus_name?' · '+item.campus_name:'')));
   if(item.role!=='owner')row.append(button('调整权限',()=>openStaffAccess(item,campuses.items),'secondary'));
   list.append(row);
  }
@@ -50,6 +50,7 @@ function openStaffAccess(item,campuses){
  const loginField=field(form,'登录账号');loginField.maxLength=64;
  if(item){loginField.value=item.login;loginField.readOnly=true;}
  const roleLabel=node('label','身份'),role=node('select');
+ role.setAttribute('aria-label','身份');
  role.append(new Option('校区管理员','campus_admin'),new Option('绩效审核员','performance_reviewer'),new Option('撤销管理权限',''));
  role.value=item?.role||'campus_admin';roleLabel.append(role);form.append(roleLabel);
  const campus=campusField(form,campuses,item?.campus_id||'','管理校区');
@@ -57,7 +58,7 @@ function openStaffAccess(item,campuses){
  role.addEventListener('change',updateCampus);updateCampus();
  let name,password;
  if(!item){
-  form.append(node('p','为已有管理账号分配权限时，只填写登录账号。创建新管理账号时，再填写姓名和初始密码。','hint'));
+  form.append(node('p','为已有账号（含兼任教师）分配权限时，只填写登录账号。创建新管理账号时，再填写姓名和初始密码。','hint'));
   name=field(form,'姓名');name.required=false;name.maxLength=80;
   password=field(form,'初始密码','password');password.required=false;password.minLength=15;password.maxLength=128;password.autocomplete='new-password';
  }
@@ -118,6 +119,8 @@ async function feeReviewDashboard(){
  $('identity').replaceChildren(node('span',identity.display_name+' · '+(reviewer?'绩效审核员':identity.campus_name||'老板')),button('退出',logout,'secondary'));
  const heading=campusHeading('课时费审核','按周核对，月度审核通过后由老板确认结算。');
  if(!reviewer)heading.append(button('返回管理',dashboard,'secondary'));
+ if(reviewer&&hasStaffRole('teacher'))heading.append(button('我的课堂',teacherDashboard,'secondary'));
+ if(hasStaffRole('teacher'))heading.append(button('我的课堂',()=>teacherDashboard(),'secondary'));
  const filters=node('section',undefined,'panel'),form=node('form',undefined,'directory-form');
  const campus=campusField(form,data.campuses,identity.campus_id||data.campuses[0]?.id||'','统计校区');
  const label=node('label','统计周期'),period=node('select');period.append(new Option('按周','week'),new Option('按月','month'));
@@ -159,7 +162,7 @@ function feeReviewEntry(item){
     return;
    }
    body.replaceChildren(node('p','最近操作说明：'+item.reason,'hint'),renderFeeSnapshot(data.snapshot));
-   if(hasStaffRole('performance_reviewer')&&['submitted','approved'].includes(item.status)){
+   if((hasStaffRole('performance_reviewer')||hasStaffRole('owner'))&&['submitted','approved'].includes(item.status)){
     if(item.status==='submitted')body.append(button('审核通过',()=>openFeeDecision(item,'approved')));
     body.append(button('退回',()=>openFeeDecision(item,'returned'),'secondary'));
    }

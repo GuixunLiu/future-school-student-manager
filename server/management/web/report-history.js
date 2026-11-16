@@ -7,11 +7,11 @@ function reportStatus(run){
 }
 async function generateReportSnapshot(kind,period){
  notify('正在生成报表快照，请稍候');
- return api('/v1/admin/report-runs',{kind,period_start:period,command_ref:crypto.randomUUID().replaceAll('-','')});
+ return api('/v1/admin/report-runs',{kind,period_start:period,command_ref:runtimeRequestRef()});
 }
 async function retryReportSnapshot(runId){
  notify('正在重试，并保留原失败版本');
- return api('/v1/admin/report-runs/'+encodeURIComponent(runId)+'/retry',{command_ref:crypto.randomUUID().replaceAll('-','')});
+ return api('/v1/admin/report-runs/'+encodeURIComponent(runId)+'/retry',{command_ref:runtimeRequestRef()});
 }
 function reportHistoryPanel(kind,period,items,selectedId,view){
  const panel=node('section',undefined,'panel report-history'),heading=node('div',undefined,'report-history-heading'),copy=node('div');

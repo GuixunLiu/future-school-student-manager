@@ -7,7 +7,7 @@ function accountReceipt(receipt){
  return panel;
 }
 function accountClassNames(item,classes){return (item.class_ids||[]).map(id=>classes.find(value=>value.id===id)?.name||id).join('、')||'未分配班级';}
-function accountOperations(item,desktop=false){const operations=node(desktop?'td':'div',undefined,'directory-actions'),reset=button('重置密码',()=>openAccountPassword(item),'secondary'),status=button(item.active?'停用账号':'恢复账号',()=>openAccountStatus(item),item.active?'secondary danger':'');if(desktop){reset.dataset.action='reset-password';reset.dataset.userId=item.id;status.dataset.action='change-account-status';status.dataset.userId=item.id;}if(item.active&&item.class_ids.length){status.disabled=true;status.title='仍有任课班级，请先完成任课交接';}if(hasStaffRole('campus_admin'))operations.append(node('span','账号变更由老板处理','hint'));else operations.append(button('设置校区',()=>openTeacherCampus(item),'secondary'),reset,status);return operations;}
+function accountOperations(item,desktop=false){const operations=node(desktop?'td':'div',undefined,'directory-actions'),reset=button('重置密码',()=>openAccountPassword(item),'secondary'),status=button(item.active?'停用账号':'恢复账号',()=>openAccountStatus(item),item.active?'secondary danger':'');if(desktop){reset.dataset.action='reset-password';reset.dataset.userId=item.id;status.dataset.action='change-account-status';status.dataset.userId=item.id;}if(item.active&&item.class_ids.length){status.disabled=true;status.title='仍有任课班级，请先完成任课交接';}if(item.editable===false)operations.append(node('span','兼任管理身份的账号由老板处理','hint'));else{if(!hasStaffRole('campus_admin'))operations.append(button('设置校区',()=>openTeacherCampus(item),'secondary'));operations.append(reset,status);}return operations;}
 async function adminAccountDashboard(receipt=null){
  const [accountData,classData]=await Promise.all([api('/v1/admin/accounts'),api('/v1/admin/classes')]);adminIdentity();const accounts=accountData.items,classes=classData.items;
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','教师账号管理'),node('p','新建教师网页账号、停用或恢复访问，以及重置密码。停用前须完成任课交接；所有操作均保留原因与审计。'));
@@ -20,6 +20,7 @@ async function adminAccountDashboard(receipt=null){
 function accountConflict(error){if(error.status===409){$('device-dialog').close();adminAccountDashboard().then(()=>notify(error.message)).catch(showError);return true;}return false;}
 function campusField(form,items,current='',labelText='常驻校区'){
  const label=node('label',labelText),select=node('select');
+ select.setAttribute('aria-label',labelText);
  select.required=true;select.append(new Option('请选择校区',''));
  for(const item of items)select.append(new Option(item.name,item.id));
  select.value=current;label.append(select);form.append(label);
