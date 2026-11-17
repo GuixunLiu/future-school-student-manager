@@ -1,11 +1,11 @@
 """Real local-only release rehearsal with fictional PostgreSQL data."""
+from tests.postgres_fixture import loopback_conninfo
 import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlsplit
 
 import psycopg
 from psycopg import sql
@@ -28,9 +28,7 @@ class RuntimeReleaseRehearsalTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory(prefix='runtime-release-pg-')
         cls.root = Path(cls.tmp.name)
         cls.server = pgserver.get_server(str(cls.root / 'data'), cleanup_mode='stop')
-        parsed = urlsplit(cls.server.get_uri())
-        cls.base = make_conninfo(host='127.0.0.1', port=parsed.port,
-                                 user=parsed.username, password=parsed.password)
+        cls.base = loopback_conninfo(cls.server)
         cls.sequence = 0
 
     @classmethod

@@ -1,4 +1,5 @@
 """Real PostgreSQL tests for unified runtime transactions and HTTP scopes."""
+from tests.postgres_fixture import loopback_conninfo
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
@@ -6,7 +7,6 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlsplit
 
 import psycopg
 from psycopg import sql
@@ -62,9 +62,7 @@ class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
         import pgserver
         cls.tmp = tempfile.TemporaryDirectory(prefix='runtime-business-pg-')
         cls.server = pgserver.get_server(str(Path(cls.tmp.name) / 'data'), cleanup_mode='stop')
-        parsed = urlsplit(cls.server.get_uri())
-        cls.base = make_conninfo(host='127.0.0.1', port=parsed.port,
-                                 user=parsed.username, password=parsed.password)
+        cls.base = loopback_conninfo(cls.server)
         cls.sequence = 0
 
     @classmethod

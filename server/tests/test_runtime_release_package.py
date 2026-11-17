@@ -1,4 +1,5 @@
 """Code-only release archive and isolated ASGI entry verification."""
+from tests.postgres_fixture import loopback_conninfo
 import hashlib
 import importlib.util
 import json
@@ -62,7 +63,6 @@ class RuntimeReleasePackageTests(unittest.TestCase):
         import psycopg
         from psycopg import sql
         from psycopg.conninfo import make_conninfo
-        from urllib.parse import urlsplit
 
         with tempfile.TemporaryDirectory(prefix='runtime-package-isolated-') as folder:
             root = Path(folder)
@@ -71,9 +71,7 @@ class RuntimeReleasePackageTests(unittest.TestCase):
                 archive.extractall(root / 'release')
             server = pgserver.get_server(str(root / 'pg'), cleanup_mode='stop')
             try:
-                parsed = urlsplit(server.get_uri())
-                base = make_conninfo(host='127.0.0.1', port=parsed.port,
-                                     user=parsed.username, password=parsed.password)
+                base = loopback_conninfo(server)
                 with psycopg.connect(base, dbname='postgres', autocommit=True) as connection:
                     connection.execute(sql.SQL('CREATE DATABASE {}').format(
                         sql.Identifier('runtime_rehearsal_package')))

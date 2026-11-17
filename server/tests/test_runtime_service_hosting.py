@@ -1,4 +1,5 @@
 """Static service-unit checks and a real same-port process restart rehearsal."""
+from tests.postgres_fixture import loopback_conninfo
 import http.client
 import importlib.util
 import json
@@ -10,7 +11,6 @@ import sys
 import tempfile
 import time
 import unittest
-from urllib.parse import urlsplit
 
 import psycopg
 from psycopg import sql
@@ -75,9 +75,7 @@ class RuntimeServiceHostingTests(unittest.TestCase):
             log = None
             log_path = root / 'uvicorn.log'
             try:
-                parsed = urlsplit(database.get_uri())
-                base = make_conninfo(host='127.0.0.1', port=parsed.port,
-                                     user=parsed.username, password=parsed.password)
+                base = loopback_conninfo(database)
                 with psycopg.connect(base, dbname='postgres', autocommit=True) as connection:
                     connection.execute(sql.SQL('CREATE DATABASE {}').format(
                         sql.Identifier('runtime_rehearsal_service_hosting')))
@@ -276,9 +274,7 @@ class RuntimeServiceFailureTests(unittest.TestCase):
             log = None
             log_path = root / 'uvicorn.log'
             try:
-                parsed = urlsplit(database.get_uri())
-                base = make_conninfo(host='127.0.0.1', port=parsed.port,
-                                     user=parsed.username, password=parsed.password)
+                base = loopback_conninfo(database)
                 with psycopg.connect(base, dbname='postgres', autocommit=True) as connection:
                     connection.execute(sql.SQL('CREATE DATABASE {}').format(
                         sql.Identifier('runtime_rehearsal_outage')))
@@ -303,9 +299,7 @@ class RuntimeServiceFailureTests(unittest.TestCase):
                 process, log = None, None
 
                 database = pgserver.get_server(str(data), cleanup_mode='stop')
-                parsed = urlsplit(database.get_uri())
-                base = make_conninfo(host='127.0.0.1', port=parsed.port,
-                                     user=parsed.username, password=parsed.password)
+                base = loopback_conninfo(database)
                 dsn = make_conninfo(base, dbname='runtime_rehearsal_outage', connect_timeout=1)
                 process, log = self.start(port, dsn, log_path)
                 self.wait_ready(process, port, log_path)

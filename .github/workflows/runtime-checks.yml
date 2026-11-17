@@ -22,7 +22,7 @@ jobs:
       - run: npm test
         env:
           PYTHON_BIN: python
-      - run: python -B -m unittest -q tests.test_runtime_service tests.test_runtime_release_package tests.test_runtime_release_rehearsal tests.test_runtime_launch_config tests.test_runtime_api tests.test_runtime_acceptance tests.test_runtime_service_hosting tests.test_runtime_preflight
+      - run: python -B -m unittest -q tests.test_runtime_service tests.test_runtime_release_package tests.test_runtime_release_rehearsal tests.test_runtime_launch_config tests.test_runtime_api tests.test_runtime_acceptance tests.test_runtime_service_hosting tests.test_runtime_preflight tests.test_runtime_schema
         working-directory: server
       - run: npx playwright install --with-deps chromium
       - run: npm run test:runtime-browser

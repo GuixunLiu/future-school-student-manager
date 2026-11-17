@@ -1,9 +1,9 @@
 """One fictional cross-role acceptance chain through HTTP, backup and independent restore."""
+from tests.postgres_fixture import loopback_conninfo
 import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
-from urllib.parse import urlsplit
 
 import psycopg
 from psycopg import sql
@@ -24,9 +24,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
             root = Path(folder)
             server = pgserver.get_server(str(root / 'pg'), cleanup_mode='stop')
             try:
-                parsed = urlsplit(server.get_uri())
-                base = make_conninfo(host='127.0.0.1', port=parsed.port,
-                                     user=parsed.username, password=parsed.password)
+                base = loopback_conninfo(server)
                 with psycopg.connect(base, dbname='postgres', autocommit=True) as connection:
                     for name in ('runtime_rehearsal_acceptance_source',
                                  'runtime_rehearsal_acceptance_restored'):
