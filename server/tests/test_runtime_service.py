@@ -556,7 +556,8 @@ class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
         initial = self.store.admin_weekly_report(ADMIN_TOKEN)
         self.assertEqual((2, 0, 2, 0.0), tuple(initial['overall'][key] for key in (
             'expected_count', 'arrived_count', 'missing_count', 'rate_percent')))
-        self.assertEqual(['class-a', 'class-b'], [row['class_id'] for row in initial['classes']])
+        # Database collation can order Chinese class names differently by platform.
+        self.assertCountEqual(['class-a', 'class-b'], [row['class_id'] for row in initial['classes']])
         with psycopg.connect(self.conninfo) as connection:
             connection.execute("""
                 UPDATE attendance_records SET status='arrived' WHERE lesson_id='lesson-a';
