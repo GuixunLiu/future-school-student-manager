@@ -2,7 +2,7 @@
 async function adminEnrollmentDashboard(receipt=null){
  const data=await api('/v1/admin/classes');adminIdentity();
  const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','管理员招新登记'),node('p','创建在读学生并指定当前班级，同时建立期初课时、不可变流水和招新记录。学号与业务来源编号在机构内不能重复。'));
- const actions=node('div',undefined,'toolbar');actions.append(button('返回设备管理',dashboard,'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'),button('查看月报',()=>adminMonthlyReport(),'secondary'));heading.append(copy,actions);
+ const actions=node('div',undefined,'toolbar');actions.append(button('返回管理工作台',dashboard,'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'),button('查看月报',()=>adminMonthlyReport(),'secondary'));heading.append(copy,actions);
  const sections=[heading];
  if(receipt){const done=node('section',undefined,'panel enrollment-receipt'),receiptActions=node('div',undefined,'toolbar');done.append(node('h2','招新登记完成'),node('p',receipt.name+'（'+receipt.external_ref+'）已加入“'+receipt.class_name+'”，期初余额 '+teacherLessonHours(receipt.balance_units)+'。'),node('p','学生编号：'+receipt.student_id));receiptActions.append(button('同步后续课次',()=>adminRosterSyncDashboard(receipt.student_id)),button('继续招新',()=>adminEnrollmentDashboard(),'secondary'));done.append(receiptActions);sections.push(done);}
  const panel=node('section',undefined,'panel enrollment-panel'),form=node('form',undefined,'enrollment-form');

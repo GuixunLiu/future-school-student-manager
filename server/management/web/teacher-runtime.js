@@ -24,21 +24,51 @@ function countCards(counts){const container=node('div',undefined,'course-counts'
 function teacherIdentity(){$('identity').replaceChildren(node('span',identity.display_name+' · '+((identity.teacher_campus_name===undefined?identity.campus_name:identity.teacher_campus_name)||'教师')),button('退出',logout,'secondary'));}
 async function teacherDashboard(day=teacherDay||chinaToday()){
  const data=await api('/v1/teacher/lessons?date='+encodeURIComponent(day));teacherDay=data.date;teacherLessons=data.items;currentLesson=null;teacherIdentity();
- const heading=node('div',undefined,'runtime-summary teacher-heading'),copy=node('div');copy.append(node('span','教师工作台','teacher-eyebrow'),node('h1','我的课堂'),node('p',webFaceEnabled()?'查看任课班级，处理人脸签到和请假。':'查看任课班级和签到记录，处理学生请假。'));
+ const heading=node('div',undefined,'runtime-summary teacher-heading teacher-day-heading');
+ const copy=node('div');
+ copy.append(node('h1','我的课堂'));
  const actions=node('div',undefined,'toolbar teacher-actions');
  actions.append(button('刷新',()=>teacherDashboard(teacherDay),'secondary'),
   button('到课率',()=>teacherWeeklyReport(),'secondary'),
-  button('我的课时费',()=>teachingFeesDashboard(false),'secondary'),
-  button('课后反馈',()=>notify('课后反馈暂未开放'),'secondary'));
- if(hasManagementWorkspace())actions.append(button('设备管理',dashboard,'secondary'));
- if(hasStaffRole('performance_reviewer'))actions.append(button('绩效审核',feeReviewDashboard,'secondary'));
+  button('我的课时费',()=>teachingFeesDashboard(false),'secondary'));
+ if(hasManagementWorkspace())actions.append(button('设备管理',deviceDashboard,'secondary'));
  if(hasStaffRole('performance_reviewer'))actions.append(button('绩效审核',feeReviewDashboard,'secondary'));
  heading.append(copy,actions);
- const filter=node('section',undefined,'panel teacher-filter teacher-date-filter'),form=node('form',undefined,'classroom-date'),label=node('label','课堂日期'),date=node('input');date.type='date';date.required=true;date.value=teacherDay;date.setAttribute('aria-label','课堂日期');label.append(date);const submit=node('button','查看课堂');submit.type='submit';form.append(label,submit);filter.append(form);
- form.addEventListener('submit',async event=>{event.preventDefault();submit.disabled=true;try{await teacherDashboard(date.value);}catch(error){showError(error);}finally{submit.disabled=false;}});
- const list=node('section',undefined,'grid course-grid teacher-course-grid');if(!teacherLessons.length)list.append(node('div','这一天没有你的课堂','empty'));
- for(const lesson of teacherLessons){const card=node('article',undefined,'panel course-card'),meta=node('div',undefined,'lesson-meta');meta.append(node('span',lesson.state==='scheduled'?(lesson.is_substitute?'临时代课':'正常课堂'):'已取消','badge'+(lesson.state==='scheduled'?'':' lesson-cancelled')),node('p',lessonTime(lesson.starts_at)+'–'+lessonTime(lesson.ends_at)));card.append(meta,node('h2',lesson.class_name),node('p',lesson.course_name||'未设置课程名称'),countCards({expected:lesson.expected_count,arrived:lesson.arrived_count,leave:lesson.leave_count,missing:lesson.missing_count}));const open=button('查看签到',()=>teacherLesson(lesson.id));open.dataset.lessonId=lesson.id;card.append(open);list.append(card);}
- const listHeading=node('div',undefined,'teacher-section-heading');listHeading.append(node('h2','当日课堂'),node('span',teacherLessons.length+' 节课'));
+
+ const filter=node('section',undefined,'teacher-filter teacher-date-filter');
+ const form=node('form',undefined,'classroom-date'),label=node('label','课堂日期'),date=node('input');
+ date.type='date';date.required=true;date.value=teacherDay;date.setAttribute('aria-label','课堂日期');
+ label.append(date);
+ const submit=node('button','查看课堂','secondary');submit.type='submit';
+ form.append(label,submit);
+ const isToday=teacherDay===chinaToday();
+ if(!isToday)form.append(button('回到今天',()=>teacherDashboard(chinaToday()),'secondary'));
+ filter.append(form);
+ form.addEventListener('submit',async event=>{
+  event.preventDefault();submit.disabled=true;
+  try{await teacherDashboard(date.value);}catch(error){showError(error);}finally{submit.disabled=false;}
+ });
+
+ const listHeading=node('div',undefined,'teacher-section-heading');
+ listHeading.append(node('h2',isToday?'今日课堂':'当日课堂'),node('span',teacherLessons.length+' 节课'));
+ const list=node('section',undefined,'teacher-course-list');
+ list.setAttribute('aria-label','课堂列表');
+ if(!teacherLessons.length)list.append(node('div',isToday?'今天没有安排课堂':'这一天没有你的课堂','empty'));
+ for(const lesson of teacherLessons){
+  const row=node('article',undefined,'teacher-course-row');
+  const schedule=node('div',undefined,'teacher-course-time');
+  schedule.append(node('strong',lessonTime(lesson.starts_at)+'–'+lessonTime(lesson.ends_at)));
+  if(lesson.state!=='scheduled')schedule.append(node('span','已取消','badge lesson-cancelled'));
+  else if(lesson.is_substitute)schedule.append(node('span','临时代课','badge'));
+  const name=node('div',undefined,'teacher-course-name');
+  name.append(node('h3',lesson.class_name));
+  if(lesson.course_name)name.append(node('p',lesson.course_name));
+  const counts=countCards({expected:lesson.expected_count,arrived:lesson.arrived_count,leave:lesson.leave_count,missing:lesson.missing_count});
+  const open=button('查看签到',()=>teacherLesson(lesson.id));
+  open.dataset.lessonId=lesson.id;
+  row.append(schedule,name,counts,open);
+  list.append(row);
+ }
  $('main').replaceChildren(heading,filter,listHeading,list);
 }
 async function teacherLesson(lessonId){

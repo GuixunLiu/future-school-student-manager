@@ -157,3 +157,27 @@ body.kiosk-mode{background:#0165b3;color:#fff}
 .screen-portrait.kiosk-mode .space-kiosk-recent{margin-top:20px}
 .screen-portrait.kiosk-mode .space-kiosk-privacy{margin-top:30px}
 @media(max-width:540px){.screen-portrait.kiosk-mode .space-kiosk-home{padding-top:10px;gap:26px}.screen-portrait.kiosk-mode .space-kiosk-intro h1{font-size:37px}.screen-portrait.kiosk-mode .space-kiosk-count{position:static;margin-top:18px;font-size:11px}.screen-portrait.kiosk-mode .space-face-action{width:290px;border-radius:54px}.screen-portrait.kiosk-mode .space-kiosk-privacy{margin-top:23px}}
+
+.space-kiosk-privacy {
+  color: #e0f2fe;
+  font-size: 13px;
+}
+.space-kiosk-stage button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 4px;
+}
+.checkin-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.checkin-success-content .checkin-classroom-card { margin-block: 12px; }
+.checkin-success-content .checkin-success-auto {
+  margin-top: 8px;
+  color: #4d6980;
+  font-size: 13px;
+}
+.face-checkin-modal .face-checkin-footer { flex-wrap: wrap; gap: 8px; }
+.face-checkin-modal .face-checkin-footer button { min-height: 44px; }

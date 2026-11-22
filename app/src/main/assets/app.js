@@ -855,7 +855,7 @@ function openAdminLogin(){
 }
 function adminCredentialsMatch(username,password){return !state.settings.adminPattern&&state.settings.adminAuthMode!=='pattern'&&String(username||'').trim()===String(state.settings.adminUser||'admin')&&String(password||'')===String(state.settings.adminPassword||'123456')}
 function exitAdmin(){invalidatePageCache();isAdminAuthenticated=false;currentView='checkin';closeModal();render();window.scrollTo({top:0});toast('已返回学生签到')}
-function openModal(html){faceScanToken++;clearTimeout(checkinSuccessTimer);checkinSuccessTimer=null;document.body.classList.remove('face-dialog-open');if(activeStream){activeStream.getTracks().forEach(track=>track.stop());activeStream=null}const modal=$('#modal');clearFacePopupPosition();modal.className='modal';modal.innerHTML=`<button class="modal-close" aria-label="关闭">×</button>${html}`;$('#modalBackdrop').classList.remove('hidden');$('.modal-close').onclick=closeModal;$('#modalBackdrop').onclick=e=>{if(e.target.id==='modalBackdrop'){if(skipOpeningBackdropClick){skipOpeningBackdropClick=false;return}closeModal()}};}
+function openModal(html){faceScanToken++;clearTimeout(checkinSuccessTimer);checkinSuccessTimer=null;document.body.classList.remove('face-dialog-open');if(activeStream){activeStream.getTracks().forEach(track=>track.stop());activeStream=null}const modal=$('#modal');clearFacePopupPosition();modal.className='modal';modal.removeAttribute('aria-labelledby');modal.innerHTML=`<button class="modal-close" aria-label="关闭">×</button>${html}`;$('#modalBackdrop').classList.remove('hidden');$('.modal-close').onclick=closeModal;$('#modalBackdrop').onclick=e=>{if(e.target.id==='modalBackdrop'){if(skipOpeningBackdropClick){skipOpeningBackdropClick=false;return}closeModal()}};}
 function closeModal(){ faceScanToken++;cameraSetupCallback=null;clearTimeout(checkinSuccessTimer);checkinSuccessTimer=null;document.body.classList.remove('face-dialog-open');clearFacePopupPosition();if(activeStream){activeStream.getTracks().forEach(t=>t.stop());activeStream=null} $('#modalBackdrop').classList.add('hidden'); }
 
 function openClassAbsentReminder(course,date=localDate()){
@@ -866,7 +866,7 @@ function openClassAbsentReminder(course,date=localDate()){
   $('#modal').classList.add('attendance-reminder-modal');bindStudentLeaveButtons($('#modal'));$('#closeReminderDetail').onclick=closeModal;$('#goReminderCheckin').onclick=()=>{closeModal();currentView='checkin';render();window.scrollTo({top:0,behavior:'smooth'})};
 }
 window.openAttendanceReminder=()=>toast('到课提醒请在网页端查看');
-function toast(message,error=false){ const el=$('#toast');el.textContent=message;el.className=`toast${error?' error':''}`;clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.classList.add('hidden'),2600); }
+function toast(message,error=false){ const el=$('#toast');const announcement=$('#checkinAnnouncement');if(announcement)announcement.textContent=message;el.textContent=message;el.className=`toast${error?' error':''}`;clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.classList.add('hidden'),2600); }
 function openDangerConfirmation({icon='!',title,description,subject,subjectMeta='',impactTitle,impactText,confirmLabel='确认删除',verifyText='',onConfirm}){
   openModal(`<div class="modal-head"><span>${esc(icon)}</span><div><h2>${esc(title)}</h2><p>${esc(description)}</p></div></div><div class="danger-confirm-subject"><div><span>即将处理</span><b>${esc(subject)}</b><small>${esc(subjectMeta)}</small></div></div><div class="undo-confirm-impact"><span>${uiIcon('alert')}</span><div><b>${esc(impactTitle)}</b><small>${esc(impactText)}</small></div></div>${verifyText?`<label class="danger-confirm-verify"><span>为防止误操作，请输入“${esc(verifyText)}”</span><input id="dangerVerifyInput" autocomplete="off" placeholder="${esc(verifyText)}"></label>`:''}<div class="form-actions undo-confirm-actions"><button type="button" class="secondary-btn" id="cancelDangerAction">取消</button><button type="button" class="danger-btn" id="confirmDangerAction" ${verifyText?'disabled':''}>${esc(confirmLabel)}</button></div>`);
   $('#modal').classList.add('danger-confirm-modal');
@@ -1015,7 +1015,10 @@ function openFaceCheckin(){
   if(!state.settings.cameraPositionConfigured)return openCameraPositionSetup(true,openFaceCheckin);
   const eligible=reportableStudents().filter(canPrepareSFaceProfile);
   if(!eligible.length)return toast('暂无可用人脸，请由教师在网页端录入；也可使用姓名或学号签到',true);
-  openModal(`<div class="modal-head face-checkin-head"><span>⌾</span><div><h2 id="faceDialogTitle">高精度人脸签到</h2><p id="faceDialogSubtitle">SFace 五官校正 · 多帧安全核对</p></div></div><div class="face-checkin-shell" id="faceCheckinShell"><div class="face-scan-stage" id="faceScanStage"><div class="camera-frame recognition-camera"><video id="camera" autoplay playsinline muted></video><div class="face-guide"></div><div class="scan-line"></div><div class="recognition-badge" id="recognitionBadge">准备识别</div></div><aside class="face-scan-aside"><div class="scan-state-icon"><span>⌾</span><i></i></div><b>识别状态</b><p class="camera-note" id="cameraStatus">正在加载 SFace 高精度离线模型…</p><div class="scan-tips"><span>单人入镜</span><span>正对镜头</span><span>保持光线充足</span></div></aside></div><div class="recognition-result hidden" id="recognitionResult"></div><div class="form-actions face-checkin-footer"><button type="button" class="secondary-btn" id="cancelModal">取消识别</button></div></div>`);document.body.classList.add('face-dialog-open');$('#modal').classList.add('face-checkin-modal');applyFacePopupPosition();playCameraPopupAnimation();$('#cancelModal').onclick=closeModal;
+  openModal(`<div class="modal-head face-checkin-head"><span>⌾</span><div><h2 id="faceDialogTitle">人脸签到</h2><p id="faceDialogSubtitle">请一个人正对镜头</p></div></div><div class="face-checkin-shell" id="faceCheckinShell"><div class="face-scan-stage" id="faceScanStage"><div class="camera-frame recognition-camera"><video id="camera" autoplay playsinline muted></video><div class="face-guide"></div><div class="scan-line"></div><div class="recognition-badge" id="recognitionBadge">准备识别</div></div><aside class="face-scan-aside"><div class="scan-state-icon"><span>⌾</span><i></i></div><b>识别状态</b><p class="camera-note" id="cameraStatus">正在准备摄像头，请稍等…</p><div class="scan-tips"><span>单人入镜</span><span>正对镜头</span><span>保持光线充足</span></div></aside></div><div class="recognition-result hidden" id="recognitionResult"></div><div class="form-actions face-checkin-footer"><button type="button" class="secondary-btn" id="faceUseName">用姓名签到</button><button type="button" class="secondary-btn" id="faceUseNumber">用学号签到</button><button type="button" class="secondary-btn" id="cancelModal">取消识别</button></div></div>`);document.body.classList.add('face-dialog-open');$('#modal').classList.add('face-checkin-modal');applyFacePopupPosition();playCameraPopupAnimation();$('#cancelModal').onclick=closeModal;
+  $('#modal').setAttribute('aria-labelledby','faceDialogTitle');
+  $('#faceUseName').onclick=()=>openCheckin('姓名');
+  $('#faceUseNumber').onclick=()=>openCheckin('学号');
   startAutomaticRecognition(eligible);
 }
 
@@ -1035,7 +1038,7 @@ async function startAutomaticRecognition(eligible){
     if(token!==faceScanToken)return;
     if(!eligible.length){badge.textContent='没有可用人脸';status.textContent='旧人脸资料无法自动升级，请在学生资料中重新拍照录入';return}
     const recognitionIndex=buildFaceRecognitionIndex(eligible);if(!recognitionIndex.length){badge.textContent='没有可用人脸';status.textContent='请在学生资料中重新录入人脸';return}
-    status.textContent=`SFace 已载入 ${recognitionIndex.length} 名学生，请正对摄像头`;badge.textContent='正在寻找人脸';
+    status.textContent=`请正对摄像头，稍等片刻`;badge.textContent='正在寻找人脸';
     activeStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});video.srcObject=activeStream;await video.play();
     while(token===faceScanToken){
       if(video.readyState<2){await delay(250);continue}
@@ -1050,18 +1053,18 @@ async function startAutomaticRecognition(eligible){
         badge.textContent=`快速核对 ${streak}/${requiredStreak}`;status.textContent='正在进行陌生人拒识检查，请保持不动';
         const runningAverage=streakScores.reduce((sum,value)=>sum+value,0)/streakScores.length;
         if(streak>=requiredStreak&&runningAverage>=(singleProfile ? .52 : .48)){faceScanToken++;showFaceConfirmation(best.student,runningAverage,streakDescriptors,{score:runningAverage,margin:Math.min(...streakMargins)});return}
-      }else{lastStudentId=null;streak=0;streakScores=[];streakDescriptors=[];streakMargins=[];badge.textContent='陌生人或无法确认';status.textContent='当前人脸未通过严格安全阈值，请重新录入本人资料或改用姓名、学号签到'}
+      }else{lastStudentId=null;streak=0;streakScores=[];streakDescriptors=[];streakMargins=[];badge.textContent='陌生人或无法确认';status.textContent='还没认出你。请正对镜头再试一次，或改用姓名、学号签到。'}
       await delay(60);
     }
   }catch(error){if(token===faceScanToken){const message=error&&error.message||'离线人脸识别启动失败';badge.textContent='识别启动失败';status.textContent=message;toast(message,true)}}
 }
 function showFaceConfirmation(student,score,candidateDescriptors=[],confidence={}){
   if(activeStream){activeStream.getTracks().forEach(t=>t.stop());activeStream=null}
-  const serverMode=typeof canonicalModeActive==='function'&&canonicalModeActive(),result=$('#recognitionResult'),stage=$('#faceScanStage'),already=(!serverMode&&state.attendance.some(a=>a.studentId===student.id&&a.date===localDate()))||studentHasLeaveOnDate(student.id,localDate()),learningCount=Number(student.faceLearningCount||0);
+  const serverMode=typeof canonicalModeActive==='function'&&canonicalModeActive(),result=$('#recognitionResult'),stage=$('#faceScanStage'),already=(!serverMode&&state.attendance.some(a=>a.studentId===student.id&&a.date===localDate()))||studentHasLeaveOnDate(student.id,localDate());
   stage.classList.add('hidden');$('#faceDialogTitle').textContent='请核对学生身份';$('#faceDialogSubtitle').textContent='人脸识别已完成，摄像头已自动关闭';$('#cancelModal').textContent='关闭';
-  result.innerHTML=`<div class="recognition-success-mark">✓</div><div class="recognized-person">${avatarMarkup(student)}<div><span>自动识别为</span><h3>${esc(student.name)}</h3><p>${esc(student.studentNo)} · ${esc(student.className)}</p></div><strong>${money(student.hours)}<small>剩余课时</small></strong></div><div class="face-learning-note"><span>✦</span><div><b>SFace 自适应学习已开启</b><small>只有确认本人并成功签到后才会学习新角度和光线 · 已学习 ${learningCount} 次</small></div></div><div class="recognition-match-note">已通过多帧陌生人拒识检查，请确认学生信息</div>${already?'<p class="recognition-warning">该学生今天已签到或已请假，不能直接签到；请假到课须先由老师撤销请假。</p>':''}<div class="recognition-actions"><button class="secondary-btn" id="recognizeAgain">不是本人，重新识别</button><button class="primary-btn" id="confirmRecognized" ${already?'disabled':''}>确认是本人并签到</button></div>`;
+  result.innerHTML=`<div class="recognition-success-mark">✓</div><div class="recognized-person">${avatarMarkup(student)}<div><span>自动识别为</span><h3>${esc(student.name)}</h3><p>${esc(student.studentNo)} · ${esc(student.className)}</p></div><strong>${money(student.hours)}<small>剩余课时</small></strong></div><div class="recognition-match-note">请确认这是你的资料</div>${already?'<p class="recognition-warning">该学生今天已签到或已请假，不能直接签到；请假到课须先由老师撤销请假。</p>':''}<div class="recognition-actions"><button class="secondary-btn" id="recognizeAgain">不是本人，重新识别</button><button class="primary-btn" id="confirmRecognized" ${already?'disabled':''}>确认是本人并签到</button></div>`;
   result.classList.remove('hidden');
-  $('#recognizeAgain').onclick=()=>{result.classList.add('hidden');stage.classList.remove('hidden');$('#faceDialogTitle').textContent='高精度人脸签到';$('#faceDialogSubtitle').textContent='SFace 五官校正 · 多帧安全核对';$('#cancelModal').textContent='取消识别';startAutomaticRecognition(reportableStudents().filter(hasSFaceProfile))};
+  $('#recognizeAgain').onclick=()=>{result.classList.add('hidden');stage.classList.remove('hidden');$('#faceDialogTitle').textContent='人脸签到';$('#faceDialogSubtitle').textContent='请一个人正对镜头';$('#cancelModal').textContent='取消识别';startAutomaticRecognition(reportableStudents().filter(hasSFaceProfile))};
   $('#confirmRecognized').onclick=()=>{const learned=learnFromConfirmedFace(student,candidateDescriptors,confidence);performCheckin(student,'人脸',learned?`，人脸档案已完成第 ${Number(student.faceLearningCount||0)} 次学习`:'')};
 }
 function recordStudentAttendance(studentId,method,lessonId=''){
@@ -1111,8 +1114,16 @@ function classroomForStudent(student){const course=state.classes.find(item=>norm
 
 function showCheckinSuccess(student,method,successSuffix='',charge=1){
   const classroom=classroomForStudent(student),course=state.classes.find(item=>normalizedGroupLabel(item.name)===normalizedGroupLabel(student&&student.className)),teacherName=studentFacingTeacherName(course&&course.teacher||student.teacher);
-  openModal(`<div class="checkin-success-content"><div class="checkin-success-mark"><span>${uiIcon('check')}</span><i></i></div><div class="checkin-success-title"><small>${esc(method)}签到</small><h2>签到成功</h2><p>${esc(student.name)}，请前往以下教室上课</p></div><div class="checkin-success-student">${avatarMarkup(student)}<div><span>学生姓名</span><b>${esc(student.name)}</b><small>${esc(student.studentNo)}</small></div><div><span>所在班级</span><b>${esc(student.className||'未设置班级')}</b><small>${esc(teacherName)}</small></div></div><div class="checkin-classroom-card"><span>上课教室</span><strong>${esc(classroom)}</strong><small>${classroom==='暂未设置教室'?'请联系老师确认上课地点':'请按时前往教室上课'}</small></div><div class="checkin-success-hours"><span>签到已扣除 ${money(charge)} 课时</span><strong>${money(student.hours)}<small>剩余课时</small></strong></div>${Number(student.hours)<0?`<p class="checkin-debt-note">已欠 ${money(Math.abs(Number(student.hours)))} 课时，本次签到已记录；续费后自动抵扣欠课。</p>`:''}${successSuffix?`<p class="checkin-success-note">${esc(successSuffix.replace(/^，/,''))}</p>`:''}<button type="button" class="primary-btn checkin-success-done" id="finishCheckinSuccess">完成</button><small class="checkin-success-auto">4 秒后自动关闭</small></div>`);
-  $('#modal').classList.add('checkin-success-modal');$('#finishCheckinSuccess').onclick=closeModal;clearTimeout(checkinSuccessTimer);checkinSuccessTimer=setTimeout(()=>{if($('#modal').classList.contains('checkin-success-modal'))closeModal()},4000);
+  openModal(`<div class="checkin-success-content"><div class="checkin-success-mark"><span>${uiIcon('check')}</span><i></i></div><div class="checkin-success-title"><small>${esc(method)}签到</small><h2 id="checkinSuccessTitle">签到成功</h2></div><div class="checkin-classroom-card"><span>上课教室</span><strong>${esc(classroom)}</strong><small>${classroom==='暂未设置教室'?'请联系老师确认上课地点':'请按时前往教室上课'}</small></div><div class="checkin-success-student">${avatarMarkup(student)}<div><span>学生姓名</span><b>${esc(student.name)}</b><small>${esc(student.studentNo)}</small></div><div><span>所在班级</span><b>${esc(student.className||'未设置班级')}</b><small>${esc(teacherName)}</small></div></div><div class="checkin-success-hours"><span>签到已扣除 ${money(charge)} 课时</span><strong>${money(student.hours)}<small>剩余课时</small></strong></div>${Number(student.hours)<0?`<p class="checkin-debt-note">已欠 ${money(Math.abs(Number(student.hours)))} 课时，本次签到已记录；续费后自动抵扣欠课。</p>`:''}${successSuffix?`<p class="checkin-success-note">${esc(successSuffix.replace(/^，/,''))}</p>`:''}<button type="button" class="primary-btn checkin-success-done" id="finishCheckinSuccess">完成</button><small class="checkin-success-auto">也可等待 20 秒自动返回</small></div>`);
+  const modal=$('#modal'),finish=$('#finishCheckinSuccess');
+  modal.classList.add('checkin-success-modal');
+  modal.setAttribute('aria-labelledby','checkinSuccessTitle');
+  finish.onclick=closeModal;
+  finish.focus();
+  clearTimeout(checkinSuccessTimer);
+  checkinSuccessTimer=setTimeout(()=>{
+    if(modal.classList.contains('checkin-success-modal'))closeModal();
+  },20000);
 }
 
 function undoCheckin(attendanceId){

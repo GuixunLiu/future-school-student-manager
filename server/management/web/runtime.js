@@ -28,23 +28,44 @@ function login(){
  const submit=node('button','登录');submit.type='submit';form.append(submit);panel.append(form);$('main').replaceChildren(panel);
  form.addEventListener('submit',async event=>{event.preventDefault();submit.disabled=true;try{const result=await api('/v1/auth/login',{login:account.value.trim(),password:password.value});password.value='';token=result.access_token;identity=await api('/v1/me');if(hasStaffRole('performance_reviewer'))await feeReviewDashboard();else if(hasStaffRole('owner')||hasStaffRole('campus_admin'))await dashboard();else if(hasStaffRole('teacher'))await teacherDashboard();else if(hasStaffRole('admin'))await dashboard();else throw Error('当前账号尚未分配工作台权限');}catch(error){showError(error);}finally{submit.disabled=false;}});
 }
+function managementIdentity(){
+ const name=identity.display_name+(identity.campus_name?' · '+identity.campus_name:'');
+ $('identity').replaceChildren(node('span',name),button('退出',logout,'secondary'));
+}
 async function dashboard(){
- const [classData,deviceData]=await Promise.all([api('/v1/admin/classes'),api('/v1/admin/devices')]);classes=classData.items;
- $('identity').replaceChildren(node('span',identity.display_name+(identity.campus_name?' · '+identity.campus_name:'')),button('退出',logout,'secondary'));
- const heading=node('div',undefined,'runtime-summary'),copy=node('div');copy.append(node('h1','平板设备管理'),node('p','为一台新平板选择可签到班级并生成一次性开通码。开通码 15 分钟内有效，只在生成时显示一次。'));
+ managementIdentity();
+ const heading=node('h1','管理工作台');
+ const groups=node('nav',undefined,'management-groups');
+ groups.setAttribute('aria-label','教务管理功能');
+ function addGroup(title, entries){
+  const group=node('section',undefined,'management-group'),links=node('div',undefined,'management-links');
+  group.append(node('h2',title));
+  for(const [label,action] of entries)links.append(button(label,action,'secondary'));
+  group.append(links);
+  groups.append(group);
+ }
+ const teaching=[['学生与班级',adminDirectoryDashboard],['课表管理',adminScheduleDashboard],['账号管理',adminAccountDashboard],['招新登记',adminEnrollmentDashboard]];
+ if(hasStaffRole('teacher'))teaching.unshift(['我的课堂',()=>teacherDashboard()]);
+ if(hasStaffRole('owner'))teaching.push(['管理权限',ownerStaffDashboard]);
+ addGroup('教务',teaching);
+ const hours=[['续费登记',adminRenewalDashboard],['教师课时费',()=>teachingFeesDashboard(true)]];
+ if(hasStaffRole('owner')||hasStaffRole('campus_admin'))hours.push(
+  ['课时调整申请',balanceRequestsDashboard],['课时费审核',feeReviewDashboard],['费率申请',courseFeeProposalDashboard]);
+ addGroup('课时与续费',hours);
+ addGroup('报表',[[hasStaffRole('campus_admin')?'校区周报':'全校周报',adminWeeklyReport],['招新续费月报',adminMonthlyReport]]);
+ addGroup('签到设备',[['平板设备管理',deviceDashboard],['人脸档案',adminFaceDashboard]]);
+ $('main').replaceChildren(heading,groups);
+}
+async function deviceDashboard(){
+ const [classData,deviceData]=await Promise.all([api('/v1/admin/classes'),api('/v1/admin/devices')]);
+ classes=classData.items;
+ managementIdentity();
+ const heading=node('div',undefined,'runtime-summary'),copy=node('div');
+ copy.append(node('h1','平板设备管理'),node('p','开通码 15 分钟内有效，只在生成时显示一次。'));
  const actions=node('div',undefined,'toolbar');
- if(hasStaffRole('teacher'))actions.append(button('我的课堂',()=>teacherDashboard(),'secondary'));
- actions.append(button('刷新',dashboard,'secondary'),button('学生与班级',()=>adminDirectoryDashboard(),'secondary'),
-  button('账号管理',()=>adminAccountDashboard(),'secondary'),button('课表管理',()=>adminScheduleDashboard(),'secondary'),
-  button('教师课时费',()=>teachingFeesDashboard(true),'secondary'),button('招新登记',()=>adminEnrollmentDashboard(),'secondary'));
- actions.append(button('人脸档案',()=>adminFaceDashboard(),'secondary'),
-  button(hasStaffRole('campus_admin')?'校区周报':'全校周报',()=>adminWeeklyReport(),'secondary'),
-  button('招新续费月报',()=>adminMonthlyReport(),'secondary'),button('续费登记',()=>adminRenewalDashboard(),'secondary'));
- if(hasStaffRole('owner')||hasStaffRole('campus_admin'))actions.append(button('课时调整申请',()=>balanceRequestsDashboard(),'secondary'));
- if(hasStaffRole('owner'))actions.append(button('管理权限',ownerStaffDashboard,'secondary'));
- if(hasStaffRole('owner')||hasStaffRole('campus_admin'))actions.append(
-  button('课时费审核',feeReviewDashboard,'secondary'),button('费率申请',courseFeeProposalDashboard,'secondary'));
- actions.append(button('开通新平板',openEnrollment));heading.append(copy,actions);const list=node('section',undefined,'device-list');
+ actions.append(button('返回管理工作台',dashboard,'secondary'),button('刷新',deviceDashboard,'secondary'),button('开通新平板',openEnrollment));
+ heading.append(copy,actions);
+ const list=node('section',undefined,'device-list');
  if(!deviceData.items.length)list.append(node('div','尚未开通平板','empty'));
  for(const device of deviceData.items){const row=node('article',undefined,'item device-row'),title=node('div');title.append(node('h2',device.name),node('p','设备编号 '+device.id));
   const names=(device.class_ids||[]).map(id=>classes.find(item=>item.id===id)?.name||id),status=node('div',undefined,'device-status'),operations=node('div',undefined,'device-actions');
@@ -56,12 +77,12 @@ async function dashboard(){
 async function reissueDevice(device){
  if(!window.confirm('重新签发后，这台设备的旧平板会立即失效。请先上传全部离线签到，再继续。'))return;
  const command=deviceCommand('reissue',device.id),result=await api('/v1/admin/devices/'+encodeURIComponent(device.id)+'/activation',{command_ref:command.command_ref});
- deviceCommands.delete(command.key);if(!result.activation_code)throw Error('开通码不可重复查看，请生成新的重新签发操作');showActivation(result);await dashboard();
+ deviceCommands.delete(command.key);if(!result.activation_code)throw Error('开通码不可重复查看，请生成新的重新签发操作');showActivation(result);await deviceDashboard();
 }
 async function disableDevice(device){
  if(!window.confirm('确认停用“'+device.name+'”？设备令牌和未使用开通码将失效，但课堂、签到和课时数据不会删除。'))return;
  const command=deviceCommand('disable',device.id);await api('/v1/admin/devices/'+encodeURIComponent(device.id)+'/disable',{command_ref:command.command_ref});
- deviceCommands.delete(command.key);notify('设备已停用，业务数据保持不变');await dashboard();
+ deviceCommands.delete(command.key);notify('设备已停用，业务数据保持不变');await deviceDashboard();
 }
 function openEnrollment(){
  if(!classes.length)return notify('请先建立班级，再开通平板');
