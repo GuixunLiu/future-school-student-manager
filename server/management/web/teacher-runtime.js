@@ -74,10 +74,28 @@ async function teacherDashboard(day=teacherDay||chinaToday()){
 async function teacherLesson(lessonId){
  const data=await api('/v1/teacher/lessons/'+encodeURIComponent(lessonId));currentLesson=data;teacherIdentity();const lesson=data.lesson,summary=teacherLessons.find(item=>item.id===lessonId),title=summary?.class_name||'课堂签到';
  const heading=node('div',undefined,'runtime-summary teacher-heading'),copy=node('div'),meta=node('div',undefined,'lesson-meta');meta.append(node('span',lesson.state==='scheduled'?'正常课堂':'已取消','badge'+(lesson.state==='scheduled'?'':' lesson-cancelled')),node('p',lessonTime(lesson.starts_at)+'–'+lessonTime(lesson.ends_at)+(summary?.course_name?' · '+summary.course_name:'')));copy.append(node('span','课堂签到','teacher-eyebrow'),node('h1',title),meta);
- const actions=node('div',undefined,'toolbar teacher-actions');actions.append(button('返回课堂列表',()=>teacherDashboard(teacherDay),'secondary'),button('刷新',()=>teacherLesson(lessonId),'secondary'));if(lesson.state==='scheduled'){const face=button('人脸签到',openTeacherFaceCheckin,'gold');face.disabled=webFaceEnabled()&&Date.now()<lesson.starts_at*1000;if(face.disabled)face.title='课程开始后才能人脸签到';face.dataset.action='face-checkin';actions.append(face);}heading.append(copy,actions);
+ const actions=node('div',undefined,'toolbar teacher-actions');
+ actions.append(button('返回课堂列表',()=>teacherDashboard(teacherDay),'secondary'),button('刷新',()=>teacherLesson(lessonId),'secondary'));
+ heading.append(copy,actions);
  const table=node('table'),head=node('thead'),headRow=node('tr');table.setAttribute('aria-label','学生签到名单');for(const label of ['学生','签到状态','剩余课时','操作']){const cell=node('th',label);cell.scope='col';headRow.append(cell);}head.append(headRow);const body=node('tbody');
  for(const student of data.students){const row=node('tr'),name=node('td',undefined,'student-name');name.textContent=student.name;const status=node('td'),[label,className]=attendanceLabel(student);status.append(node('span',label,className),node('small','状态版本 '+student.attendance_revision,'revision'));const balance=node('td',teacherLessonHours(student.balance_units)),operations=node('td'),buttons=node('div',undefined,'attendance-actions');
-  if(student.expected&&student.status==='missing'&&lesson.state==='scheduled'){const leave=button('请假',()=>openTeacherLeave(student),'secondary');leave.dataset.action='leave';leave.dataset.studentId=student.student_id;buttons.append(leave);}else buttons.append(node('span','无需操作','muted'));
+  if(student.expected&&student.status==='missing'&&lesson.state==='scheduled'){
+   if(student.student_active!==false){
+    const face=button('人脸签到',()=>openTeacherFaceCheckin(student,lesson),'gold');
+    face.dataset.action='face-checkin';face.dataset.studentId=student.student_id;
+    face.setAttribute('aria-label','为'+student.name+'人脸签到');
+    if(webFaceEnabled()){
+     const starts=new Date(lesson.starts_at*1000);
+     const wrongDay=chinaDateKey(starts)!==chinaToday();
+     face.disabled=wrongDay||Date.now()<starts.getTime();
+     if(face.disabled)face.title=wrongDay?'仅限上课当天人脸签到':'课程开始后才能人脸签到';
+    }
+    buttons.append(face);
+   }
+   const leave=button('请假',()=>openTeacherLeave(student),'secondary');
+   leave.dataset.action='leave';leave.dataset.studentId=student.student_id;buttons.append(leave);
+  }
+  if(!buttons.childElementCount)buttons.append(node('span','无需操作','muted'));
   operations.append(buttons);row.append(name,status,balance,operations);body.append(row);}
  table.append(head,body);const scroll=node('div',undefined,'table-scroll');scroll.append(table);const panel=node('section',undefined,'panel attendance-panel teacher-roster');panel.append(scroll);$('main').replaceChildren(heading,countCards(attendanceCounts(data.students)),panel);
 }

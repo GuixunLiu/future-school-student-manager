@@ -1,4 +1,4 @@
-"""Encrypted SFace profiles and server-side, lesson-scoped face matching.
+"""Encrypted SFace profiles and server-side identity verification.
 
 Only normalized 128-value descriptors cross the browser API. Original camera
 frames are never persisted by this module. AES-GCM associated data binds every
@@ -9,6 +9,7 @@ import json
 import math
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
 
 from business.store import Problem
 
@@ -68,29 +69,15 @@ class FaceCipher:
             raise Problem(409, 'face_profile_invalid', '人脸档案无法读取，请重新录入')
         try:
             frames = json.loads(self.cipher.decrypt(raw[:12], raw[12:], self.associated_data(org_id, student_id)))
-        except (ValueError, TypeError):
-            raise Problem(409, 'face_profile_invalid', '人脸档案无法读取，请重新录入') from None
+        except (InvalidTag, ValueError, TypeError):
+            raise Problem(409, 'face_profile_invalid', '人脸档案无法读取，请由校区管理员重新录入') from None
         return validate_frames(frames)
 
 
-def match_face(query_frames, candidates):
-    """Return the only safe candidate; never return another student's scores."""
-    ranked = []
-    for candidate in candidates:
-        profile_frames = candidate['frames']
-        frame_scores = [max(cosine(query, saved) for saved in profile_frames)
-                        for query in query_frames]
-        score = math.fsum(frame_scores) / FRAME_COUNT
-        ranked.append(dict(candidate, score=score, support_floor=min(frame_scores)))
-    ranked.sort(key=lambda item: item['score'], reverse=True)
-    if not ranked:
-        raise Problem(409, 'face_profiles_missing', '本节课还没有可用的人脸档案，请先由管理员录入')
-    best = ranked[0]
-    second_score = ranked[1]['score'] if len(ranked) > 1 else -1.0
-    margin = best['score'] - second_score
-    if best['score'] < 0.52 or best['support_floor'] < 0.48:
-        raise Problem(409, 'face_not_recognized', '未通过本人核验，本次没有签到或扣课时')
-    if margin < 0.08:
-        raise Problem(409, 'face_ambiguous', '识别结果不够唯一，请调整光线后重试或改用补签')
-    return {'student_id': best['student_id'], 'student_name': best['student_name'],
-            'score': round(best['score'], 6), 'margin': round(margin, 6)}
+def verify_face(query_frames, profile_frames):
+    """Compare the camera samples with one selected student's profile."""
+    frame_scores = [max(cosine(query, saved) for saved in profile_frames) for query in query_frames]
+    score = math.fsum(frame_scores) / FRAME_COUNT
+    if score < 0.52 or min(frame_scores) < 0.48:
+        raise Problem(409, 'face_not_recognized', '与所选学生的人脸不匹配，请确认是这位学生本人后重试')
+    return round(score, 6)

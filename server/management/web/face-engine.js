@@ -1,7 +1,7 @@
 'use strict';
 const FaceEngine=(()=>{
  const MODEL='sface-int8bq-v1';
- let librariesPromise=null,modelsPromise=null,sessionPromise=null,stream=null;
+ let librariesPromise=null,modelsPromise=null,sessionPromise=null,stream=null,cameraAttempt=0;
  const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
  function script(src){return new Promise((resolve,reject)=>{const element=document.createElement('script');element.src=src;element.async=true;element.onload=resolve;element.onerror=()=>{element.remove();reject(new Error('人脸组件加载失败，请检查网络后重试'));};document.head.appendChild(element);});}
  function libraries(){if(!librariesPromise)librariesPromise=Promise.all([typeof faceapi==='undefined'?script('/face-runtime/face-api.min.js'):Promise.resolve(),typeof ort==='undefined'?script('/face-runtime/ort.wasm.min.js'):Promise.resolve()]).catch(error=>{librariesPromise=null;throw error;});return librariesPromise;}
@@ -14,8 +14,29 @@ const FaceEngine=(()=>{
  function model(){if(sessionPromise)return sessionPromise;ort.env.wasm.numThreads=1;ort.env.wasm.simd=true;ort.env.wasm.wasmPaths={mjs:'/face-runtime/ort-wasm-simd-threaded.mjs',wasm:'/face-runtime/ort-wasm-simd-threaded.wasm'};sessionPromise=ort.InferenceSession.create('/face-models/sface_int8bq.onnx',{executionProviders:['wasm'],graphOptimizationLevel:'all',executionMode:'sequential'}).catch(error=>{sessionPromise=null;throw error;});return sessionPromise;}
  async function prepare(progress){if(!modelsPromise)modelsPromise=libraries().then(async()=>{progress?.('正在加载人脸检测模型…');await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri('/face-models'),faceapi.nets.faceLandmark68TinyNet.loadFromUri('/face-models'),model()]);}).catch(error=>{modelsPromise=null;throw error;});await modelsPromise;}
  async function descriptor(input){await prepare();const results=await faceapi.detectAllFaces(input,new faceapi.TinyFaceDetectorOptions({inputSize:224,scoreThreshold:.65})).withFaceLandmarks(true);if(results.length!==1)return null;const result=results[0],box=result.detection.box,width=Number(input.videoWidth||input.naturalWidth||input.width||0);if(result.detection.score<.72||!width||box.width<width*.2||box.width>width*.9)throw new Error('请靠近镜头，保持光线充足并确保只有一人入镜');const session=await model(),outputs=await session.run({data:tensor(aligned(input,result))}),feature=outputs.fc1||outputs[session.outputNames[0]];return normalize(feature.data);}
- async function open(video){stop(video);if(!window.isSecureContext)throw new Error('摄像头需要 HTTPS 安全连接或本机验收环境');if(!navigator.mediaDevices?.getUserMedia)throw new Error('当前浏览器不支持摄像头，请使用新版 Chrome 或 Edge');stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});video.srcObject=stream;await video.play();return stream;}
- function stop(video){if(stream){stream.getTracks().forEach(track=>track.stop());stream=null;}if(video)video.srcObject=null;}
+ async function open(video){
+  stop();
+  const attempt=cameraAttempt;
+  if(!window.isSecureContext)throw new Error('摄像头需要 HTTPS 安全连接或本机验收环境');
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error('当前浏览器不支持摄像头，请使用新版 Chrome 或 Edge');
+  const requested=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+  if(attempt!==cameraAttempt||!video.isConnected){
+   requested.getTracks().forEach(track=>track.stop());
+   throw new Error('摄像头操作已取消');
+  }
+  stream=requested;video.srcObject=requested;
+  try{await video.play();}catch(error){stop(video);throw error;}
+  if(attempt!==cameraAttempt)throw new Error('摄像头操作已取消');
+  return requested;
+ }
+ function stop(video){
+  if(!video||video.srcObject===stream){
+   cameraAttempt++;
+   if(stream)stream.getTracks().forEach(track=>track.stop());
+   stream=null;
+  }
+  if(video)video.srcObject=null;
+ }
  async function capture(video,progress){if(!video.videoWidth)throw new Error('摄像头尚未准备好，请稍候');const frames=[];for(let index=0;index<3;index++){progress?.('正在采集稳定人脸 '+(index+1)+'/3');if(index)await wait(350);const frame=await descriptor(video);if(!frame)throw new Error('画面中必须只有一张清晰人脸');frames.push(frame);}return frames;}
  return{MODEL,prepare,open,stop,capture,descriptor};
 })();

@@ -1,9 +1,11 @@
 """Real PostgreSQL tests for unified runtime transactions and HTTP scopes."""
 from tests.postgres_fixture import loopback_conninfo
+from base64 import urlsafe_b64encode
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 from pathlib import Path
+from secrets import token_bytes
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,17 +15,17 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from business.security import password_hash, token_digest, verify_password
+from business.security import new_token, password_hash, token_digest, verify_password
 from business.store import Problem
 from management import runtime_schema
 from management.runtime_service import RuntimeStore
 from tests.runtime_permission_checks import PermissionAlignmentChecks
 
 
-USER_TOKEN = 'wxu_' + 'u' * 43
-OTHER_USER_TOKEN = 'wxu_' + 'v' * 43
-ADMIN_TOKEN = 'wxu_' + 'a' * 43
-DEVICE_TOKEN = 'wxd_' + 'd' * 43
+USER_TOKEN = new_token('user')
+OTHER_USER_TOKEN = new_token('user')
+ADMIN_TOKEN = new_token('user')
+DEVICE_TOKEN = new_token('device')
 
 
 def checkin(ref='offline-1'):
@@ -36,7 +38,7 @@ def correction(ref='teacher-1'):
     return dict(student_id='student-a', reason='虚构测试原因', event_ref=ref, expected_revision=0)
 
 
-FACE_KEY = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='
+FACE_KEY = urlsafe_b64encode(token_bytes(32)).decode('ascii')
 
 
 def face_frames(position=0):
@@ -50,8 +52,8 @@ def face_profile(ref='face-profile-1', frames=None):
                 consent_ref='fiction-guardian-consent-2026', command_ref=ref)
 
 
-def face_checkin(ref='web-face-1', frames=None):
-    return dict(event_ref=ref, model_version='sface-int8bq-v1',
+def face_checkin(ref='web-face-1', frames=None, student_id='student-a'):
+    return dict(event_ref=ref, student_id=student_id, model_version='sface-int8bq-v1',
                 descriptors=frames or face_frames())
 
 
@@ -822,7 +824,7 @@ class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
             json=self.report_data('http-bad-kind', 'daily', '1970-01'), headers=admin).status_code)
         self.assertEqual(422, client.post('/v1/admin/report-runs',
             json=self.report_data('http-bad-week', period='1970-01-01'), headers=admin).status_code)
-        other_token = 'wxu_' + 'o' * 43
+        other_token = new_token('user')
         with psycopg.connect(self.conninfo) as connection:
             connection.execute("""INSERT INTO organizations VALUES('org-other','other',1);
                 INSERT INTO users VALUES('admin-other','org-other','fiction-admin-other','虚构其他管理员',TRUE,1,FALSE);
@@ -2327,7 +2329,7 @@ class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
 
     def test_face_unknown_future_and_cancelled_lessons_do_not_change_attendance(self):
         self.store.face_key = FACE_KEY
-        self.assert_problem(409, 'face_profiles_missing', self.store.teacher_face_checkin,
+        self.assert_problem(409, 'face_profile_missing', self.store.teacher_face_checkin,
                             USER_TOKEN, 'lesson-a', face_checkin('web-face-no-profiles'))
         self.store.admin_face_profile(ADMIN_TOKEN, 'student-a', face_profile())
         self.assert_problem(409, 'face_not_recognized', self.store.teacher_face_checkin,
@@ -2343,7 +2345,7 @@ class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
         self.assertEqual(0, self.read('SELECT count(*) AS n FROM attendance_events')['n'])
         self.assertEqual(10, self.read("SELECT units FROM student_balances WHERE student_id='student-a'")['units'])
 
-    def test_face_ambiguity_is_rejected_without_debit(self):
+    def test_face_checkin_cannot_sign_in_another_registered_student(self):
         self.store.face_key = FACE_KEY
         with psycopg.connect(self.conninfo) as connection:
             connection.execute("""
@@ -2355,11 +2357,46 @@ class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
                 INSERT INTO attendance_records VALUES('org-fiction','lesson-a','student-c','missing',0,NULL,1);
             """)
         self.store.admin_face_profile(ADMIN_TOKEN, 'student-a', face_profile())
-        self.store.admin_face_profile(ADMIN_TOKEN, 'student-c', face_profile('face-profile-c'))
-        self.assert_problem(409, 'face_ambiguous', self.store.teacher_face_checkin,
-                            USER_TOKEN, 'lesson-a', face_checkin('web-face-ambiguous'))
+        self.store.admin_face_profile(ADMIN_TOKEN, 'student-c', face_profile('face-profile-c', face_frames(1)))
+        self.assert_problem(409, 'face_not_recognized', self.store.teacher_face_checkin,
+                            USER_TOKEN, 'lesson-a', face_checkin('web-face-other-student', face_frames(1)))
         self.assertEqual(0, self.read('SELECT count(*) AS n FROM attendance_events')['n'])
         self.assertEqual(2, self.read('SELECT count(*) AS n FROM balance_ledger')['n'])
+        result = self.store.teacher_face_checkin(USER_TOKEN, 'lesson-a', face_checkin('web-face-selected'))
+        self.assertEqual('student-a', result['student_id'])
+        self.assertEqual(('missing', 10), tuple(self.read("""SELECT a.status,b.units FROM attendance_records a
+            JOIN student_balances b ON b.org_id=a.org_id AND b.student_id=a.student_id
+            WHERE a.student_id='student-c'""").values()))
+
+    def test_teacher_face_enrollment_is_scoped_requires_consent_and_leaves_attendance_open(self):
+        from fastapi.testclient import TestClient
+        from management.runtime_api import create_app
+
+        client = TestClient(create_app(self.conninfo, lambda: 1000, allow_test_client=True,
+                                       face_key=FACE_KEY, web_face_enabled=True))
+        teacher = {'Authorization': 'Bearer ' + USER_TOKEN}
+        other = {'Authorization': 'Bearer ' + OTHER_USER_TOKEN}
+        path = '/v1/teacher/lessons/lesson-a/face-profile'
+        payload = dict(face_profile('classroom-enrollment'), student_id='student-a', identity_confirmed=True)
+        self.assertFalse(client.get('/v1/teacher/lessons/lesson-a', headers=teacher).json()['students'][0]['face_registered'])
+        self.assertEqual(403, client.put(path, headers=other, json=payload).status_code)
+        self.assertEqual(404, client.put(path, headers=teacher, json=dict(payload, student_id='student-b')).status_code)
+        self.assertEqual(422, client.put(path, headers=teacher, json=dict(payload, identity_confirmed=False)).status_code)
+        self.assertEqual(422, client.put(path, headers=teacher, json=dict(payload, consent_ref=' ')).status_code)
+        result = client.put(path, headers=teacher, json=payload)
+        self.assertEqual(201, result.status_code, result.text)
+        self.assertEqual(200, client.put(path, headers=teacher, json=payload).status_code)
+        conflict = client.put(path, headers=teacher, json=dict(payload, command_ref='replace-existing'))
+        self.assertEqual(409, conflict.status_code)
+        self.assertEqual('face_profile_exists', conflict.json()['error']['code'])
+        entry = client.get('/v1/teacher/lessons/lesson-a', headers=teacher).json()['students'][0]
+        self.assertTrue(entry['face_registered'])
+        self.assertEqual(('missing', 10), (entry['status'], entry['balance_units']))
+        self.assertEqual(0, self.read('SELECT count(*) AS n FROM attendance_events')['n'])
+        self.assertEqual(1, self.read("SELECT count(*) AS n FROM audit_log WHERE action='teacher_face_profile_saved'")['n'])
+        result = client.post('/v1/teacher/lessons/lesson-a/face-checkin', headers=teacher, json=face_checkin())
+        self.assertEqual(201, result.status_code, result.text)
+        self.assertEqual(('student-a', 9), (result.json()['student_id'], result.json()['balance_units']))
 
     def test_http_face_profile_and_checkin_statuses_and_validation(self):
         from fastapi.testclient import TestClient
@@ -2375,6 +2412,9 @@ class RuntimeBusinessTests(PermissionAlignmentChecks, unittest.TestCase):
         self.assertEqual(200, client.put(profile_path, headers=admin, json=face_profile('http-face-profile')).status_code)
         self.assertEqual(403, client.put(profile_path, headers=teacher, json=face_profile('http-face-denied')).status_code)
         checkin_path = '/v1/teacher/lessons/lesson-a/face-checkin'
+        unscoped = face_checkin()
+        del unscoped['student_id']
+        self.assertEqual(422, client.post(checkin_path, headers=teacher, json=unscoped).status_code)
         accepted = client.post(checkin_path, headers=teacher, json=face_checkin('http-web-face'))
         self.assertEqual(201, accepted.status_code, accepted.text)
         self.assertEqual(9, accepted.json()['balance_units'])

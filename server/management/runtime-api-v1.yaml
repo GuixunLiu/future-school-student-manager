@@ -211,7 +211,7 @@ paths:
     post:
       tags: [teacher]
       operationId: teacherFaceCheckin
-      description: 已实现。仅识别该教师本节课应到学生；浏览器连续采集3帧128维SFace特征而非原始照片，服务器比对并统一写入签到、课时流水和审计。仅限课堂当天且开始之后，首次201、相同内容安全重复200。
+      description: 将浏览器采集的人脸特征与所选学生的档案比对。仅限该教师当天已经开始的课次和应到未签到的学生，核验通过后写入签到和课时流水。
       parameters:
         - { $ref: '#/components/parameters/LessonId' }
       requestBody:
@@ -221,9 +221,10 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [event_ref, model_version, descriptors]
+              required: [event_ref, student_id, model_version, descriptors]
               properties:
                 event_ref: { $ref: '#/components/schemas/EventRef' }
+                student_id: { type: string, minLength: 1, maxLength: 80 }
                 model_version: { type: string, minLength: 1, maxLength: 40, description: 当前为 sface-int8bq-v1 }
                 descriptors:
                   type: array
@@ -234,6 +235,39 @@ paths:
                     minItems: 128
                     maxItems: 128
                     items: { type: number, description: 归一化且有限的人脸特征值 }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '201': { $ref: '#/components/responses/Object' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/teacher/lessons/{lessonId}/face-profile:
+    put:
+      tags: [teacher]
+      operationId: teacherCreateFaceProfile
+      description: 当天课次开始后，当前任课老师可以为应到且未签到的学生首次建档。须核验本人和监护人授权。首次录入仅保存加密特征。
+      parameters:
+        - { $ref: '#/components/parameters/LessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [command_ref, student_id, model_version, descriptors, consent_ref, identity_confirmed]
+              properties:
+                command_ref: { type: string, minLength: 1, maxLength: 80 }
+                student_id: { type: string, minLength: 1, maxLength: 80 }
+                model_version: { type: string, minLength: 1, maxLength: 40 }
+                consent_ref: { type: string, minLength: 1, maxLength: 100 }
+                identity_confirmed: { type: boolean, enum: [true] }
+                descriptors:
+                  type: array
+                  minItems: 3
+                  maxItems: 3
+                  items: { type: array, minItems: 128, maxItems: 128, items: { type: number } }
       responses:
         '200': { $ref: '#/components/responses/Object' }
         '201': { $ref: '#/components/responses/Object' }

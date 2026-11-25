@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 
 from business.security import identifier, new_token, password_hash, token_digest, valid_token, verify_password
 from business.store import Problem, uid
-from .runtime_faces import FACE_MODEL, FaceCipher, match_face, validate_frames
+from .runtime_faces import FACE_MODEL, FaceCipher, validate_frames, verify_face
 from .runtime_permissions import CampusPermissions
 from .runtime_balances import BalancePermissions
 
@@ -2853,16 +2853,51 @@ class RuntimeStore(BalancePermissions, CampusPermissions):
             if not lesson:
                 raise Problem(404, 'lesson_missing', '未找到课堂')
             self._teacher_lesson_allowed(db, actor, lesson_id, lesson['class_id'])
-            students = db.execute('''SELECT ls.student_id,s.name,ls.expected,ls.charge_units,
+            students = db.execute('''SELECT ls.student_id,s.name,s.active AS student_active,ls.expected,ls.charge_units,
                     ar.status,ar.revision AS attendance_revision,sb.units AS balance_units,
-                    sb.revision AS balance_revision
+                    sb.revision AS balance_revision,fp.id IS NOT NULL AS face_registered
                 FROM lesson_students ls JOIN students s ON s.org_id=ls.org_id AND s.id=ls.student_id
                 JOIN attendance_records ar ON ar.org_id=ls.org_id AND ar.lesson_id=ls.lesson_id AND ar.student_id=ls.student_id
                 JOIN student_balances sb ON sb.org_id=ls.org_id AND sb.student_id=ls.student_id
+                LEFT JOIN face_profiles fp ON fp.org_id=ls.org_id AND fp.student_id=ls.student_id AND fp.active
                 WHERE ls.org_id=%s AND ls.lesson_id=%s ORDER BY s.name,s.id''',
                 (actor['org_id'], lesson_id)).fetchall()
             return {'lesson': dict(lesson), 'students': [dict(row) for row in students]}
         return self.command(token, 'user', run)
+
+    def _write_student_face_profile(self, db, actor, student, data, *, lesson_id=None):
+        org_id, student_id = actor['org_id'], student['id']
+        consent_ref = data['consent_ref'].strip()
+        if not consent_ref:
+            raise Problem(422, 'face_consent_required', '请填写监护人授权凭证')
+        if data['model_version'] != FACE_MODEL:
+            raise Problem(409, 'face_model_mismatch', '人脸模型版本不一致，请刷新页面后重新采集')
+        frames = validate_frames(data['descriptors'])
+        cipher = FaceCipher(self.face_key)
+        now = self.clock()
+        retired = 0
+        if lesson_id is None:
+            retired = db.execute('''UPDATE face_profiles SET active=FALSE,retired_at=%s
+                WHERE org_id=%s AND student_id=%s AND active=TRUE''', (now, org_id, student_id)).rowcount
+        elif db.execute('SELECT 1 FROM face_profiles WHERE org_id=%s AND student_id=%s AND active',
+                        (org_id, student_id)).fetchone():
+            raise Problem(409, 'face_profile_exists', '该学生已有档案，请刷新后继续人脸签到')
+        profile_id = uid()
+        encrypted = cipher.encrypt(org_id, student_id, frames, secrets.token_bytes(12))
+        db.execute('''INSERT INTO face_profiles
+            (id,org_id,student_id,model_version,descriptor_ciphertext,consent_ref,active,created_at,retired_at)
+            VALUES(%s,%s,%s,%s,%s,%s,TRUE,%s,NULL)''',
+            (profile_id, org_id, student_id, FACE_MODEL, encrypted, consent_ref, now))
+        detail = {'student_id': student_id, 'model_version': FACE_MODEL, 'sample_count': len(frames),
+                  'consent_ref': consent_ref, 'replaced_profiles': retired}
+        action = 'admin_face_profile_saved'
+        if lesson_id is not None:
+            action = 'teacher_face_profile_saved'
+            detail['lesson_id'] = lesson_id
+        self._audit(db, actor, action, profile_id, detail, now)
+        return {'profile_id': profile_id, 'student_id': student_id, 'student_name': student['name'],
+                'model_version': FACE_MODEL, 'sample_count': len(frames), 'active': True,
+                'replaced_profiles': retired, 'duplicate': False}
 
     def admin_face_profile(self, token, student_id, data):
         reference = data['command_ref']
@@ -2873,7 +2908,7 @@ class RuntimeStore(BalancePermissions, CampusPermissions):
             self._scope_student_write(db, actor, student_id)
             self._lock_command(db, actor, reference)
             student = db.execute('''SELECT id,name FROM students
-                WHERE org_id=%s AND id=%s AND active=TRUE FOR UPDATE''',
+                WHERE org_id=%s AND id=%s AND active=TRUE FOR NO KEY UPDATE''',
                 (actor['org_id'], student_id)).fetchone()
             if not student:
                 raise Problem(404, 'student_missing', '未找到在读学生')
@@ -2881,30 +2916,56 @@ class RuntimeStore(BalancePermissions, CampusPermissions):
             prior = self._prior(db, actor, reference, digest)
             if prior:
                 return prior
-            if data['model_version'] != FACE_MODEL:
-                raise Problem(409, 'face_model_mismatch', '人脸模型版本不一致，请刷新页面后重新采集')
-            frames = validate_frames(data['descriptors'])
-            cipher = FaceCipher(self.face_key)
-            now = self.clock()
-            retired = db.execute('''UPDATE face_profiles SET active=FALSE,retired_at=%s
-                WHERE org_id=%s AND student_id=%s AND active=TRUE''',
-                (now, actor['org_id'], student_id)).rowcount
-            profile_id = uid()
-            encrypted = cipher.encrypt(actor['org_id'], student_id, frames, secrets.token_bytes(12))
-            db.execute('''INSERT INTO face_profiles
-                (id,org_id,student_id,model_version,descriptor_ciphertext,consent_ref,active,created_at,retired_at)
-                VALUES(%s,%s,%s,%s,%s,%s,TRUE,%s,NULL)''',
-                (profile_id, actor['org_id'], student_id, FACE_MODEL, encrypted,
-                 data['consent_ref'], now))
-            response = {'profile_id': profile_id, 'student_id': student_id,
-                        'student_name': student['name'], 'model_version': FACE_MODEL,
-                        'sample_count': len(frames), 'active': True,
-                        'replaced_profiles': retired, 'duplicate': False}
-            self._audit(db, actor, 'admin_face_profile_saved', profile_id,
-                        {'student_id': student_id, 'model_version': FACE_MODEL,
-                         'sample_count': len(frames), 'consent_ref': data['consent_ref'],
-                         'replaced_profiles': retired}, now)
-            self._save_command(db, actor, reference, digest, response, now)
+            response = self._write_student_face_profile(db, actor, student, data)
+            self._save_command(db, actor, reference, digest, response, self.clock())
+            return response
+        return self.command(token, 'user', run)
+
+    def _teacher_face_target(self, db, actor, lesson_id, student_id):
+        lesson = db.execute('SELECT * FROM lessons WHERE org_id=%s AND id=%s FOR SHARE',
+                            (actor['org_id'], lesson_id)).fetchone()
+        if not lesson:
+            raise Problem(404, 'lesson_missing', '未找到课堂')
+        self._teacher_lesson_allowed(db, actor, lesson_id, lesson['class_id'])
+        student = db.execute('''SELECT s.id,s.name FROM lesson_students ls JOIN students s
+            ON s.org_id=ls.org_id AND s.id=ls.student_id
+            WHERE ls.org_id=%s AND ls.lesson_id=%s AND ls.student_id=%s AND s.active
+            FOR NO KEY UPDATE OF s''', (actor['org_id'], lesson_id, student_id)).fetchone()
+        if not student:
+            raise Problem(404, 'lesson_student_missing', '未找到该课堂的在读学生')
+        return lesson, student
+
+    def _teacher_face_attendance(self, db, actor, lesson, student_id):
+        now = self.clock()
+        if lesson['state'] != 'scheduled':
+            raise Problem(409, 'lesson_unavailable', '该课堂已取消')
+        if now < lesson['starts_at']:
+            raise Problem(409, 'future_checkin', '课程开始后才能录入人脸或签到')
+        if datetime.fromtimestamp(now, CHINA_TZ).date() != datetime.fromtimestamp(lesson['starts_at'], CHINA_TZ).date():
+            raise Problem(409, 'lesson_day', '课堂人脸录入和签到仅限课堂当天')
+        fact = self._lesson_student(db, actor['org_id'], lesson['id'], student_id)
+        if not fact:
+            raise Problem(404, 'lesson_student_missing', '未找到该课堂学生')
+        self._require_missing(fact, fact['attendance_revision'])
+        return fact, now
+
+    def teacher_face_profile(self, token, lesson_id, data):
+        reference = data['command_ref']
+        digest = canonical_digest('teacher_face_profile', dict(data, lesson_id=lesson_id))
+        student_id = data['student_id']
+
+        def run(db, actor):
+            self._require_kind(actor, 'user')
+            self._lock_command(db, actor, reference)
+            lesson, student = self._teacher_face_target(db, actor, lesson_id, student_id)
+            prior = self._prior(db, actor, reference, digest)
+            if prior:
+                return prior
+            self._teacher_face_attendance(db, actor, lesson, student_id)
+            if data.get('identity_confirmed') is not True:
+                raise Problem(422, 'face_identity_required', '请核验学生本人及监护人授权')
+            response = self._write_student_face_profile(db, actor, student, data, lesson_id=lesson_id)
+            self._save_command(db, actor, reference, digest, response, self.clock())
             return response
         return self.command(token, 'user', run)
 
@@ -2912,51 +2973,28 @@ class RuntimeStore(BalancePermissions, CampusPermissions):
         reference = data['event_ref']
         payload = dict(data, lesson_id=lesson_id)
         digest = canonical_digest('teacher_face_checkin', payload)
+        student_id = data['student_id']
+
         def run(db, actor):
             self._require_kind(actor, 'user')
             self._lock_command(db, actor, reference)
-            lesson = db.execute('SELECT * FROM lessons WHERE org_id=%s AND id=%s',
-                                (actor['org_id'], lesson_id)).fetchone()
-            if not lesson:
-                raise Problem(404, 'lesson_missing', '未找到课堂')
-            self._teacher_lesson_allowed(db, actor, lesson_id, lesson['class_id'])
+            lesson, student = self._teacher_face_target(db, actor, lesson_id, student_id)
             # Permission is rechecked before returning an idempotent response.
             prior = self._prior(db, actor, reference, digest)
             if prior:
                 return prior
-            now = self.clock()
-            if lesson['state'] != 'scheduled':
-                raise Problem(409, 'lesson_unavailable', '该课堂已取消')
-            if now < lesson['starts_at']:
-                raise Problem(409, 'future_checkin', '课程尚未开始，不能人脸签到')
-            if datetime.fromtimestamp(now, CHINA_TZ).date() != datetime.fromtimestamp(lesson['starts_at'], CHINA_TZ).date():
-                raise Problem(409, 'lesson_day', '人脸签到仅限课堂当天，其他情况请使用补签')
             if data['model_version'] != FACE_MODEL:
                 raise Problem(409, 'face_model_mismatch', '人脸模型版本不一致，请刷新页面后重新采集')
             frames = validate_frames(data['descriptors'])
-            rows = db.execute('''SELECT fp.student_id,s.name AS student_name,
-                    fp.model_version,fp.descriptor_ciphertext
-                FROM face_profiles fp
-                JOIN lesson_students ls ON ls.org_id=fp.org_id AND ls.student_id=fp.student_id
-                JOIN students s ON s.org_id=fp.org_id AND s.id=fp.student_id
-                WHERE fp.org_id=%s AND ls.lesson_id=%s AND ls.expected=TRUE
-                  AND fp.active=TRUE AND s.active=TRUE
-                ORDER BY fp.student_id FOR UPDATE OF fp''',
-                (actor['org_id'], lesson_id)).fetchall()
+            fact, now = self._teacher_face_attendance(db, actor, lesson, student_id)
+            profile = db.execute('''SELECT model_version,descriptor_ciphertext FROM face_profiles
+                WHERE org_id=%s AND student_id=%s AND active''', (actor['org_id'], student_id)).fetchone()
+            if not profile:
+                raise Problem(409, 'face_profile_missing', '该学生尚未录入人脸，请先录入')
+            if profile['model_version'] != FACE_MODEL:
+                raise Problem(409, 'face_profile_invalid', '档案版本无法使用，请由校区管理员重新录入')
             cipher = FaceCipher(self.face_key)
-            candidates = []
-            for row in rows:
-                if row['model_version'] != FACE_MODEL:
-                    continue
-                candidates.append({'student_id': row['student_id'],
-                                   'student_name': row['student_name'],
-                                   'frames': cipher.decrypt(actor['org_id'], row['student_id'],
-                                                            row['descriptor_ciphertext'])})
-            matched = match_face(frames, candidates)
-            fact = self._lesson_student(db, actor['org_id'], lesson_id, matched['student_id'])
-            if not fact:
-                raise Problem(404, 'lesson_student_missing', '未找到该课堂学生')
-            self._require_missing(fact, fact['attendance_revision'])
+            score = verify_face(frames, cipher.decrypt(actor['org_id'], student_id, profile['descriptor_ciphertext']))
             event_id = self._event(db, actor, fact, 'web_face_checkin', reference,
                                    '教师网页人脸识别签到', now, now)
             attendance_revision = fact['attendance_revision'] + 1
@@ -2964,20 +3002,19 @@ class RuntimeStore(BalancePermissions, CampusPermissions):
                 last_event_id=%s,updated_at=%s
                 WHERE org_id=%s AND lesson_id=%s AND student_id=%s AND revision=%s''',
                 (attendance_revision, event_id, now, actor['org_id'], lesson_id,
-                 matched['student_id'], fact['attendance_revision']))
+                 student_id, fact['attendance_revision']))
             units, balance_revision = self._debit(db, actor, fact, 'checkin', reference,
                                                   fact['balance_revision'], now,
                                                   '教师网页人脸签到扣课时')
             response = dict(accepted=True, duplicate=False, event_id=event_id,
                             event_ref=reference, lesson_id=lesson_id,
-                            student_id=matched['student_id'], student_name=matched['student_name'],
+                            student_id=student_id, student_name=student['name'],
                             status='arrived', attendance_revision=attendance_revision,
                             balance_revision=balance_revision, balance_units=units,
-                            model_version=FACE_MODEL, match_score=matched['score'])
+                            model_version=FACE_MODEL, match_score=score)
             self._audit(db, actor, 'teacher_web_face_checkin', event_id,
-                        {'lesson_id': lesson_id, 'student_id': matched['student_id'],
-                         'model_version': FACE_MODEL, 'match_score': matched['score'],
-                         'match_margin': matched['margin'], 'consumed_units': fact['charge_units']}, now)
+                        {'lesson_id': lesson_id, 'student_id': student_id,
+                         'model_version': FACE_MODEL, 'match_score': score, 'consumed_units': fact['charge_units']}, now)
             self._save_command(db, actor, reference, digest, response, now)
             return response
         return self.command(token, 'user', run)

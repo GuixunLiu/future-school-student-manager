@@ -273,8 +273,14 @@ class FaceProfileInput(Input):
     command_ref: str = Field(min_length=1, max_length=80)
 
 
+class TeacherFaceProfileInput(FaceProfileInput):
+    student_id: str = Field(min_length=1, max_length=80)
+    identity_confirmed: Literal[True]
+
+
 class FaceCheckinInput(Input):
     event_ref: str = Field(min_length=1, max_length=80)
+    student_id: str = Field(min_length=1, max_length=80)
     model_version: str = Field(min_length=1, max_length=40)
     descriptors: list[list[float]] = Field(min_length=3, max_length=3)
 
@@ -782,6 +788,14 @@ def create_app(conninfo, clock=None, *, allow_test_client=False, face_key=None,
     @app.get('/v1/teacher/lessons/{lesson_id}')
     def teacher_lesson(lesson_id: str, token: Token):
         return store.teacher_lesson(token, lesson_id)
+
+    @app.put('/v1/teacher/lessons/{lesson_id}/face-profile', status_code=201)
+    def teacher_face_profile(lesson_id: str, data: TeacherFaceProfileInput, response: Response, token: Token):
+        require_web_face()
+        result = store.teacher_face_profile(token, lesson_id, data.model_dump())
+        if result['duplicate']:
+            response.status_code = 200
+        return result
 
     @app.post('/v1/teacher/lessons/{lesson_id}/face-checkin', status_code=201)
     def teacher_face_checkin(lesson_id: str, data: FaceCheckinInput, response: Response, token: Token):
